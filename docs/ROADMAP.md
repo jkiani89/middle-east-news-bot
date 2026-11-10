@@ -9,7 +9,7 @@
 ```mermaid
 flowchart LR
     P1[Phase 1: Foundation 🟢] --> P2[Phase 2: Collection 🟢]
-    P2 --> P3[Phase 3: Processing ⚪]
+    P2 --> P3[Phase 3: Processing 🟢]
     P3 --> P4[Phase 4: AI Integration ⚪]
     P4 --> P5[Phase 5: Event Management ⚪]
     P5 --> P6[Phase 6: Reporting ⚪]
@@ -49,18 +49,19 @@ flowchart LR
 
 ---
 
-### فاز ۳ — پالایش، نرمال‌سازی و تکرارزدایی (Phase 3 — Processing) ⚪ [گام بعدی]
-- **اهداف:**
-  - پالایش و نرمال‌سازی دقیق URLها و پاکسازی پارامترهای تبلیغاتی و نشست‌ها.
-  - محاسبه هش یکتا (`content_hash`) روی متن و عنوان نرمال‌شده.
-  - بررسی تکراری نبودن خبر هم از روی `canonical_url` و هم از روی `content_hash`.
-  - استفاده از شاخص‌های بهینه دیتابیس برای جلوگیری از اسکن کامل جداول در چک تکرار.
-- **معیار پذیرش:**
-  - در صورت انتشار مجدد یک خبر با URL اندکی متفاوت اما متن یکسان، پردازش مجدد متوقف شود.
+### فاز ۳ — پالایش، نرمال‌سازی و تکرارزدایی (Phase 3 — Processing) 🟢 [تکمیل‌شده]
+- **اهداف محقق‌شده:**
+  - رفع کامل نقص بدهی فنی `ISS-004 Part B` با بازنویسی کوئری تکرارزدایی در `app/processors/pipeline.py` از طریق تابع اختصاصی `is_duplicate_article`.
+  - اعمال شرط هم‌ارزی منطقی `or_(Article.canonical_url == canonical_url, Article.content_hash == content_hash)`.
+  - اجرای آزمون‌های اختصاصی در `tests/test_pipeline.py` برای سناریوی A (ردگیری و حذف پارامترهای رهگیری) و سناریوی B (تشخیص بازنشر متن یکسان با URL متفاوت).
+  - آزمون طرح اجرایی SQL با `EXPLAIN ANALYZE` و اثبات بهره‌گیری دیتابیس از شاخص‌های `ix_articles_content_hash` و `uq_articles_canonical_url` به صورت `BitmapOr` و `Index Scan`.
+  - آزمون زنده در محیط واقعی دیتابیس با اسکریپت `scripts/test_phase3_dedup_live.py` و اثبات رد اخبار تکراری در هر دو سناریو.
+- **معیار پذیرش (محقق‌شده):**
+  - خروجی ۳۳ آزمون سبز با pytest و خروجی موفقیت‌آمیز اسکریپت آزمون زنده در سناریوهای A و B و C.
 
 ---
 
-### فاز ۴ — ادغام هوش مصنوعی و خلاصه‌سازی (Phase 4 — AI Integration) ⚪ [آتی]
+### فاز ۴ — ادغام هوش مصنوعی و خلاصه‌سازی (Phase 4 — AI Integration) ⚪ [گام بعدی]
 - **اهداف:**
   - پیاده‌سازی لایه واسط انتزاعی `BaseAIProvider` و تفکیک ارائه‌دهنده `GeminiProvider`.
   - اعتبارسنجی دقیق خروجی طبق کدهای ده‌گانه دسته‌بندی (`POL`, `MIL`, `DIP`, ...) و پنج وضعیت راستی‌آزمایی (`confirmed`, ...).
