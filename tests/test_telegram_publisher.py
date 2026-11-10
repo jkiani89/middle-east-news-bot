@@ -1,5 +1,6 @@
 """Unit tests for Telegram publishing utilities."""
 
+import pytest
 from app.telegram.publisher import esc, split_text
 
 
@@ -23,3 +24,10 @@ def test_split_text_multiple_chunks():
     # Verify reconstructed lines match original
     reconstructed = "\n".join(chunks)
     assert reconstructed == text
+
+
+@pytest.mark.asyncio
+async def test_publish_report_refuses_mock_content():
+    from app.telegram.publisher import MockPublishRefusedError, publish_report
+    with pytest.raises(MockPublishRefusedError, match="Publish refused: Daily report content_quality is 'mock'"):
+        await publish_report("2026-11-10", [{"headline": "Mock", "summary": "Mock"}], content_quality="mock")

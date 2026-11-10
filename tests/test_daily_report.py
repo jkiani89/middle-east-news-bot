@@ -412,3 +412,39 @@ async def test_generate_and_save_daily_report_creates_or_updates():
         assert len(items) == 1
         assert len(formatted_text) > 0
         assert mock_session.commit.called
+
+
+@pytest.mark.asyncio
+async def test_fetch_report_items_detects_mock_and_real_content_quality():
+    """Verify that content_quality correctly detects 'mock', 'real', and 'mixed'."""
+    session = AsyncMock()
+
+    # Case 1: Mock summary
+    ev1 = _make_mock_event(1)
+    sm1 = _make_mock_summary(1, headline_fa="تیتر خبر 1: تست موک", summary_fa="خلاصه خبر 1 پیرامون تست.")
+    mock_res_ev1 = MagicMock()
+    mock_res_ev1.all.return_value = [(ev1, sm1)]
+    mock_res_art1 = MagicMock()
+    mock_res_art1.all.return_value = []
+    session.execute.side_effect = [mock_res_ev1, mock_res_art1]
+
+    _, items1, meta1 = await fetch_report_items(session, report_date=date(2026, 11, 10))
+    assert meta1["content_quality"] == "mock"
+    assert meta1["mock_summaries_count"] == 1
+    assert meta1["real_summaries_count"] == 0
+
+    # Case 2: Real summary
+    ev2 = _make_mock_event(2)
+    sm2 = _make_mock_summary(2, headline_fa="آغاز دور جدید مذاکرات", summary_fa="متن واقعی تحلیلی")
+    sm2.model_name = "gemini-2.5-flash"
+    sm2.prompt_version = "v2"
+    mock_res_ev2 = MagicMock()
+    mock_res_ev2.all.return_value = [(ev2, sm2)]
+    mock_res_art2 = MagicMock()
+    mock_res_art2.all.return_value = []
+    session.execute.side_effect = [mock_res_ev2, mock_res_art2]
+
+    _, items2, meta2 = await fetch_report_items(session, report_date=date(2026, 11, 10))
+    assert meta2["content_quality"] == "real"
+    assert meta2["mock_summaries_count"] == 0
+    assert meta2["real_summaries_count"] == 1

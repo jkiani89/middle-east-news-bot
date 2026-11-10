@@ -3,8 +3,14 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from app.config import settings
 
+class MockPublishRefusedError(RuntimeError):
+    """Raised when attempting to publish mock or unverified content to public Telegram channels."""
+    pass
+
+
 def esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 
 def split_text(text, limit=3900):
     chunks, current = [], ""
@@ -19,7 +25,18 @@ def split_text(text, limit=3900):
         chunks.append(current)
     return chunks
 
-async def publish_report(report_date, items):
+
+async def publish_report(
+    report_date,
+    items,
+    content_quality: str = "real",
+    allow_mock_publish: bool = False,
+):
+    if content_quality == "mock" and not allow_mock_publish:
+        raise MockPublishRefusedError(
+            "Publish refused: Daily report content_quality is 'mock'. "
+            "Refusing to publish placeholder/mock content to public channels."
+        )
     bot = Bot(settings.telegram_bot_token,
               default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     try:
