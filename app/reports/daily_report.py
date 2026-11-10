@@ -1,40 +1,403 @@
-from datetime import datetime, timedelta, time
+"""Daily Intelligence Report Generator for Phase 6.
+
+Queries active events from PostgreSQL within the 24-hour window, filters by importance,
+strictly excludes any events linked to flagged/rejected articles, and formats
+a structured, neutral Persian daily intelligence report adhering to EDITORIAL_POLICY.md.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Any, Sequence
 from zoneinfo import ZoneInfo
+
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import settings
 from app.database.connection import SessionLocal
-from app.database.models import Event, Summary, ArticleEvent, Article, Source, DailyReport
+from app.database.models import Article, ArticleEvent, DailyReport, Event, Source, Summary
 
-async def build_daily_report():
+logger = logging.getLogger(__name__)
+
+CATEGORY_TITLES: dict[str, str] = {
+    "MIL": "تحولات نظامی و امنیتی",
+    "DIP": "دیپلماسی و روابط بین‌الملل",
+    "POL": "سیاست داخلی و منطقه‌ای",
+    "SEC": "امنیت و مقابله با تروریسم",
+    "HUM": "امور بشردوستانه و پناهجویان",
+    "ECO": "اقتصاد، تجارت و بازرگانی",
+    "ENE": "انرژی، اقلیم و محیط‌زیست",
+    "NUC": "پرونده هسته‌ای و فناوری",
+    "SOC": "جامعه و حقوق شهروندی",
+    "MAR": "دریانوردی و امنیت ترانزیت",
+}
+
+VERIFICATION_LABELS: dict[str, str] = {
+    "confirmed": "✅ تأییدشده",
+    "partially_confirmed": "⚠️ تا حدی تأییدشده",
+    "unconfirmed": "❓ تأییدنشده (تک‌منبعی)",
+    "disputed": "⚖️ مورد مناقشه",
+    "false": "❌ نادرست / ردشده",
+}
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+async def fetch_report_items(
+    session: AsyncSession,
+    report_date: date | None = None,
+    min_importance: int | None = None,
+) -> tuple[date, list[dict[str, Any]], dict[str, Any]]:
+    """Query PostgreSQL for events in the 24-hour window matching report criteria.
+
+    Strictly excludes any events containing articles with status 'flagged_for_review' or 'rejected'.
+    Collects primary and supplementary source citations (Staleness Policy Option C).
+    """
     tz = ZoneInfo(settings.timezone)
-    report_day = datetime.now(tz).date() - timedelta(days=1)
-    start = datetime.combine(report_day, time.min, tzinfo=tz)
-    end = start + timedelta(days=1)
+    if report_date is None:
+        report_date = datetime.now(tz).date()
+
+    if min_importance is None:
+        min_importance = settings.min_importance
+
+    window_start = datetime.combine(report_date, time.min, tzinfo=tz)
+    window_end = window_start + timedelta(days=1)
+
+    # Subquery: identify events that have ANY article with flagged_for_review or rejected status
+    flagged_subquery = (
+        select(ArticleEvent.event_id)
+        .join(Article, Article.id == ArticleEvent.article_id)
+        .where(Article.status.in_(["flagged_for_review", "rejected"]))
+    )
+
+    # Query events in time window with importance threshold, excluding flagged
+    stmt = (
+        select(Event, Summary)
+        .join(Summary, Summary.event_id == Event.id)
+        .where(
+            Event.first_seen_at >= window_start,
+            Event.first_seen_at < window_end,
+            Event.importance >= min_importance,
+            Event.id.not_in(flagged_subquery),
+        )
+        .order_by(Event.importance.desc(), Event.first_seen_at.desc())
+    )
+
+    event_summary_rows = (await session.execute(stmt)).all()
+    if not event_summary_rows:
+        metadata = {
+            "report_date": str(report_date),
+            "generated_at": _utcnow().isoformat(),
+            "min_importance": min_importance,
+            "total_events": 0,
+            "strategic_events_count": 0,
+            "regional_events_count": 0,
+        }
+        return report_date, [], metadata
+
+    event_ids = [ev.id for ev, _ in event_summary_rows]
+
+    # Fetch all linked articles and their sources for these events
+    articles_stmt = (
+        select(ArticleEvent.event_id, Article, Source)
+        .join(Article, Article.id == ArticleEvent.article_id)
+        .join(Source, Source.id == Article.source_id)
+        .where(ArticleEvent.event_id.in_(event_ids))
+        .order_by(ArticleEvent.confidence.desc().nullslast(), Article.collected_at.asc())
+    )
+    article_rows = (await session.execute(articles_stmt)).all()
+
+    # Group articles by event_id
+    articles_by_event: dict[int, list[tuple[Article, Source]]] = {eid: [] for eid in event_ids}
+    for eid, art, src in article_rows:
+        articles_by_event[eid].append((art, src))
+
+    items: list[dict[str, Any]] = []
+    seen_event_ids: set[int] = set()
+
+    for event, summary in event_summary_rows:
+        if event.id in seen_event_ids:
+            continue
+        seen_event_ids.add(event.id)
+
+        linked_arts = articles_by_event.get(event.id, [])
+        primary_art = linked_arts[0][0] if linked_arts else None
+        primary_src = linked_arts[0][1] if linked_arts else None
+
+        details_fa = summary.details_fa or {}
+        primary_source_name = (
+            details_fa.get("source")
+            or (primary_src.name if primary_src else "منبع رسمی")
+        )
+        primary_url = (
+            details_fa.get("url")
+            or (primary_art.original_url if primary_art else "")
+        )
+
+        # Collect additional sources from Staleness Policy Option C: details_fa['sources']
+        additional_sources: list[dict[str, Any]] = []
+        if isinstance(details_fa.get("sources"), list):
+            for s in details_fa["sources"]:
+                if isinstance(s, dict):
+                    additional_sources.append({
+                        "source": s.get("source", "منبع ناشناس"),
+                        "url": s.get("url", ""),
+                        "article_id": s.get("article_id"),
+                        "added_at": s.get("added_at"),
+                    })
+
+        # Also add any linked articles not already in additional_sources or primary
+        existing_urls = {primary_url} | {s["url"] for s in additional_sources if s.get("url")}
+        for art, src in linked_arts[1:]:
+            if art.original_url and art.original_url not in existing_urls:
+                additional_sources.append({
+                    "source": src.name if src else "منبع پیگیری",
+                    "url": art.original_url,
+                    "article_id": art.id,
+                    "added_at": art.collected_at.isoformat() if art.collected_at else None,
+                })
+                existing_urls.add(art.original_url)
+
+        item = {
+            "event_id": event.id,
+            "title": event.title,
+            "event_type": event.event_type or "GEN",
+            "category_fa": CATEGORY_TITLES.get(event.event_type or "", "سایر تحولات"),
+            "importance": event.importance,
+            "first_seen_at": event.first_seen_at.isoformat() if event.first_seen_at else "",
+            "countries": event.countries or [],
+            "actors": event.actors or [],
+            "location": event.location or "منطقه",
+            "headline_fa": summary.headline_fa,
+            "summary_fa": summary.summary_fa,
+            "verification_status": summary.verification_status,
+            "verification_status_fa": VERIFICATION_LABELS.get(
+                summary.verification_status, "نامشخص"
+            ),
+            "primary_source": primary_source_name,
+            "primary_url": primary_url,
+            "additional_sources": additional_sources,
+            "total_sources_count": 1 + len(additional_sources),
+        }
+        items.append(item)
+
+    metadata = {
+        "report_date": str(report_date),
+        "generated_at": _utcnow().isoformat(),
+        "min_importance": min_importance,
+        "total_events": len(items),
+        "strategic_events_count": len([i for i in items if i["importance"] >= 4]),
+        "regional_events_count": len([i for i in items if i["importance"] < 4]),
+        "timezone": settings.timezone,
+    }
+
+    return report_date, items, metadata
+
+
+def format_persian_daily_report(
+    report_date: date,
+    items: list[dict[str, Any]],
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    """Format structured items into a clean, professional Persian daily intelligence report.
+
+    Adheres strictly to EDITORIAL_POLICY.md guidelines:
+    - Neutral tone, zero speculation
+    - Claim attribution to primary and secondary sources
+    - Distinct sections for strategic and regional developments
+    - Explicit listing of supplementary sources (Staleness Policy Option C)
+    """
+    if metadata is None:
+        metadata = {
+            "report_date": str(report_date),
+            "total_events": len(items),
+            "strategic_events_count": len([i for i in items if i["importance"] >= 4]),
+            "regional_events_count": len([i for i in items if i["importance"] < 4]),
+            "min_importance": settings.min_importance,
+        }
+
+    total_events = metadata.get("total_events", len(items))
+    strategic_count = metadata.get("strategic_events_count", 0)
+    regional_count = metadata.get("regional_events_count", 0)
+    min_imp = metadata.get("min_importance", settings.min_importance)
+
+    lines: list[str] = [
+        "📊 بولتن هوش و پایش تحولات خاورمیانه و جهان اسلام",
+        f"📅 تاریخ گزارش: {report_date.strftime('%Y/%m/%d')} (بازه پایش ۲۴ ساعته)",
+        f"📈 آمار رویدادها: {total_events} رخداد واجد شرایط (اهمیت ≥ {min_imp}) | "
+        f"راهبردی: {strategic_count} | منطقه‌ای: {regional_count}",
+        "═" * 50,
+        "",
+    ]
+
+    strategic_items = [i for i in items if i["importance"] >= 4]
+    regional_items = [i for i in items if i["importance"] < 4]
+
+    # Section 1: Strategic Developments (Importance >= 4)
+    if strategic_items:
+        lines.extend([
+            "🔴 بخش اول: اهم تحولات راهبردی (اولویت بالا)",
+            "─" * 45,
+        ])
+        for idx, item in enumerate(strategic_items, start=1):
+            stars = "⭐" * item["importance"]
+            cat = item["category_fa"]
+            lines.append(f"{idx}. 📌 {item['headline_fa']}")
+            lines.append(f"   ▫️ درجه اهمیت: {stars} ({item['importance']}/5) | حوزه: {cat} [{item['event_type']}]")
+            lines.append(f"   ▫️ جغرافیا و بازیگران: {', '.join(item['countries']) or item['location']} | {', '.join(item['actors']) or 'نهادهای رسمی'}")
+            lines.append(f"   ▫️ خلاصه گزیده: {item['summary_fa']}")
+            lines.append(f"   ▫️ راستی‌آزمایی: {item['verification_status_fa']}")
+            lines.append(f"   ▫️ منبع اصلی: {item['primary_source']} ⟵ {item['primary_url']}")
+
+            # Supplementary sources from EventMatcher / Staleness Policy C
+            if item.get("additional_sources"):
+                lines.append("   🔗 پوشش‌های موازی و منابع تکمیلی:")
+                for supp in item["additional_sources"]:
+                    supp_src = supp.get("source", "منبع پیگیری")
+                    supp_url = supp.get("url", "")
+                    lines.append(f"      • {supp_src}: {supp_url}")
+            lines.append("")
+
+    # Section 2: Regional & Thematic Developments (Importance 2 & 3)
+    if regional_items:
+        lines.extend([
+            "🌐 بخش دوم: سایر تحولات منطقه‌ای و موضوعی",
+            "─" * 45,
+        ])
+        # Group by category
+        by_category: dict[str, list[dict[str, Any]]] = {}
+        for item in regional_items:
+            cat_name = item["category_fa"]
+            by_category.setdefault(cat_name, []).append(item)
+
+        for cat_name, cat_items in by_category.items():
+            lines.append(f"🔹 {cat_name}:")
+            for item in cat_items:
+                stars = "⭐" * item["importance"]
+                lines.append(f"  • {item['headline_fa']} ({stars})")
+                lines.append(f"    - خلاصه: {item['summary_fa']}")
+                lines.append(f"    - راستی‌آزمایی: {item['verification_status_fa']} | منبع: {item['primary_source']}")
+                if item["primary_url"]:
+                    lines.append(f"    - پیوند: {item['primary_url']}")
+                if item.get("additional_sources"):
+                    lines.append("    - منابع موازی:")
+                    for supp in item["additional_sources"]:
+                        lines.append(f"      * {supp.get('source')}: {supp.get('url')}")
+            lines.append("")
+
+    if not items:
+        lines.append("در بازه ۲۴ ساعته گذشته هیچ رویدادی با شرایط مدنظر ثبت نگردیده است.")
+        lines.append("")
+
+    # Footer: Editorial Disclosure
+    lines.extend([
+        "═" * 50,
+        "🛡 یادداشت صحت اطلاعات و خط‌مشی تحریریه (Editorial Note):",
+        "این گزارش به صورت کاملاً خودکار بر مبنای اصول بی‌طرفی، انتساب دقیق مواضع رسمی",
+        "و تجمیع رویدادهای مستقل تدوین شده است. هیچ‌گونه قضاوت سیاسی، فرضیه‌سازی",
+        "یا توهم زبانی در تهیه این بولتن وارد نشده است.",
+    ])
+
+    return "\n".join(lines)
+
+
+async def build_daily_report(
+    report_date: date | None = None,
+    min_importance: int | None = None,
+    session: AsyncSession | None = None,
+) -> tuple[date, list[dict[str, Any]]]:
+    """Generate daily report items, format report text, and save/update DailyReport record.
+
+    Backward-compatible signature: returns (report_date, items).
+    """
+    if session is not None:
+        return await _build_daily_report_with_session(session, report_date, min_importance)
+
+    async with SessionLocal() as db_session:
+        res = await _build_daily_report_with_session(db_session, report_date, min_importance)
+        await db_session.commit()
+        return res
+
+
+async def _build_daily_report_with_session(
+    session: AsyncSession,
+    report_date: date | None = None,
+    min_importance: int | None = None,
+) -> tuple[date, list[dict[str, Any]]]:
+    rep_date, items, metadata = await fetch_report_items(
+        session, report_date=report_date, min_importance=min_importance
+    )
+    formatted_text = format_persian_daily_report(rep_date, items, metadata)
+
+    report = await session.scalar(
+        select(DailyReport).where(DailyReport.report_date == rep_date)
+    )
+
+    payload = {
+        "date": str(rep_date),
+        "metadata": metadata,
+        "formatted_text": formatted_text,
+        "items": items,
+    }
+
+    if report:
+        report.content = payload
+        report.status = "generated"
+        report.generated_at = _utcnow()
+    else:
+        report = DailyReport(
+            report_date=rep_date,
+            content=payload,
+            status="generated",
+            generated_at=_utcnow(),
+        )
+        session.add(report)
+
+    logger.info(
+        "Daily report generated for %s: %d items (strategic: %d, regional: %d)",
+        rep_date,
+        len(items),
+        metadata.get("strategic_events_count", 0),
+        metadata.get("regional_events_count", 0),
+    )
+    return rep_date, items
+
+
+async def generate_and_save_daily_report(
+    report_date: date | None = None,
+    min_importance: int | None = None,
+) -> tuple[date, list[dict[str, Any]], str]:
+    """Entrypoint that returns (report_date, items, formatted_text) and persists to DB."""
     async with SessionLocal() as session:
-        rows = (await session.execute(
-            select(Event, Summary, Article, Source)
-            .join(Summary, Summary.event_id == Event.id)
-            .join(ArticleEvent, ArticleEvent.event_id == Event.id)
-            .join(Article, Article.id == ArticleEvent.article_id)
-            .join(Source, Source.id == Article.source_id)
-            .where(Article.collected_at >= start, Article.collected_at < end)
-            .order_by(Event.importance.desc(), Article.collected_at.desc())
-        )).all()
-        seen, items = set(), []
-        for event, summary, article, source in rows:
-            if event.id in seen or event.importance < settings.min_importance:
-                continue
-            seen.add(event.id)
-            items.append({"event_id": event.id, "headline": summary.headline_fa,
-                "summary": summary.summary_fa, "verification_status": summary.verification_status,
-                "source": source.name, "url": article.original_url,
-                "categories": event.event_type, "countries": event.countries,
-                "importance": event.importance})
-        report = await session.scalar(select(DailyReport).where(DailyReport.report_date == report_day))
-        payload = {"date": str(report_day), "items": items}
+        rep_date, items, metadata = await fetch_report_items(
+            session, report_date=report_date, min_importance=min_importance
+        )
+        formatted_text = format_persian_daily_report(rep_date, items, metadata)
+
+        report = await session.scalar(
+            select(DailyReport).where(DailyReport.report_date == rep_date)
+        )
+        payload = {
+            "date": str(rep_date),
+            "metadata": metadata,
+            "formatted_text": formatted_text,
+            "items": items,
+        }
         if report:
-            report.content, report.status = payload, "generated"
+            report.content = payload
+            report.status = "generated"
+            report.generated_at = _utcnow()
         else:
-            session.add(DailyReport(report_date=report_day, content=payload, status="generated"))
+            report = DailyReport(
+                report_date=rep_date,
+                content=payload,
+                status="generated",
+                generated_at=_utcnow(),
+            )
+            session.add(report)
         await session.commit()
-        return report_day, items
+        return rep_date, items, formatted_text
