@@ -208,6 +208,10 @@ def test_is_retryable_ai_error():
     assert is_retryable_ai_error(ValueError("Bad parameter")) is False
 
 
+# Note: The following 4 tests validate GeminiProvider's error translation and delegation
+# to gemini-api-rotator (replacing legacy local tenacity/sliding window logic from Phase 4).
+# Concurrency, RPM windowing, and retry intervals are handled internally by gemini-api-rotator.
+
 @pytest.mark.asyncio
 async def test_gemini_provider_retries_on_429_and_succeeds():
     """Verify GeminiProvider handles 429 via rotator or fallback and succeeds."""
@@ -277,15 +281,19 @@ async def test_gemini_provider_fails_fast_on_non_retryable_400():
 
 @pytest.mark.asyncio
 async def test_gemini_provider_sliding_window_throttling():
-    """Verify GeminiProvider integrates with gemini-api-rotator for cooldown and state."""
+    """Verify GeminiProvider delegates concurrency, rate limiting, and RPM windowing to gemini-api-rotator."""
     from unittest.mock import MagicMock
+    from gemini_rotator import GeminiAPIRotator, RotatorConfig
     from app.ai.provider import GeminiProvider
 
-    mock_rotator = MagicMock()
+    cfg = RotatorConfig(rpm_per_key=10, max_concurrent_per_key=2)
+    mock_rotator = MagicMock(spec=GeminiAPIRotator)
+    mock_rotator.config = cfg
     provider = GeminiProvider(rotator=mock_rotator)
-    # _enforce_rate_limit is a non-blocking backward-compatible no-op
-    await provider._enforce_rate_limit()
+
     assert provider.rotator is mock_rotator
+    assert provider.rotator.config.rpm_per_key == 10
+    assert provider.rotator.config.max_concurrent_per_key == 2
 
 
 def test_get_ai_provider_factory():

@@ -20,20 +20,41 @@
 4. **حذف لایه‌های زائد و پاکسازی کد:**
    - حذف کامل سمافور دستی، لوپ Retry با Tenacity و Sliding Window Rate Limiter فاز ۴ از `app/ai/provider.py`.
    - واگذاری کامل وظایف همروندی، Cooldown نمایی، مدیریت خطا و پایش تاخیر به `gemini-api-rotator`.
+   - حذف کامل متد Deprecated `_enforce_rate_limit`.
+
+5. **رفع ۳ باگ بحرانی پیش از فاز ۸:**
+   - **باگ ۱ (تکلیف تست‌های قدیمی):** تایید حذف کامل کدهای سنتی Rate Limit از `provider.py` با استعلام خطوط خالی؛ افزودن مستندات صریح در `tests/test_ai.py` مبنی بر اینکه ۴ تست مربوطه اکنون رفتار ترجمه خطا و تفویض وظایف به `gemini-api-rotator` را می‌سنجند.
+   - **باگ ۲ (تطابق مدل در Fallback):** پیاده‌سازی متغیر `_last_used_model` در `GeminiProvider` که با اجرای موفقیت‌آمیز مدل جایگزین (`gemini-3.5-flash-lite`) مقدار `model_name` را به صورت پویا به‌روز می‌کند تا `article.ai_payload['model_name']` در پایگاه داده دقیق و واقعی ثبت شود.
+   - **باگ ۳ (Fail-Fast در غیاب کلیدها):** جلوگیری از Fallback خاموش به `mock_key_unconfigured` در محیط‌های غیرتستی؛ پرتاب صریح `RuntimeError` در صورت عدم پیکربندی کلید در `.env`.
+
+6. **وضعیت مدل‌های ترکیبی دیتابیس (Mixed Model State Documentation):**
+   - **مقاله شماره ۱:** پردازش‌شده با مدل `gemini-2.5-flash` در فاز ۴.
+   - **مقالات ۲ تا ۳۰:** داده‌های محتوای موک (در فاز ۸.۵ با مدل `gemini-3.8-flash` بازپردازش خواهند شد).
+   - **مقالات جدید از فاز ۸ به بعد:** پردازش‌شده با مدل پیش‌فرض `gemini-3.8-flash`.
+   - **اثر:** ستون‌های `model_name` در جدول‌های `ai_payload` و `summaries` مقادیر ترکیبی را تا زمان اجرای اسکریپت بازپردازش فاز ۸.۵ منعکس خواهند کرد.
+   - **تصمیم:** پس از بازپردازش ۲۹ مقاله موک، در صورت تمایل می‌توان مقاله شماره ۱ را نیز جهت یکدستی ۱۰۰٪ با ۲ فراخوانی مجدداً با `gemini-3.8-flash` پردازش نمود.
+
+7. **قرارداد مدیریت استثناها برای زمان‌بند فاز ۸ (Phase 8 Scheduler Exception Contract):**
+   - **اتمام سهمیه / تعلیق همه کلیدها:** در صورت بروز `429`، `RESOURCE_EXHAUSTED`، یا خطای `No API keys available — all keys are suspended` از سمت روتاتور، کلاس خطای استاندارد `AIRateLimitError` پرتاب می‌شود. ماژول زمان‌بند (`jobs.py`) این خطا را گرفته و جاب را با وضعیت `failed_quota` ثبت می‌کند (بدون کرش کل سیستم).
+   - **عدم دسترسی موقت سرویس:** خطاهای ۵۰۰، ۵۰۲، ۵۰۳، ۵۰۴ یا `unavailable` به `AIServiceUnavailableError` ترجمه شده و جاب با وضعیت `failed_unavailable` ثبت می‌گردد.
+   - **سایر خطاهای هوش مصنوعی:** سایر خطاهای سروری به `AIProviderError` ترجمه شده و جاب با وضعیت `failed_ai` ثبت می‌گردد.
 
 ### ۲. آزمون‌ها و پوشش کد
-- **فایل آزمون اختصاصی (`tests/test_gemini_rotator.py`):** نگارش ۱۰ آزمون جامع شامل ۶ سناریوی الزامی:
+- **فایل آزمون اختصاصی (`tests/test_gemini_rotator.py`):** نگارش ۱۴ آزمون جامع شامل ۶ سناریوی الزامی و تست‌های تکمیلی:
   1. `test_rotator_skips_rate_limited_key`: پرش از کلید در حال Cooldown روی خطای 429 و انتخاب کلید سالم بعدی.
   2. `test_rotator_marks_suspended_on_invalid_key`: بلک‌لیست دائم کلید نامعتبر با خطای `API_KEY_INVALID` یا `PERMISSION_DENIED`.
   3. `test_rotator_persists_state_across_restart`: حفظ وضعیت کلیدهای Suspended در فایل SQLite پس از بستن و اجرای مجدد.
   4. `test_rotator_falls_back_to_fallback_model_on_quota_exhaustion`: فال‌بک خودکار به `gemini-3.5-flash-lite` در صورت فعال بودن فلگ و وقوع 429 روی مدل اصلی.
   5. `test_generate_json_uses_primary_model`: ارسال نام مدل `gemini-3.8-flash` به روتاتور.
   6. `test_generate_json_returns_parsed_dict`: پارس خروجی JSON (حتی با کدهای مارک‌داون) به دیکشنری معتبر پایتون.
-  7. آزمون‌های تکمیلی مقداردهی پیش‌فرض با دیسک، خطای دکود JSON و خطاهای 503 Backend.
+  7. `test_model_name_reflects_fallback_after_primary_exhausted`: اثبات به‌روزرسانی پویای `model_name` به مدل Fallback.
+  8. `test_provider_fails_fast_when_no_keys_in_development`: اثبات شکست سریع در غیاب کلید در محیط غیرتستی.
+  9. `test_all_keys_suspended_raises_ai_rate_limit_error`: اثبات پرتاب `AIRateLimitError` روی تعلیق کلیدها.
+  10. آزمون‌های تکمیلی مقداردهی با دیسک موقت، خطای دکود JSON، خطاهای 503 Backend و شاخه‌های کمکی.
 - **به‌روزرسانی آزمون‌های `tests/test_ai.py`:** همگام‌سازی ۱۵ آزمون با معماری جدید بدون شکست یا هشدار.
-- **پوشش کد `app/ai/provider.py`:** **۹۰٪** (معیار پذیرش: $\ge 80\%$).
-- **پوشش کل بسته `app/ai`:** **۹۰٪**.
-- **مجموع آزمون‌های کل سامانه:** **۱۱۰ آزمون کاملاً سبز** (۰ شکست، ۰ هشدار).
+- **پوشش کد `app/ai/provider.py`:** **۹۶٪** (معیار پذیرش: $\ge 80\%$).
+- **پوشش کل بسته `app/ai`:** **۹۵٪**.
+- **مجموع آزمون‌های کل سامانه:** **۱۱۴ آزمون کاملاً سبز** (۰ شکست، ۰ هشدار).
 - **اعتبارسنجی یکپارچه سلامت سامانه:** خروجی موفقیت‌آمیز اسکریپت `scripts/verify.ps1`.
 
 ---

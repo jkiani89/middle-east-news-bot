@@ -112,7 +112,8 @@ class GeminiProvider(BaseAIProvider):
         self._enable_fallback = enable_fallback if enable_fallback is not None else settings.gemini_enable_fallback
         self.call_count: int = 0
 
-        # Maintain legacy attribute alias
+        # Maintain model tracking: dynamically tracks the actual model that produced the response
+        self._last_used_model = self._primary_model
         self._model = self._primary_model
 
         if rotator is not None:
@@ -126,7 +127,13 @@ class GeminiProvider(BaseAIProvider):
                 keys = settings.get_gemini_keys()
 
             if not keys:
-                keys = ["mock_key_unconfigured"]
+                if settings.app_env == "test":
+                    keys = ["mock_key_unconfigured"]
+                else:
+                    raise RuntimeError(
+                        "No Gemini API keys configured. Set GEMINI_KEY_1..N or GEMINI_API_KEY in .env. "
+                        "See docs/LOCAL_SETUP.md."
+                    )
 
             db_path_str = str(key_db_path or settings.gemini_key_db_path)
             Path(db_path_str).parent.mkdir(parents=True, exist_ok=True)
@@ -141,8 +148,18 @@ class GeminiProvider(BaseAIProvider):
 
     @property
     def model_name(self) -> str:
-        """Active primary model identifier conforming to ARCHITECTURE.md Section 3."""
+        """Active model identifier conforming to ARCHITECTURE.md Section 3 (tracks actual model used)."""
+        return self._last_used_model
+
+    @property
+    def primary_model(self) -> str:
+        """Configured primary model identifier."""
         return self._primary_model
+
+    @property
+    def fallback_model(self) -> str:
+        """Configured fallback model identifier."""
+        return self._fallback_model
 
     @property
     def rotator(self) -> GeminiAPIRotator:
@@ -153,10 +170,6 @@ class GeminiProvider(BaseAIProvider):
         """Close SQLiteAdapter connection if present."""
         if self._db_adapter and hasattr(self._db_adapter, "close"):
             self._db_adapter.close()
-
-    async def _enforce_rate_limit(self) -> None:
-        """Deprecated legacy rate limiter hook retained for backward compatibility."""
-        pass
 
     async def generate_json(self, prompt: str, system_instruction: str | None = None) -> dict[str, Any]:
         """Generate structured JSON response using Gemini via gemini-api-rotator."""
@@ -177,6 +190,8 @@ class GeminiProvider(BaseAIProvider):
                 extra_config=extra_config,
             )
             raw_text = getattr(response, "text", "") or ""
+            self._last_used_model = target_model
+            self._model = target_model
             GeminiProvider._total_calls += 1
             self.call_count += 1
             latency = time.monotonic() - start_time
@@ -210,6 +225,8 @@ class GeminiProvider(BaseAIProvider):
                         extra_config=extra_config,
                     )
                     raw_text = getattr(response, "text", "") or ""
+                    self._last_used_model = target_model
+                    self._model = target_model
                     GeminiProvider._total_calls += 1
                     self.call_count += 1
                     latency = time.monotonic() - start_time
@@ -225,7 +242,7 @@ class GeminiProvider(BaseAIProvider):
             else:
                 _translate_and_raise(exc)
 
-        if raw_text is None:
+        if not raw_text:
             raw_text = "{}"
 
         cleaned = raw_text.strip()

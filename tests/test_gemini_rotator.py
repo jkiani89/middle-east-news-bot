@@ -211,3 +211,122 @@ async def test_gemini_provider_fallback_failure_raises():
     with pytest.raises(AIServiceUnavailableError):
         await provider.generate_json("Test prompt")
 
+
+@pytest.mark.asyncio
+async def test_model_name_reflects_fallback_after_primary_exhausted():
+    """Verify provider.model_name dynamically updates to fallback model when fallback succeeds."""
+    mock_rotator = MagicMock()
+    success_resp = MagicMock()
+    success_resp.text = '{"status": "ok_fallback"}'
+
+    # Primary model triggers 429; fallback succeeds
+    mock_rotator.execute = AsyncMock(
+        side_effect=[
+            Exception("429 RESOURCE_EXHAUSTED"),
+            success_resp,
+        ]
+    )
+
+    provider = GeminiProvider(
+        rotator=mock_rotator,
+        primary_model="gemini-3.8-flash",
+        fallback_model="gemini-3.5-flash-lite",
+        enable_fallback=True,
+    )
+
+    # Initial state
+    assert provider.model_name == "gemini-3.8-flash"
+    assert provider.primary_model == "gemini-3.8-flash"
+    assert provider.fallback_model == "gemini-3.5-flash-lite"
+
+    result = await provider.generate_json("test prompt")
+    assert result == {"status": "ok_fallback"}
+
+    # Dynamic model_name MUST now reflect the actual fallback model used!
+    assert provider.model_name == "gemini-3.5-flash-lite"
+
+
+def test_provider_fails_fast_when_no_keys_in_development(monkeypatch):
+    """Verify GeminiProvider raises RuntimeError immediately if no keys configured in development/production."""
+    from app.config import Settings
+    monkeypatch.setattr(settings, "app_env", "development")
+    monkeypatch.setattr(settings, "gemini_api_key", "")
+    monkeypatch.setattr(Settings, "get_gemini_keys", lambda self: [])
+
+    with pytest.raises(RuntimeError, match="No Gemini API keys configured"):
+        GeminiProvider()
+
+
+@pytest.mark.asyncio
+async def test_all_keys_suspended_raises_ai_rate_limit_error():
+    """Verify RuntimeError from rotator when all keys are suspended translates to AIRateLimitError."""
+    mock_rotator = MagicMock()
+    mock_rotator.execute = AsyncMock(
+        side_effect=RuntimeError("No API keys available — all keys are suspended. Check rotator.status() for details.")
+    )
+
+    provider = GeminiProvider(rotator=mock_rotator, enable_fallback=False)
+
+    with pytest.raises(AIRateLimitError) as exc_info:
+        await provider.generate_json("Test prompt")
+    assert "all keys are suspended" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_provider_auxiliary_and_defensive_branches(tmp_path: Path, monkeypatch):
+    """Verify auxiliary defensive branches: markdown trimming, null responses, error translations, and mock provider."""
+    from app.ai.provider import (
+        is_retryable_ai_error,
+        _is_rate_limit_or_quota,
+        _translate_and_raise,
+        AIServiceUnavailableError,
+        MockAIProvider,
+        get_ai_provider,
+    )
+    from gemini_rotator.middleware import ErrorType
+
+    # 1. Error translation branches
+    assert is_retryable_ai_error(Exception("429 resource_exhausted")) is True
+    assert _is_rate_limit_or_quota(AIRateLimitError("Quota limit hit")) is True
+
+    with pytest.raises(AIProviderError):
+        _translate_and_raise(AIProviderError("Custom AI Provider Error"))
+
+    with pytest.raises(AIServiceUnavailableError):
+        _translate_and_raise(Exception("503 Service Unavailable"))
+
+    # 2. Markdown trimming without 'json' prefix (``` { ... } ```)
+    mock_rotator = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.text = "```\n{\"trimmed\": true}\n```"
+    mock_rotator.execute = AsyncMock(return_value=mock_resp)
+    p = GeminiProvider(rotator=mock_rotator)
+    res = await p.generate_json("test")
+    assert res == {"trimmed": True}
+
+    # 3. None response text fallback to "{}"
+    mock_resp_none = MagicMock()
+    mock_resp_none.text = None
+    mock_rotator.execute = AsyncMock(return_value=mock_resp_none)
+    res_none = await p.generate_json("test")
+    assert res_none == {}
+
+    # 4. MockAIProvider set_canned_response
+    mock_p = MockAIProvider()
+    mock_p.set_canned_response({"custom": 123})
+    assert await mock_p.generate_json("p") == {"custom": 123}
+
+    # 5. GeminiProvider with app_env == 'test' and empty keys creates mock_key_unconfigured
+    from app.config import Settings
+    monkeypatch.setattr(settings, "app_env", "test")
+    monkeypatch.setattr(settings, "gemini_api_key", "")
+    monkeypatch.setattr(Settings, "get_gemini_keys", lambda self: [])
+    p_test = GeminiProvider(key_db_path=tmp_path / "test_keys.db")
+    assert p_test.model_name == settings.gemini_primary_model
+    p_test.close()
+
+    # 6. get_ai_provider returns MockAIProvider in test environment
+    assert isinstance(get_ai_provider(), MockAIProvider)
+
+
+
