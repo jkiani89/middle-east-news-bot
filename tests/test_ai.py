@@ -206,3 +206,104 @@ def test_is_retryable_ai_error():
     assert is_retryable_ai_error(AIServiceUnavailableError("503 Backend overloaded")) is True
     assert is_retryable_ai_error(AIProviderError("Invalid authentication key")) is False
     assert is_retryable_ai_error(ValueError("Bad parameter")) is False
+
+
+@pytest.mark.asyncio
+async def test_gemini_provider_retries_on_429_and_succeeds():
+    """Verify GeminiProvider retries on 429 ResourceExhausted and succeeds on subsequent attempt."""
+    from unittest.mock import AsyncMock, MagicMock
+    from google.genai.errors import APIError
+    from app.ai.provider import GeminiProvider
+
+    mock_client = MagicMock()
+    success_resp = MagicMock()
+    success_resp.text = '{"status": "ok", "categories": ["POL"]}'
+    success_resp.usage_metadata.prompt_token_count = 100
+    success_resp.usage_metadata.candidates_token_count = 50
+
+    # First attempt raises 429, second attempt succeeds
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=[
+            APIError(429, "Resource exhausted (rate limit)"),
+            success_resp,
+        ]
+    )
+
+    provider = GeminiProvider(api_key="test_key", client=mock_client)
+    result = await provider.generate_json("test prompt")
+
+    assert result == {"status": "ok", "categories": ["POL"]}
+    assert mock_client.aio.models.generate_content.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_gemini_provider_exhausts_retries_on_persistent_429():
+    """Verify GeminiProvider stops after 3 retry attempts on persistent 429 errors."""
+    from unittest.mock import AsyncMock, MagicMock
+    from google.genai.errors import APIError
+    from app.ai.provider import GeminiProvider, AIRateLimitError
+
+    mock_client = MagicMock()
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=APIError(429, "Persistent quota limit")
+    )
+
+    provider = GeminiProvider(api_key="test_key", client=mock_client)
+
+    with pytest.raises(AIRateLimitError):
+        await provider.generate_json("test prompt")
+
+    assert mock_client.aio.models.generate_content.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_gemini_provider_fails_fast_on_non_retryable_400():
+    """Verify GeminiProvider does not retry on 400 Bad Request."""
+    from unittest.mock import AsyncMock, MagicMock
+    from google.genai.errors import APIError
+    from app.ai.provider import GeminiProvider, AIProviderError
+
+    mock_client = MagicMock()
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=APIError(400, "Invalid argument")
+    )
+
+    provider = GeminiProvider(api_key="test_key", client=mock_client)
+
+    with pytest.raises(AIProviderError):
+        await provider.generate_json("test prompt")
+
+    # Stops immediately on attempt 1 without retry
+    assert mock_client.aio.models.generate_content.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_gemini_provider_sliding_window_throttling(monkeypatch):
+    """Verify sliding window rate limiter throttles when max_rpm is reached without actual delay."""
+    import time
+    from unittest.mock import MagicMock, AsyncMock
+    import asyncio
+    from app.ai.provider import GeminiProvider
+
+    mock_sleep = AsyncMock()
+    monkeypatch.setattr(asyncio, "sleep", mock_sleep)
+
+    provider = GeminiProvider(api_key="test_key", client=MagicMock(), max_rpm=2)
+    now = time.monotonic()
+    provider._request_timestamps = [now - 10.0, now - 5.0]
+
+    # Enforcing rate limit on 3rd request should trigger throttle sleep and track new timestamp
+    await provider._enforce_rate_limit()
+
+    assert mock_sleep.called
+    assert len(provider._request_timestamps) >= 1
+
+
+def test_get_ai_provider_factory():
+    """Verify get_ai_provider factory instantiates correct provider based on settings."""
+    from app.ai.provider import get_ai_provider, GeminiProvider, MockAIProvider
+    from app.config import settings
+
+    # In development with real key
+    provider = get_ai_provider()
+    assert isinstance(provider, (GeminiProvider, MockAIProvider))

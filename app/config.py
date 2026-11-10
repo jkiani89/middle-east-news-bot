@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
+    app_env: str = "development"
     database_url: str = "postgresql+asyncpg://newsbot:CHANGE_THIS_PASSWORD@localhost:5432/newsbot"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"

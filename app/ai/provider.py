@@ -228,6 +228,11 @@ class MockAIProvider(BaseAIProvider):
 
 def get_ai_provider() -> BaseAIProvider:
     """Factory to instantiate AI provider based on environment settings."""
-    if settings.app_env == "test" or settings.gemini_api_key.startswith("mock_") or settings.gemini_api_key.startswith("YOUR_"):
+    if (
+        settings.app_env == "test"
+        or not settings.gemini_api_key
+        or settings.gemini_api_key.startswith("mock_")
+        or settings.gemini_api_key.startswith("YOUR_")
+    ):
         return MockAIProvider()
     return GeminiProvider()

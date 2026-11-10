@@ -45,13 +45,13 @@ async def process_collected_articles(
     """Process unanalyzed articles from database with AI Provider.
 
     Strict financial guardrail (ISS-013 / Re-processing Prevention):
-    ONLY queries articles with status IN ('collected', 'pending_analysis').
+    ONLY queries articles with status == 'collected'.
     Articles with status IN ('summarized', 'rejected', 'failed', 'flagged_for_review')
     are STRICTLY EXCLUDED, preventing redundant LLM calls and unnecessary costs.
     """
     stmt = (
         select(Article)
-        .where(Article.status.in_(["collected", "pending_analysis"]))
+        .where(Article.status == "collected")
         .order_by(Article.collected_at.asc())
         .limit(limit)
     )
