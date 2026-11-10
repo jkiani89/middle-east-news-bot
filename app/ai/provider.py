@@ -112,6 +112,12 @@ class GeminiProvider(BaseAIProvider):
         self._enable_fallback = enable_fallback if enable_fallback is not None else settings.gemini_enable_fallback
         self.call_count: int = 0
 
+        if self._enable_fallback and self._primary_model == self._fallback_model:
+            raise ValueError(
+                f"primary_model and fallback_model must differ when enable_fallback is True "
+                f"(got '{self._primary_model}' for both)."
+            )
+
         # Maintain model tracking: dynamically tracks the actual model that produced the response
         self._last_used_model = self._primary_model
         self._model = self._primary_model
@@ -238,8 +244,12 @@ class GeminiProvider(BaseAIProvider):
                         latency,
                     )
                 except Exception as fb_exc:
+                    self._last_used_model = self._primary_model
+                    self._model = self._primary_model
                     _translate_and_raise(fb_exc)
             else:
+                self._last_used_model = self._primary_model
+                self._model = self._primary_model
                 _translate_and_raise(exc)
 
         if not raw_text:

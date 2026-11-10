@@ -329,4 +329,60 @@ async def test_provider_auxiliary_and_defensive_branches(tmp_path: Path, monkeyp
     assert isinstance(get_ai_provider(), MockAIProvider)
 
 
+@pytest.mark.asyncio
+async def test_last_used_model_resets_when_both_models_fail():
+    """Verify _last_used_model resets to primary_model when both primary and fallback fail."""
+    mock_rotator = MagicMock()
+    mock_rotator.execute = AsyncMock(
+        side_effect=[
+            Exception("429 Quota exhausted for primary"),
+            Exception("429 Quota exhausted for fallback"),
+        ]
+    )
+
+    provider = GeminiProvider(
+        rotator=mock_rotator,
+        primary_model="gemini-3.8-flash",
+        fallback_model="gemini-3.5-flash-lite",
+        enable_fallback=True,
+    )
+
+    with pytest.raises(AIRateLimitError):
+        await provider.generate_json("test prompt")
+
+    # model_name must be reset to primary model, not left corrupted on fallback
+    assert provider.model_name == "gemini-3.8-flash"
+
+
+@pytest.mark.asyncio
+async def test_last_used_model_never_fallback_when_disabled():
+    """Verify _last_used_model never changes to fallback when enable_fallback is False."""
+    mock_rotator = MagicMock()
+    mock_rotator.execute = AsyncMock(side_effect=Exception("429 Quota exhausted"))
+
+    provider = GeminiProvider(
+        rotator=mock_rotator,
+        primary_model="gemini-3.8-flash",
+        fallback_model="gemini-3.5-flash-lite",
+        enable_fallback=False,
+    )
+
+    with pytest.raises(AIRateLimitError):
+        await provider.generate_json("test prompt")
+
+    assert provider.model_name == "gemini-3.8-flash"
+    assert mock_rotator.execute.call_count == 1
+
+
+def test_init_fails_when_primary_equals_fallback():
+    """Verify GeminiProvider.__init__ raises ValueError when primary_model equals fallback_model and fallback is enabled."""
+    with pytest.raises(ValueError, match="primary_model and fallback_model must differ"):
+        GeminiProvider(
+            primary_model="gemini-3.8-flash",
+            fallback_model="gemini-3.8-flash",
+            enable_fallback=True,
+        )
+
+
+
 
