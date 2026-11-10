@@ -3,10 +3,15 @@
 Implements tag-aware message splitting (resolving ISS-008) to ensure all HTML tags
 are properly balanced across chunk boundaries, preventing Telegram ParseMode errors.
 Strictly enforces fail-closed publishing guards based on content_quality and app_env.
+Provides resilient delivery with FloodWait (429) backoff, network error retries,
+dual destination routing (Channel + Admin Chat), and partial delivery tracking.
 """
 
 from __future__ import annotations
 
+import argparse
+import asyncio
+from datetime import date, datetime, timezone
 import logging
 import re
 from typing import Any, Sequence
@@ -14,8 +19,14 @@ from typing import Any, Sequence
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database.connection import SessionLocal
+from app.database.models import DailyReport
+from app.reports.daily_report import format_persian_daily_report
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +40,8 @@ class MockPublishRefusedError(RuntimeError):
 
 def esc(s: Any) -> str:
     """Sanitize HTML special characters for Telegram HTML parse mode."""
+    if s is None:
+        return ""
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
@@ -135,10 +148,63 @@ def split_text(text: str, limit: int = 3900) -> list[str]:
     return chunks
 
 
+async def send_telegram_message_resilient(
+    bot: Bot,
+    chat_id: str | int,
+    text: str,
+    max_retries: int = 3,
+    base_backoff: float = 1.0,
+    **kwargs: Any,
+) -> Any:
+    """Send Telegram message with exponential backoff and FloodWait handling."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            return await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                **kwargs,
+            )
+        except TelegramRetryAfter as e:
+            wait_time = float(getattr(e, "retry_after", base_backoff * (2 ** (attempt - 1))))
+            logger.warning(
+                "Telegram FloodWait encountered for chat %s. Waiting %s seconds before retry (attempt %d/%d)...",
+                chat_id,
+                wait_time,
+                attempt,
+                max_retries,
+            )
+            if attempt == max_retries:
+                raise
+            await asyncio.sleep(wait_time)
+        except (TelegramNetworkError, asyncio.TimeoutError) as e:
+            wait_time = base_backoff * (2 ** (attempt - 1))
+            logger.warning(
+                "Telegram NetworkError for chat %s: %s. Retrying in %s seconds (attempt %d/%d)...",
+                chat_id,
+                e,
+                wait_time,
+                attempt,
+                max_retries,
+            )
+            if attempt == max_retries:
+                raise
+            await asyncio.sleep(wait_time)
+        except TelegramAPIError as e:
+            logger.error("Permanent Telegram API error for chat %s: %s", chat_id, e)
+            raise
+
+
 async def publish_report(
     report_date: Any,
-    items: list[dict[str, Any]],
+    items: list[dict[str, Any]] | None = None,
     content_quality: str | None = None,
+    report_text: str | None = None,
+    bot: Bot | None = None,
+    session: AsyncSession | None = None,
+    dry_run: bool = False,
+    channel_id: str | None = None,
+    admin_chat_id: str | int | None = None,
+    base_backoff: float = 1.0,
 ) -> list[dict[str, Any]]:
     """Publish formatted report to Telegram channel and admin chat.
 
@@ -146,50 +212,167 @@ async def publish_report(
     - If content_quality is NOT 'real' (e.g. 'mock', 'mixed', None, or unrecognized):
       Publishing is strictly REFUSED with MockPublishRefusedError, unless settings.app_env == 'test'.
     - No caller parameter can bypass this check in non-test environments.
+
+    Dual Destination Delivery:
+    - Channel: Receives full report chunks formatted in HTML.
+    - Admin Chat: Receives operational summary and telemetry info.
     """
-    if content_quality != "real":
+    if not dry_run and content_quality != "real":
         if settings.app_env != "test":
             raise MockPublishRefusedError(
                 f"Publish refused: Daily report content_quality is '{content_quality}'. "
                 f"Refusing to publish unverified/mock content to Telegram channels in '{settings.app_env}' environment."
             )
 
-    bot = Bot(
-        settings.telegram_bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
+    # Resolve destination IDs
+    target_channel = channel_id or settings.telegram_channel_id
+    target_admin = admin_chat_id or settings.telegram_admin_chat_id
+
+    # Resolve report text
+    final_text = report_text
+    db_report: DailyReport | None = None
+    managed_session = False
+
+    if session is not None:
+        db_report = await session.scalar(
+            select(DailyReport).where(DailyReport.report_date == report_date)
+        )
+    else:
+        try:
+            async with SessionLocal() as local_session:
+                db_report = await local_session.scalar(
+                    select(DailyReport).where(DailyReport.report_date == report_date)
+                )
+        except Exception as e:
+            logger.debug("Could not query DailyReport from DB (likely unit test env): %s", e)
+
+    if not final_text:
+        if db_report and db_report.content and "formatted_text" in db_report.content:
+            final_text = db_report.content["formatted_text"]
+        elif items is not None:
+            # Fallback format for items list
+            final_text = format_persian_daily_report(report_date, items, as_html=True)
+        else:
+            final_text = f"📰 <b>گزارش تحولات خاورمیانه</b>\n📅 {report_date}\n\nگزارش خالی است."
+
+    chunks = split_text(final_text, limit=3900)
+
+    # Dry-run execution
+    if dry_run:
+        print("=" * 80)
+        print(" TELEGRAM PUBLISHER [DRY RUN]")
+        print("=" * 80)
+        print(f"Report Date: {report_date}")
+        print(f"Content Quality: {content_quality or 'real'}")
+        print(f"Target Channel: {target_channel}")
+        print(f"Target Admin Chat: {target_admin}")
+        print(f"Total Text Length: {len(final_text)} characters")
+        print(f"Total Chunks: {len(chunks)}")
+        print("-" * 80)
+        simulated_sent: list[dict[str, Any]] = []
+        for idx, ch in enumerate(chunks, 1):
+            print(f"Chunk #{idx} ({len(ch)} chars) -> Would send to channel {target_channel}")
+            simulated_sent.append({"chat_id": target_channel, "message_id": 1000 + idx, "type": "channel"})
+        if target_admin:
+            print(f"Admin Summary -> Would send to admin {target_admin}")
+            simulated_sent.append({"chat_id": str(target_admin), "message_id": 9999, "type": "admin"})
+        print("=" * 80)
+        return simulated_sent
+
+    own_bot = False
+    if bot is None:
+        bot = Bot(
+            settings.telegram_bot_token,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
+        own_bot = True
+
+    sent: list[dict[str, Any]] = []
     try:
-        lines = [
-            "📰 <b>گزارش روزانه تحولات خاورمیانه</b>",
-            f"📅 {report_date}",
-            "",
-        ]
-        if not items:
-            lines.append("در بازه موردنظر خبر واجد شرایطی ثبت نشده است.")
-        for i, item in enumerate(items, 1):
-            lines += [
-                f"<b>{i}. {esc(item.get('headline', item.get('headline_fa', '')))}</b>",
-                esc(item.get("summary", item.get("summary_fa", ""))),
-                f"<i>منبع: {esc(item.get('source', item.get('primary_source', '')))} | وضعیت: {esc(item.get('verification_status', ''))}</i>",
-                f'<a href="{esc(item.get("url", item.get("primary_url", "")))}">لینک منبع</a>',
-                "",
-            ]
-
-        destinations = [settings.telegram_channel_id, str(settings.telegram_admin_chat_id)]
-        sent: list[dict[str, Any]] = []
-        full_text = "\n".join(lines)
-        chunks = split_text(full_text, limit=3900)
-
-        for chat_id in destinations:
-            if not chat_id:
-                continue
+        # Step 1: Send chunks to public Telegram channel
+        if target_channel:
             for part in chunks:
-                msg = await bot.send_message(
-                    chat_id=chat_id,
+                msg = await send_telegram_message_resilient(
+                    bot=bot,
+                    chat_id=target_channel,
                     text=part,
+                    base_backoff=base_backoff,
                     disable_web_page_preview=True,
                 )
-                sent.append({"chat_id": chat_id, "message_id": msg.message_id})
+                sent.append({"chat_id": target_channel, "message_id": msg.message_id, "type": "channel"})
+                # Record partial progress if session available
+                if session is not None and db_report is not None:
+                    db_report.telegram_message_ids = [s["message_id"] for s in sent]
+                    await session.commit()
+
+        # Step 2: Send operational summary to admin chat
+        if target_admin:
+            channel_msg_ids = [s["message_id"] for s in sent if s["type"] == "channel"]
+            admin_msg = (
+                "🔔 <b>گزارش وضعیت انتشار در کانال تلگرام</b>\n"
+                f"📅 <b>تاریخ:</b> <code>{report_date}</code>\n"
+                f"📊 <b>وضعیت:</b> {len(chunks)} بخش با موفقیت در کانال منتشر گردید.\n"
+                f"🛡 <b>کیفیت محتوا:</b> {esc(content_quality or 'real')}\n"
+                f"🔗 <b>شناسه‌های پیام کانال:</b> <code>{channel_msg_ids}</code>"
+            )
+            admin_res = await send_telegram_message_resilient(
+                bot=bot,
+                chat_id=str(target_admin),
+                text=admin_msg,
+                base_backoff=base_backoff,
+                disable_web_page_preview=True,
+            )
+            sent.append({"chat_id": str(target_admin), "message_id": admin_res.message_id, "type": "admin"})
+
+        # Step 3: Mark DailyReport as published
+        if session is not None and db_report is not None:
+            db_report.status = "published"
+            db_report.published_at = datetime.now(timezone.utc)
+            db_report.telegram_message_ids = [s["message_id"] for s in sent]
+            await session.commit()
+
         return sent
+
+    except Exception as exc:
+        logger.error("Publishing failed after partial delivery: %s", exc)
+        if session is not None and db_report is not None:
+            db_report.status = "failed"
+            db_report.telegram_message_ids = [s["message_id"] for s in sent]
+            await session.commit()
+        raise
     finally:
-        await bot.session.close()
+        if own_bot:
+            await bot.session.close()
+
+
+async def _run_cli_dry_run() -> None:
+    parser = argparse.ArgumentParser(description="Telegram Publisher - Middle East News Bot")
+    parser.add_argument("--dry-run", action="store_true", help="Perform dry run without calling Telegram API")
+    parser.add_argument("--date", type=str, default=None, help="Report date (YYYY-MM-DD)")
+    args = parser.parse_args()
+
+    target_date = date.fromisoformat(args.date) if args.date else date.today()
+
+    async with SessionLocal() as session:
+        rep = await session.scalar(
+            select(DailyReport).where(DailyReport.report_date == target_date)
+        )
+        if not rep:
+            print(f"No DailyReport found in database for date {target_date}.")
+            return
+
+        cq = rep.content.get("content_quality", "real") if rep.content else "real"
+        text = rep.content.get("formatted_text", "") if rep.content else ""
+        print(f"Loaded DailyReport #{rep.id} for {target_date} (content_quality='{cq}', status='{rep.status}')")
+
+        await publish_report(
+            report_date=target_date,
+            content_quality=cq,
+            report_text=text,
+            session=session,
+            dry_run=True,
+        )
+
+
+if __name__ == "__main__":
+    asyncio.run(_run_cli_dry_run())

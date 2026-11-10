@@ -145,6 +145,56 @@ def test_format_persian_daily_report_structure_and_length():
     assert "✅ تأییدشده" in report_text
 
 
+def test_format_persian_daily_report_html_tags_and_split():
+    """Verify Option B HTML formatting generates valid tags and splits cleanly with ISS-008 splitter."""
+    rep_date = date(2026, 11, 10)
+    # Generate large items list to exceed chunk limit
+    items = []
+    for i in range(25):
+        items.append({
+            "event_id": i + 1,
+            "title": f"Strategic Event {i + 1}",
+            "event_type": "DIP",
+            "category_fa": CATEGORY_TITLES["DIP"],
+            "importance": 5 if i % 2 == 0 else 3,
+            "first_seen_at": "2026-11-10T08:00:00+00:00",
+            "countries": ["Iran", "Turkiye"],
+            "actors": ["Officials"],
+            "location": "Regional",
+            "headline_fa": f"تیتر تفصیلی و جامع رویداد راهبردی شماره {i + 1} پیرامون تحولات منطقه",
+            "summary_fa": f"توضیحات و خلاصه تحلیلی رویداد شماره {i + 1} که شامل اطلاعات مبسوط و ارزیابی موضع است." * 5,
+            "verification_status": "confirmed",
+            "verification_status_fa": VERIFICATION_LABELS["confirmed"],
+            "primary_source": f"Official Source {i + 1}",
+            "primary_url": f"https://example.org/news/{i + 1}",
+            "additional_sources": [{"source": f"Parallel Source {i + 1}", "url": f"https://parallel.org/{i + 1}"}],
+            "total_sources_count": 2,
+        })
+
+    report_text = format_persian_daily_report(rep_date, items, as_html=True)
+    assert "<b>" in report_text
+    assert "</b>" in report_text
+    assert "<a href=" in report_text
+    assert "</a>" in report_text
+    assert "<code>" in report_text
+
+    # Verify all tags in the complete text are balanced
+    assert report_text.count("<b>") == report_text.count("</b>")
+    assert report_text.count("<a ") == report_text.count("</a>")
+    assert report_text.count("<code>") == report_text.count("</code>")
+
+    # Now split with ISS-008 tag-aware splitter and verify every chunk is balanced and <= limit
+    from app.telegram.publisher import split_text
+    chunks = split_text(report_text, limit=3500)
+    assert len(chunks) >= 3
+    for chunk in chunks:
+        assert len(chunk) <= 3500
+        assert chunk.count("<b>") == chunk.count("</b>")
+        assert chunk.count("<a ") == chunk.count("</a>")
+        assert chunk.count("<code>") == chunk.count("</code>")
+        assert chunk.count("<b>") > 0  # Proves tags are actively present in every chunk!
+
+
 def test_format_persian_daily_report_multi_source_citations():
     """Verify that multi-source events display supplementary sources from details_fa['sources']."""
     rep_date = date(2026, 11, 10)

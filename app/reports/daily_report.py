@@ -7,6 +7,7 @@ a structured, neutral Persian daily intelligence report adhering to EDITORIAL_PO
 
 from __future__ import annotations
 
+import html
 import logging
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Sequence
@@ -237,10 +238,18 @@ async def fetch_report_items(
     return report_date, items, metadata
 
 
+def esc(text: Any) -> str:
+    """Escape text for Telegram HTML parse_mode."""
+    if text is None:
+        return ""
+    return html.escape(str(text), quote=True)
+
+
 def format_persian_daily_report(
     report_date: date,
     items: list[dict[str, Any]],
     metadata: dict[str, Any] | None = None,
+    as_html: bool = True,
 ) -> str:
     """Format structured items into a clean, professional Persian daily intelligence report.
 
@@ -249,13 +258,14 @@ def format_persian_daily_report(
     - Claim attribution to primary and secondary sources
     - Distinct sections for strategic and regional developments
     - Explicit listing of supplementary sources (Staleness Policy Option C)
+    - Supports HTML parse_mode with <b>, <code>, and <a> links (Option B)
     """
     if metadata is None:
         metadata = {
             "report_date": str(report_date),
             "total_events": len(items),
-            "strategic_events_count": len([i for i in items if i["importance"] >= 4]),
-            "regional_events_count": len([i for i in items if i["importance"] < 4]),
+            "strategic_events_count": len([i for i in items if i.get("importance", 3) >= 4]),
+            "regional_events_count": len([i for i in items if i.get("importance", 3) < 4]),
             "min_importance": settings.min_importance,
         }
 
@@ -272,69 +282,141 @@ def format_persian_daily_report(
     else:
         quality_badge = "✅ کیفیت محتوا: تحلیل رسمی هوش مصنوعی (آماده انتشار)"
 
-    lines: list[str] = [
-        "📊 بولتن هوش و پایش تحولات خاورمیانه و جهان اسلام",
-        f"📅 تاریخ گزارش: {report_date.strftime('%Y/%m/%d')} (بازه پایش ۲۴ ساعته)",
-        f"📈 آمار رویدادها: {total_events} رخداد واجد شرایط (اهمیت ≥ {min_imp}) | "
-        f"راهبردی: {strategic_count} | منطقه‌ای: {regional_count}",
-        quality_badge,
-        "═" * 50,
-        "",
-    ]
+    if as_html:
+        lines: list[str] = [
+            "<b>📊 بولتن هوش و پایش تحولات خاورمیانه و جهان اسلام</b>",
+            f"📅 تاریخ گزارش: <code>{report_date.strftime('%Y/%m/%d') if hasattr(report_date, 'strftime') else str(report_date)}</code> (بازه پایش ۲۴ ساعته)",
+            f"📈 آمار رویدادها: <b>{total_events}</b> رخداد واجد شرایط (اهمیت ≥ {min_imp}) | "
+            f"راهبردی: <b>{strategic_count}</b> | منطقه‌ای: <b>{regional_count}</b>",
+            quality_badge,
+            "═" * 50,
+            "",
+        ]
+    else:
+        lines = [
+            "📊 بولتن هوش و پایش تحولات خاورمیانه و جهان اسلام",
+            f"📅 تاریخ گزارش: {report_date.strftime('%Y/%m/%d') if hasattr(report_date, 'strftime') else str(report_date)} (بازه پایش ۲۴ ساعته)",
+            f"📈 آمار رویدادها: {total_events} رخداد واجد شرایط (اهمیت ≥ {min_imp}) | "
+            f"راهبردی: {strategic_count} | منطقه‌ای: {regional_count}",
+            quality_badge,
+            "═" * 50,
+            "",
+        ]
 
-    strategic_items = [i for i in items if i["importance"] >= 4]
-    regional_items = [i for i in items if i["importance"] < 4]
+    strategic_items = [i for i in items if i.get("importance", 3) >= 4]
+    regional_items = [i for i in items if i.get("importance", 3) < 4]
 
     # Section 1: Strategic Developments (Importance >= 4)
     if strategic_items:
+        sec1_header = "<b>🔴 بخش اول: اهم تحولات راهبردی (اولویت بالا)</b>" if as_html else "🔴 بخش اول: اهم تحولات راهبردی (اولویت بالا)"
         lines.extend([
-            "🔴 بخش اول: اهم تحولات راهبردی (اولویت بالا)",
+            sec1_header,
             "─" * 45,
         ])
         for idx, item in enumerate(strategic_items, start=1):
-            stars = "⭐" * item["importance"]
-            cat = item["category_fa"]
-            lines.append(f"{idx}. 📌 {item['headline_fa']}")
-            lines.append(f"   ▫️ درجه اهمیت: {stars} ({item['importance']}/5) | حوزه: {cat} [{item['event_type']}]")
-            lines.append(f"   ▫️ جغرافیا و بازیگران: {', '.join(item['countries']) or item['location']} | {', '.join(item['actors']) or 'نهادهای رسمی'}")
-            lines.append(f"   ▫️ خلاصه گزیده: {item['summary_fa']}")
-            lines.append(f"   ▫️ راستی‌آزمایی: {item['verification_status_fa']}")
-            lines.append(f"   ▫️ منبع اصلی: {item['primary_source']} ⟵ {item['primary_url']}")
+            importance = item.get("importance", 4)
+            stars = "⭐" * importance
+            cat = item.get("category_fa", "عمومی")
+            event_type = item.get("event_type", "GEN")
+            headline = item.get("headline_fa") or item.get("headline", "")
+            summary_txt = item.get("summary_fa") or item.get("summary", "")
+            verification = item.get("verification_status_fa") or item.get("verification_status", "تأییدشده")
+            primary_src = item.get("primary_source") or item.get("source", "منبع رسمی")
+            primary_u = item.get("primary_url") or item.get("url", "")
 
-            # Supplementary sources from EventMatcher / Staleness Policy C
-            if item.get("additional_sources"):
-                lines.append("   🔗 پوشش‌های موازی و منابع تکمیلی:")
-                for supp in item["additional_sources"]:
-                    supp_src = supp.get("source", "منبع پیگیری")
-                    supp_url = supp.get("url", "")
-                    lines.append(f"      • {supp_src}: {supp_url}")
+            geo = ", ".join(item.get("countries", [])) or item.get("location", "منطقه")
+            acts = ", ".join(item.get("actors", [])) or "نهادهای رسمی"
+
+            if as_html:
+                lines.append(f"{idx}. 📌 <b>{esc(headline)}</b>")
+                lines.append(f"   ▫️ درجه اهمیت: {stars} ({importance}/5) | حوزه: <b>{esc(cat)}</b> [{esc(event_type)}]")
+                lines.append(f"   ▫️ جغرافیا و بازیگران: {esc(geo)} | {esc(acts)}")
+                lines.append(f"   ▫️ خلاصه گزیده: {esc(summary_txt)}")
+                lines.append(f"   ▫️ راستی‌آزمایی: {esc(verification)}")
+                if primary_u:
+                    lines.append(f"   ▫️ منبع اصلی: <a href=\"{esc(primary_u)}\">{esc(primary_src)}</a>")
+                else:
+                    lines.append(f"   ▫️ منبع اصلی: {esc(primary_src)}")
+
+                # Supplementary sources from EventMatcher / Staleness Policy C
+                if item.get("additional_sources"):
+                    lines.append("   🔗 پوشش‌های موازی و منابع تکمیلی:")
+                    for supp in item["additional_sources"]:
+                        supp_src = esc(supp.get("source", "منبع پیگیری"))
+                        supp_url = supp.get("url", "")
+                        if supp_url:
+                            lines.append(f"      • <a href=\"{esc(supp_url)}\">{supp_src}</a>")
+                        else:
+                            lines.append(f"      • {supp_src}")
+            else:
+                lines.append(f"{idx}. 📌 {headline}")
+                lines.append(f"   ▫️ درجه اهمیت: {stars} ({importance}/5) | حوزه: {cat} [{event_type}]")
+                lines.append(f"   ▫️ جغرافیا و بازیگران: {geo} | {acts}")
+                lines.append(f"   ▫️ خلاصه گزیده: {summary_txt}")
+                lines.append(f"   ▫️ راستی‌آزمایی: {verification}")
+                lines.append(f"   ▫️ منبع اصلی: {primary_src} ⟵ {primary_u}")
+                if item.get("additional_sources"):
+                    lines.append("   🔗 پوشش‌های موازی و منابع تکمیلی:")
+                    for supp in item["additional_sources"]:
+                        supp_src = supp.get("source", "منبع پیگیری")
+                        supp_url = supp.get("url", "")
+                        lines.append(f"      • {supp_src}: {supp_url}")
             lines.append("")
 
     # Section 2: Regional & Thematic Developments (Importance 2 & 3)
     if regional_items:
+        sec2_header = "<b>🌐 بخش دوم: سایر تحولات منطقه‌ای و موضوعی</b>" if as_html else "🌐 بخش دوم: سایر تحولات منطقه‌ای و موضوعی"
         lines.extend([
-            "🌐 بخش دوم: سایر تحولات منطقه‌ای و موضوعی",
+            sec2_header,
             "─" * 45,
         ])
         # Group by category
         by_category: dict[str, list[dict[str, Any]]] = {}
         for item in regional_items:
-            cat_name = item["category_fa"]
+            cat_name = item.get("category_fa", "عمومی")
             by_category.setdefault(cat_name, []).append(item)
 
         for cat_name, cat_items in by_category.items():
-            lines.append(f"🔹 {cat_name}:")
+            if as_html:
+                lines.append(f"🔹 <b>{esc(cat_name)}:</b>")
+            else:
+                lines.append(f"🔹 {cat_name}:")
+
             for item in cat_items:
-                stars = "⭐" * item["importance"]
-                lines.append(f"  • {item['headline_fa']} ({stars})")
-                lines.append(f"    - خلاصه: {item['summary_fa']}")
-                lines.append(f"    - راستی‌آزمایی: {item['verification_status_fa']} | منبع: {item['primary_source']}")
-                if item["primary_url"]:
-                    lines.append(f"    - پیوند: {item['primary_url']}")
-                if item.get("additional_sources"):
-                    lines.append("    - منابع موازی:")
-                    for supp in item["additional_sources"]:
-                        lines.append(f"      * {supp.get('source')}: {supp.get('url')}")
+                importance = item.get("importance", 3)
+                stars = "⭐" * importance
+                headline = item.get("headline_fa") or item.get("headline", "")
+                summary_txt = item.get("summary_fa") or item.get("summary", "")
+                verification = item.get("verification_status_fa") or item.get("verification_status", "تأییدشده")
+                primary_src = item.get("primary_source") or item.get("source", "منبع")
+                primary_u = item.get("primary_url") or item.get("url", "")
+
+                if as_html:
+                    lines.append(f"  • <b>{esc(headline)}</b> ({stars})")
+                    lines.append(f"    - خلاصه: {esc(summary_txt)}")
+                    if primary_u:
+                        lines.append(f"    - راستی‌آزمایی: {esc(verification)} | منبع: <a href=\"{esc(primary_u)}\">{esc(primary_src)}</a>")
+                    else:
+                        lines.append(f"    - راستی‌آزمایی: {esc(verification)} | منبع: {esc(primary_src)}")
+                    if item.get("additional_sources"):
+                        lines.append("    - منابع موازی:")
+                        for supp in item["additional_sources"]:
+                            supp_src = esc(supp.get("source", "منبع"))
+                            supp_url = supp.get("url", "")
+                            if supp_url:
+                                lines.append(f"      * <a href=\"{esc(supp_url)}\">{supp_src}</a>")
+                            else:
+                                lines.append(f"      * {supp_src}")
+                else:
+                    lines.append(f"  • {headline} ({stars})")
+                    lines.append(f"    - خلاصه: {summary_txt}")
+                    lines.append(f"    - راستی‌آزمایی: {verification} | منبع: {primary_src}")
+                    if primary_u:
+                        lines.append(f"    - پیوند: {primary_u}")
+                    if item.get("additional_sources"):
+                        lines.append("    - منابع موازی:")
+                        for supp in item["additional_sources"]:
+                            lines.append(f"      * {supp.get('source')}: {supp.get('url')}")
             lines.append("")
 
     if not items:
@@ -342,9 +424,10 @@ def format_persian_daily_report(
         lines.append("")
 
     # Footer: Editorial Disclosure
+    footer_header = "<b>🛡 یادداشت صحت اطلاعات و خط‌مشی تحریریه (Editorial Note):</b>" if as_html else "🛡 یادداشت صحت اطلاعات و خط‌مشی تحریریه (Editorial Note):"
     lines.extend([
         "═" * 50,
-        "🛡 یادداشت صحت اطلاعات و خط‌مشی تحریریه (Editorial Note):",
+        footer_header,
         "این گزارش به صورت کاملاً خودکار بر مبنای اصول بی‌طرفی، انتساب دقیق مواضع رسمی",
         "و تجمیع رویدادهای مستقل تدوین شده است. هیچ‌گونه قضاوت سیاسی، فرضیه‌سازی",
         "یا توهم زبانی در تهیه این بولتن وارد نشده است.",
