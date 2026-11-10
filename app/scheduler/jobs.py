@@ -11,7 +11,8 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.provider import (
     AIProviderError,
@@ -22,7 +23,7 @@ from app.ai.provider import (
 )
 from app.config import settings
 from app.database.connection import SessionLocal
-from app.database.models import DailyReport, JobLog
+from app.database.models import Article, DailyReport, JobLog
 from app.processors.pipeline import collect_and_process
 from app.reports.daily_report import generate_and_save_daily_report
 from app.telegram.publisher import MockPublishRefusedError, publish_report
@@ -35,26 +36,66 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def check_primary_model_available(provider: BaseAIProvider | None = None) -> bool:
-    """Quick health check before hourly run to avoid mass-fallback to lower-quality model."""
-    if provider is None:
-        provider = GeminiProvider(
+async def count_pending_articles(session: AsyncSession) -> int:
+    """Count articles waiting for AI processing (status == 'collected')."""
+    stmt = select(func.count(Article.id)).where(Article.status == "collected")
+    res = await session.scalar(stmt)
+    return res or 0
+
+
+async def check_any_model_available(
+    primary_provider: BaseAIProvider | None = None,
+    fallback_provider: BaseAIProvider | None = None,
+) -> bool:
+    """Check if AT LEAST ONE model (primary or fallback) is available.
+
+    Skipping the hourly run must only happen if BOTH primary and fallback models are down.
+    """
+    # 1. Test primary model first
+    if primary_provider is None:
+        primary_provider = GeminiProvider(
             primary_model=settings.gemini_primary_model,
-            enable_fallback=False,  # Test only the primary model
+            enable_fallback=False,  # Test only primary
         )
     try:
-        res = await provider.generate_json('Respond with {"ok": true}')
-        return bool(res and res.get("ok") is True)
+        res = await primary_provider.generate_json('Respond with {"ok": true}')
+        if res and res.get("ok") is True:
+            return True
     except (AIRateLimitError, AIServiceUnavailableError):
-        return False
+        logger.info("Primary model %s unavailable during pre-flight. Checking fallback...", settings.gemini_primary_model)
     except Exception as exc:
-        logger.warning("Primary model pre-flight check encountered error: %s", exc)
+        logger.warning("Primary model pre-flight check error: %s", exc)
+
+    # 2. Test fallback model if fallback is enabled
+    if not settings.gemini_enable_fallback or not settings.gemini_fallback_model:
         return False
+
+    if fallback_provider is None:
+        fallback_provider = GeminiProvider(
+            primary_model=settings.gemini_fallback_model,
+            enable_fallback=False,  # Test fallback directly
+        )
+    try:
+        res = await fallback_provider.generate_json('Respond with {"ok": true}')
+        if res and res.get("ok") is True:
+            logger.info("Fallback model %s is available and healthy during pre-flight.", settings.gemini_fallback_model)
+            return True
+    except (AIRateLimitError, AIServiceUnavailableError):
+        logger.warning("Fallback model %s also unavailable during pre-flight.", settings.gemini_fallback_model)
+    except Exception as exc:
+        logger.warning("Fallback model pre-flight check error: %s", exc)
+
+    return False
+
+
+# Backward-compatible alias
+check_primary_model_available = check_any_model_available
 
 
 async def hourly_collection(
     provider: BaseAIProvider | None = None,
     health_checker: Callable[[], Coroutine[Any, Any, bool]] | None = None,
+    pending_checker: Callable[[], Coroutine[Any, Any, int]] | None = None,
 ) -> JobLog:
     """Hourly: collect -> process -> event match. Does NOT publish."""
     async with SessionLocal() as session:
@@ -69,19 +110,31 @@ async def hourly_collection(
         await session.refresh(job_log)
 
         try:
-            # Step 1: Pre-flight check
+            # Step 1: Quota-awareness (Bug 2 fix) - Check pending articles BEFORE making any Gemini pre-flight call
+            pending_count: int
+            if pending_checker is not None:
+                pending_count = await pending_checker()
+            else:
+                pending_count = await count_pending_articles(session)
+
+            if pending_count == 0:
+                logger.info("No pending articles to process. Skipping hourly AI cycle (0 Gemini calls made).")
+                job_log.status = "skipped_no_pending"
+                return job_log
+
+            # Step 2: Pre-flight check across all available models (Bug 1 fix)
             is_healthy: bool = False
             if health_checker is not None:
                 is_healthy = await health_checker()
             else:
-                is_healthy = await check_primary_model_available(provider=provider)
+                is_healthy = await check_any_model_available()
 
             if not is_healthy:
-                logger.warning("Primary model unavailable during pre-flight check. Skipping this hourly cycle.")
-                job_log.status = "skipped_primary_unavailable"
+                logger.warning("Both primary and fallback models unavailable during pre-flight. Skipping this hourly cycle.")
+                job_log.status = "skipped_all_models_unavailable"
                 return job_log
 
-            # Step 2: Ingestion & processing
+            # Step 3: Ingestion & processing
             processed_count = await collect_and_process(provider=provider)
             job_log.processed_count = processed_count
             job_log.status = "success"

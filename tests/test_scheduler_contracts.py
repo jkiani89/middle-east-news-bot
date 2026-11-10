@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
@@ -13,10 +14,12 @@ from app.ai.provider import (
     AIServiceUnavailableError,
     MockAIProvider,
 )
+from app.config import settings
 from app.database.models import JobLog
 from app.scheduler.jobs import (
     build_scheduler,
-    check_primary_model_available,
+    check_any_model_available,
+    count_pending_articles,
     daily_report,
     hourly_collection,
     reconcile_interrupted_jobs,
@@ -48,7 +51,7 @@ class InMemoryMockSession:
             self._next_id += 1
 
     async def scalar(self, stmt: Any) -> Any:
-        return None
+        return 0
 
     async def execute(self, stmt: Any) -> Any:
         mock_result = MagicMock()
@@ -79,12 +82,13 @@ def mock_session_local():
 @pytest.mark.asyncio
 async def test_hourly_job_records_failed_quota_on_AIRateLimitError(mock_session_local):
     """Contract Test 1: Hourly collection records 'failed_quota' on AIRateLimitError."""
-    with patch("app.scheduler.jobs.check_primary_model_available", new_callable=AsyncMock) as mock_health, \
-         patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
-        mock_health.return_value = True
+    with patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
         mock_pipeline.side_effect = AIRateLimitError("429 Resource Exhausted")
 
-        job_log = await hourly_collection()
+        job_log = await hourly_collection(
+            health_checker=AsyncMock(return_value=True),
+            pending_checker=AsyncMock(return_value=1),
+        )
 
         assert job_log.status == "failed_quota"
         assert "429 Resource Exhausted" in (job_log.error_message or "")
@@ -95,12 +99,13 @@ async def test_hourly_job_records_failed_quota_on_AIRateLimitError(mock_session_
 @pytest.mark.asyncio
 async def test_hourly_job_records_failed_unavailable_on_AIServiceUnavailableError(mock_session_local):
     """Contract Test 2: Hourly collection records 'failed_unavailable' on AIServiceUnavailableError."""
-    with patch("app.scheduler.jobs.check_primary_model_available", new_callable=AsyncMock) as mock_health, \
-         patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
-        mock_health.return_value = True
+    with patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
         mock_pipeline.side_effect = AIServiceUnavailableError("503 Service Unavailable: High Demand")
 
-        job_log = await hourly_collection()
+        job_log = await hourly_collection(
+            health_checker=AsyncMock(return_value=True),
+            pending_checker=AsyncMock(return_value=1),
+        )
 
         assert job_log.status == "failed_unavailable"
         assert "503 Service Unavailable" in (job_log.error_message or "")
@@ -111,12 +116,13 @@ async def test_hourly_job_records_failed_unavailable_on_AIServiceUnavailableErro
 @pytest.mark.asyncio
 async def test_hourly_job_records_failed_ai_on_AIProviderError(mock_session_local):
     """Contract Test 3: Hourly collection records 'failed_ai' on unrecoverable AIProviderError."""
-    with patch("app.scheduler.jobs.check_primary_model_available", new_callable=AsyncMock) as mock_health, \
-         patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
-        mock_health.return_value = True
+    with patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
         mock_pipeline.side_effect = AIProviderError("Invalid JSON structure returned by Gemini")
 
-        job_log = await hourly_collection()
+        job_log = await hourly_collection(
+            health_checker=AsyncMock(return_value=True),
+            pending_checker=AsyncMock(return_value=1),
+        )
 
         assert job_log.status == "failed_ai"
         assert "Invalid JSON" in (job_log.error_message or "")
@@ -127,12 +133,13 @@ async def test_hourly_job_records_failed_ai_on_AIProviderError(mock_session_loca
 @pytest.mark.asyncio
 async def test_hourly_job_completes_successfully_on_happy_path(mock_session_local):
     """Contract Test 4: Hourly collection successfully processes batch and records 'success'."""
-    with patch("app.scheduler.jobs.check_primary_model_available", new_callable=AsyncMock) as mock_health, \
-         patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
-        mock_health.return_value = True
+    with patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
         mock_pipeline.return_value = 7
 
-        job_log = await hourly_collection()
+        job_log = await hourly_collection(
+            health_checker=AsyncMock(return_value=True),
+            pending_checker=AsyncMock(return_value=7),
+        )
 
         assert job_log.status == "success"
         assert job_log.processed_count == 7
@@ -142,42 +149,107 @@ async def test_hourly_job_completes_successfully_on_happy_path(mock_session_loca
 
 
 @pytest.mark.asyncio
-async def test_hourly_skips_when_primary_unavailable(mock_session_local):
-    """Verify pre-flight check aborts hourly collection when primary model returns 503/429."""
-    with patch("app.scheduler.jobs.check_primary_model_available", new_callable=AsyncMock) as mock_health, \
-         patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
-        mock_health.return_value = False
+async def test_hourly_proceeds_when_primary_down_but_fallback_available(mock_session_local):
+    """Regression (Bug 1): Primary 429/503 must NOT skip the hour if fallback model is healthy."""
+    with patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
+        mock_pipeline.return_value = 4
 
-        job_log = await hourly_collection()
+        # Primary fails with 429, fallback succeeds with 200 OK
+        mock_primary = MagicMock()
+        mock_primary.generate_json = AsyncMock(side_effect=AIRateLimitError("429 Primary exhausted"))
 
-        assert job_log.status == "skipped_primary_unavailable"
+        mock_fallback = MagicMock()
+        mock_fallback.generate_json = AsyncMock(return_value={"ok": True})
+
+        # Pre-flight check must return True because fallback is alive
+        is_alive = await check_any_model_available(
+            primary_provider=mock_primary,
+            fallback_provider=mock_fallback,
+        )
+        assert is_alive is True
+
+        job_log = await hourly_collection(
+            health_checker=AsyncMock(return_value=is_alive),
+            pending_checker=AsyncMock(return_value=4),
+        )
+
+        assert job_log.status == "success"
+        assert job_log.processed_count == 4
+        mock_pipeline.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_hourly_skips_only_when_both_models_unavailable(mock_session_local):
+    """Only skip the hour when BOTH primary and fallback models return 429 or 503."""
+    mock_primary = MagicMock()
+    mock_primary.generate_json = AsyncMock(side_effect=AIRateLimitError("429 Primary exhausted"))
+
+    mock_fallback = MagicMock()
+    mock_fallback.generate_json = AsyncMock(side_effect=AIServiceUnavailableError("503 Fallback unavailable"))
+
+    is_alive = await check_any_model_available(
+        primary_provider=mock_primary,
+        fallback_provider=mock_fallback,
+    )
+    assert is_alive is False
+
+    with patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
+        job_log = await hourly_collection(
+            health_checker=AsyncMock(return_value=is_alive),
+            pending_checker=AsyncMock(return_value=5),
+        )
+
+        assert job_log.status == "skipped_all_models_unavailable"
         assert job_log.processed_count == 0
         mock_pipeline.assert_not_called()
         assert mock_session_local.committed is True
 
 
 @pytest.mark.asyncio
-async def test_check_primary_model_available_logic():
-    """Test check_primary_model_available handles success, rate-limit, and service unavailable."""
-    # 1. Success case
-    mock_provider_ok = MagicMock()
-    mock_provider_ok.generate_json = AsyncMock(return_value={"ok": True})
-    assert await check_primary_model_available(provider=mock_provider_ok) is True
+async def test_hourly_skips_without_preflight_when_no_pending_articles(mock_session_local):
+    """Quota-Awareness (Bug 2): Pre-flight check is skipped entirely when 0 pending articles exist, saving quota."""
+    mock_health = AsyncMock()
+    with patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
+        job_log = await hourly_collection(
+            health_checker=mock_health,
+            pending_checker=AsyncMock(return_value=0),
+        )
 
-    # 2. Rate limit error
-    mock_provider_rl = MagicMock()
-    mock_provider_rl.generate_json = AsyncMock(side_effect=AIRateLimitError("Quota reached"))
-    assert await check_primary_model_available(provider=mock_provider_rl) is False
+        assert job_log.status == "skipped_no_pending"
+        assert job_log.processed_count == 0
+        mock_health.assert_not_called()
+        mock_pipeline.assert_not_called()
+        assert mock_session_local.committed is True
 
-    # 3. Service unavailable error (503)
-    mock_provider_su = MagicMock()
-    mock_provider_su.generate_json = AsyncMock(side_effect=AIServiceUnavailableError("503 spike"))
-    assert await check_primary_model_available(provider=mock_provider_su) is False
 
-    # 4. Empty/unexpected response
-    mock_provider_bad = MagicMock()
-    mock_provider_bad.generate_json = AsyncMock(return_value={})
-    assert await check_primary_model_available(provider=mock_provider_bad) is False
+@pytest.mark.asyncio
+async def test_check_any_model_available_logic(monkeypatch):
+    """Verify check_any_model_available across primary success, fallback success, and dual failure."""
+    # 1. Primary succeeds immediately -> Fallback is never called
+    p_ok = MagicMock()
+    p_ok.generate_json = AsyncMock(return_value={"ok": True})
+    fb_unused = MagicMock()
+    fb_unused.generate_json = AsyncMock()
+    assert await check_any_model_available(primary_provider=p_ok, fallback_provider=fb_unused) is True
+    fb_unused.generate_json.assert_not_called()
+
+    # 2. Primary 503, Fallback succeeds -> Returns True
+    p_503 = MagicMock()
+    p_503.generate_json = AsyncMock(side_effect=AIServiceUnavailableError("503 spike"))
+    fb_ok = MagicMock()
+    fb_ok.generate_json = AsyncMock(return_value={"ok": True})
+    assert await check_any_model_available(primary_provider=p_503, fallback_provider=fb_ok) is True
+    fb_ok.generate_json.assert_called_once()
+
+    # 3. Primary fails and Fallback is disabled -> Returns False
+    monkeypatch.setattr(settings, "gemini_enable_fallback", False)
+    assert await check_any_model_available(primary_provider=p_503, fallback_provider=fb_ok) is False
+
+    # 4. Fallback enabled, but both fail -> Returns False
+    monkeypatch.setattr(settings, "gemini_enable_fallback", True)
+    fb_fail = MagicMock()
+    fb_fail.generate_json = AsyncMock(side_effect=AIRateLimitError("429 fallback quota"))
+    assert await check_any_model_available(primary_provider=p_503, fallback_provider=fb_fail) is False
 
 
 @pytest.mark.asyncio
@@ -259,10 +331,11 @@ async def test_end_to_end_scheduler_cycle_with_mock_provider(mock_session_local)
         mock_gen.return_value = (datetime.now(timezone.utc).date(), [{"event_id": 1}], "mock daily report")
         mock_pub.return_value = [{"message_id": 1001}]
 
-        # 1. Run hourly collection with Mock Provider and mocked health check
+        # 1. Run hourly collection with Mock Provider, 3 pending articles, and mocked health check
         job_hourly = await hourly_collection(
             provider=mock_provider,
             health_checker=AsyncMock(return_value=True),
+            pending_checker=AsyncMock(return_value=3),
         )
         assert job_hourly.status == "success"
         assert job_hourly.processed_count == 3
