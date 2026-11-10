@@ -50,9 +50,10 @@ async def test_is_duplicate_article_returns_false_when_no_match():
 def test_scenario_a_tracking_parameters_canonicalized():
     raw_url = "https://news.un.org/feed/view/en/story/2026/11/1168769?utm_source=twitter&utm_medium=social&fbclid=XYZ"
     canonical = canonicalize_url(raw_url)
-    assert canonical == "https://news.un.org/feed/view/en/story/2026/11/1168769"
+    assert canonical == "https://news.un.org/en/story/2026/11/1168769"
     assert "utm_source" not in canonical
     assert "fbclid" not in canonical
+    assert "/feed/view/" not in canonical
 
 
 def test_scenario_b_different_url_same_hash_computation():

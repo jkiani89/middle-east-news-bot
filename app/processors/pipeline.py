@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.connection import SessionLocal
 from app.database.models import Source, Article, Event, ArticleEvent, Summary, JobLog
 from app.collectors.rss_collector import fetch_feed
-from app.ai.summarizer import analyze_article
+from app.ai.summarizer import PROMPT_VERSION, analyze_article
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -106,7 +106,7 @@ async def collect_and_process():
                         details_fa={"source": source.name, "url": article.original_url},
                         verification_status=result.verification_status,
                         model_name=settings.gemini_model,
-                        prompt_version="v1",
+                        prompt_version=PROMPT_VERSION,
                     ))
                     article.status = "summarized"
                     count += 1
