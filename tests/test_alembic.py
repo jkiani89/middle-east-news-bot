@@ -12,8 +12,11 @@ def test_alembic_config_and_script_directory():
     cfg = Config(str(ini_path))
     script = ScriptDirectory.from_config(cfg)
     
-    # Verify the initial revision exists
+    # Verify revisions exist in script directory
     revisions = list(script.walk_revisions())
-    assert len(revisions) >= 1
+    assert len(revisions) >= 2
+    rev_ids = [r.revision for r in revisions]
+    assert "b7d910315d55" in rev_ids
+    assert "ec4cd113bf5a" in rev_ids
     head_rev = script.get_current_head()
-    assert head_rev == "b7d910315d55"
+    assert head_rev == "ec4cd113bf5a"

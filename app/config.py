@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     daily_report_minute: int = 0
     max_articles_per_batch: int = 50
     min_importance: int = 2
+    min_summary_len_for_full_text: int = 800
+    require_full_text_for_ai: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env",

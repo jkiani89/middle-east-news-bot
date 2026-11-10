@@ -20,6 +20,9 @@ def test_article_table_constraints_and_indexes():
     assert "ix_articles_published_at" in index_names
     assert "ix_articles_content_hash" in index_names
     assert "ix_articles_collected_at" in index_names
+    # Verify text_source column exists on articles table
+    assert "text_source" in articles_table.columns
+    assert str(articles_table.columns["text_source"].server_default.arg) == "rss_summary"
 
 
 def test_article_event_unique_constraint():

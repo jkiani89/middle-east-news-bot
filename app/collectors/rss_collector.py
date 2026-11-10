@@ -16,6 +16,7 @@ from tenacity import (
     wait_exponential,
 )
 import trafilatura
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,12 @@ DEFAULT_HEADERS = {
     "Accept-Encoding": "gzip, deflate",
 }
 
+DEFAULT_ARTICLE_HEADERS = {
+    "User-Agent": DEFAULT_USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Encoding": "gzip, deflate",
+}
+
 DEFAULT_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
 
 
@@ -61,12 +68,16 @@ class ArticleExtractionError(CollectorError):
 
 
 def canonicalize_url(url: str) -> str:
-    """Normalize URL by stripping tracking parameters, normalizing host case, and removing trailing slash."""
+    """Normalize URL by stripping tracking parameters, normalizing host case, and resolving known feed redirect paths."""
     if not url:
         return ""
     p = urlsplit(url)
+    path = p.path
+    # Normalize known feed tracking paths (e.g. UN News /feed/view/en/story/... -> /en/story/...)
+    if "news.un.org" in p.netloc.lower() and path.startswith("/feed/view/"):
+        path = path.replace("/feed/view/", "/", 1)
     query = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True) if k.lower() not in TRACKING_PARAMS]
-    path = p.path.rstrip("/")
+    path = path.rstrip("/")
     return urlunsplit((p.scheme.lower(), p.netloc.lower(), path, urlencode(query), ""))
 
 
@@ -141,7 +152,7 @@ async def fetch_article_full_text(
     try:
         response = await _http_get_with_retry(
             url=url,
-            headers=DEFAULT_HEADERS,
+            headers=DEFAULT_ARTICLE_HEADERS,
             timeout=req_timeout,
             client=client,
         )
@@ -153,12 +164,12 @@ async def fetch_article_full_text(
 
 async def fetch_feed(
     feed_url: str,
-    extract_full_text: bool = False,
-    min_summary_length: int = 150,
+    extract_full_text: bool | None = None,
+    min_summary_length: int | None = None,
     client: httpx.AsyncClient | None = None,
     timeout: httpx.Timeout | None = None,
 ) -> list[dict]:
-    """Fetch and parse an RSS feed with retry, timeout, error isolation, and optional full-text extraction.
+    """Fetch and parse an RSS feed with retry, timeout, error isolation, and Trafilatura full-text extraction.
 
     Returns a list of article dicts with keys:
     - title: str
@@ -166,10 +177,22 @@ async def fetch_feed(
     - canonical_url: str
     - published_at: datetime | None (UTC)
     - text: str (extracted body or summary)
+    - text_source: str ('full_body' or 'rss_summary')
     - content_hash: str (SHA-256)
     """
     req_timeout = timeout or DEFAULT_TIMEOUT
-    logger.info("Fetching RSS feed from %s", feed_url)
+    should_extract_full = (
+        extract_full_text if extract_full_text is not None else settings.require_full_text_for_ai
+    )
+    threshold_len = (
+        min_summary_length if min_summary_length is not None else settings.min_summary_len_for_full_text
+    )
+    logger.info(
+        "Fetching RSS feed from %s (require_full_text=%s, min_summary_len=%d)",
+        feed_url,
+        should_extract_full,
+        threshold_len,
+    )
 
     try:
         response = await _http_get_with_retry(
@@ -225,20 +248,23 @@ async def fetch_feed(
 
         summary = (entry.get("summary") or entry.get("description") or "").strip()
         article_text = summary
+        text_source = "rss_summary"
 
-        # Fallback to Trafilatura full-text extraction if explicitly requested or summary is too short (< min_summary_length)
-        if extract_full_text or (len(summary) < min_summary_length and bool(raw_url)):
-            full_text = await fetch_article_full_text(raw_url, client=client, timeout=req_timeout)
+        # Fallback to Trafilatura full-text extraction if requested or summary is too short (< threshold_len)
+        target_url = canonical or raw_url
+        if should_extract_full or (len(summary) < threshold_len and bool(target_url)):
+            full_text = await fetch_article_full_text(target_url, client=client, timeout=req_timeout)
             len_summary = len(summary)
             len_extracted = len(full_text) if full_text else 0
             logger.info(
                 "Trafilatura triggered: url=%s, rss_summary_len=%d, extracted_len=%d",
-                raw_url,
+                target_url,
                 len_summary,
                 len_extracted,
             )
             if full_text and len(full_text) > len_summary:
                 article_text = full_text
+                text_source = "full_body"
 
         content_hash = make_hash(title, article_text)
 
@@ -248,6 +274,7 @@ async def fetch_feed(
             "canonical_url": canonical,
             "published_at": published,
             "text": article_text,
+            "text_source": text_source,
             "content_hash": content_hash,
         })
 

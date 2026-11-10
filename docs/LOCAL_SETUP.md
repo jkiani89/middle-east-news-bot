@@ -77,9 +77,10 @@
 
 ### ۴.۲. نصب بسته‌ها
 ```powershell
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
+pip install -r requirements.txt -c constraints.txt
+pip install -r requirements-dev.txt -c constraints.txt
 ```
+> **نکته:** فایل `constraints.txt` حاوی نگارش‌های دقیق و آزموده‌شده کل وابستگی‌ها در محیط ویندوز با پایتون ۳.۱۵ است تا از بروز ناسازگاری ناشی از انتشار نسخه‌های جدید جلوگیری شود.
 
 ### ۴.۳. پیکربندی فایل `.env`
 یک کپی از `.env.example` با نام `.env` بسازید:

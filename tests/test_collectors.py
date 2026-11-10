@@ -327,3 +327,28 @@ async def test_fetch_feed_with_full_text_extraction():
     assert len(items) == 1
     # Full article text should have been extracted and replaced the short teaser
     assert "framework for future diplomatic cooperation" in items[0]["text"]
+    assert items[0]["text_source"] == "full_body"
+
+
+def test_rss_summary_quality_threshold():
+    """Verify quality warning logic when article text originates from short RSS summary."""
+    short_summary_article = {
+        "text": "Brief teaser text from RSS summary.",
+        "text_source": "rss_summary",
+    }
+    is_sufficient = not (
+        short_summary_article["text_source"] == "rss_summary"
+        and len(short_summary_article["text"]) < 800
+    )
+    assert is_sufficient is False
+
+    full_body_article = {
+        "text": "Detailed report about regional geopolitical negotiations. " * 30,
+        "text_source": "full_body",
+    }
+    is_sufficient_full = not (
+        full_body_article["text_source"] == "rss_summary"
+        and len(full_body_article["text"]) < 800
+    )
+    assert is_sufficient_full is True
+

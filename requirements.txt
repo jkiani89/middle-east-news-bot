@@ -2,24 +2,24 @@
 aiogram>=3.20,<4
 alembic>=1.13,<2
 APScheduler>=3.10,<4
-asyncpg>=0.29
-greenlet>=3.0
-SQLAlchemy>=2.0
+asyncpg>=0.29,<1
+greenlet>=3.0,<4
+SQLAlchemy>=2.0,<3
 
 # HTTP, Parsing & News Collection
-feedparser>=6.0
-httpx>=0.27
-python-dateutil>=2.9
-tenacity>=9.0
-trafilatura>=1.12
+feedparser>=6.0,<7
+httpx>=0.27,<1
+python-dateutil>=2.9,<5
+tenacity>=9.0,<10
+trafilatura>=1.12,<2
 
 # Validation & Settings
-pydantic>=2.14
-pydantic-settings>=2.4
+pydantic>=2.14,<3
+pydantic-settings>=2.4,<3
 
 # AI & Generation
 # Note: google-genai 3.0.0 internally depends on httpx2==2.16.0 and httpcore2==2.16.0 (pydantic/httpx2 fork)
-google-genai>=1.0
+google-genai>=1.0,<4
 
 # Platform-specific
 tzdata>=2024.1; platform_system == "Windows"

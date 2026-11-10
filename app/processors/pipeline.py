@@ -65,6 +65,7 @@ async def collect_and_process():
                         original_text=item["text"],
                         published_at=item["published_at"],
                         content_hash=item["content_hash"],
+                        text_source=item.get("text_source", "rss_summary"),
                         status="collected",
                     )
                     session.add(article)

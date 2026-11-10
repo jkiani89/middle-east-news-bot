@@ -45,6 +45,7 @@ class Article(Base):
     collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="new")
+    text_source: Mapped[str] = mapped_column(String(30), default="rss_summary", server_default="rss_summary", nullable=False)
     ai_payload: Mapped[dict | None] = mapped_column(JSONB)
     source: Mapped["Source"] = relationship(back_populates="articles")
     event_links: Mapped[list["ArticleEvent"]] = relationship(back_populates="article")

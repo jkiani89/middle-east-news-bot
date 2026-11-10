@@ -66,6 +66,7 @@ erDiagram
 | `collected_at` | DateTime(tz) | زمان ثبت و دریافت در ربات |
 | `content_hash` | String(64) | مقدار هش SHA-256 نرمال‌شده‌ی عنوان و متن |
 | `status` | String(30) | وضعیت پردازش: `collected` (بلافاصله پس از دریافت ست می‌شود؛ `new` صرفاً برای سازگاری اولیه حفظ شده)، `processed`, `summarized`, `rejected`, `failed` |
+| `text_source` | String(30) | منبع استخراج متن: `full_body` (متن کامل استخراج‌شده توسط Trafilatura) یا `rss_summary` (خلاصه خام فید) |
 | `ai_payload` | JSONB | پاسخ خام ساخت‌یافته دریافتی از مدل هوش مصنوعی |
 
 ### ۳. جدول `events` (رویدادهای کلیدی)
