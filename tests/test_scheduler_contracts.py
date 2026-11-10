@@ -224,32 +224,84 @@ async def test_hourly_skips_without_preflight_when_no_pending_articles(mock_sess
 
 @pytest.mark.asyncio
 async def test_check_any_model_available_logic(monkeypatch):
-    """Verify check_any_model_available across primary success, fallback success, and dual failure."""
-    # 1. Primary succeeds immediately -> Fallback is never called
-    p_ok = MagicMock()
-    p_ok.generate_json = AsyncMock(return_value={"ok": True})
-    fb_unused = MagicMock()
-    fb_unused.generate_json = AsyncMock()
-    assert await check_any_model_available(primary_provider=p_ok, fallback_provider=fb_unused) is True
-    fb_unused.generate_json.assert_not_called()
+    """Verify check_any_model_available implements Option A quota optimization and fallback chaining."""
+    monkeypatch.setattr(settings, "gemini_enable_fallback", True)
+    monkeypatch.setattr(settings, "gemini_fallback_model", "gemini-3.5-flash-lite")
 
-    # 2. Primary 503, Fallback succeeds -> Returns True
-    p_503 = MagicMock()
-    p_503.generate_json = AsyncMock(side_effect=AIServiceUnavailableError("503 spike"))
+    # 1. Option A: Fallback succeeds immediately -> Primary is NEVER called (0 primary 20 RPD consumed)
+    p_unused = MagicMock()
+    p_unused.generate_json = AsyncMock()
     fb_ok = MagicMock()
     fb_ok.generate_json = AsyncMock(return_value={"ok": True})
-    assert await check_any_model_available(primary_provider=p_503, fallback_provider=fb_ok) is True
+    assert await check_any_model_available(primary_provider=p_unused, fallback_provider=fb_ok) is True
     fb_ok.generate_json.assert_called_once()
+    p_unused.generate_json.assert_not_called()
 
-    # 3. Primary fails and Fallback is disabled -> Returns False
+    # 2. Fallback 503, Primary succeeds -> Returns True
+    fb_503 = MagicMock()
+    fb_503.generate_json = AsyncMock(side_effect=AIServiceUnavailableError("503 spike"))
+    p_ok = MagicMock()
+    p_ok.generate_json = AsyncMock(return_value={"ok": True})
+    assert await check_any_model_available(primary_provider=p_ok, fallback_provider=fb_503) is True
+    fb_503.generate_json.assert_called_once()
+    p_ok.generate_json.assert_called_once()
+
+    # 3. Fallback enabled, but both fail -> Returns False
+    p_fail = MagicMock()
+    p_fail.generate_json = AsyncMock(side_effect=AIRateLimitError("429 primary quota"))
+    assert await check_any_model_available(primary_provider=p_fail, fallback_provider=fb_503) is False
+
+    # 4. Fallback disabled -> Tests primary directly; fallback is never called
     monkeypatch.setattr(settings, "gemini_enable_fallback", False)
-    assert await check_any_model_available(primary_provider=p_503, fallback_provider=fb_ok) is False
+    fb_unused2 = MagicMock()
+    fb_unused2.generate_json = AsyncMock()
+    p_ok2 = MagicMock()
+    p_ok2.generate_json = AsyncMock(return_value={"ok": True})
+    assert await check_any_model_available(primary_provider=p_ok2, fallback_provider=fb_unused2) is True
+    p_ok2.generate_json.assert_called_once()
+    fb_unused2.generate_json.assert_not_called()
 
-    # 4. Fallback enabled, but both fail -> Returns False
+    # 5. Fallback enabled, but prefer_fallback=False -> Tests primary first
     monkeypatch.setattr(settings, "gemini_enable_fallback", True)
-    fb_fail = MagicMock()
-    fb_fail.generate_json = AsyncMock(side_effect=AIRateLimitError("429 fallback quota"))
-    assert await check_any_model_available(primary_provider=p_503, fallback_provider=fb_fail) is False
+    p_ok3 = MagicMock()
+    p_ok3.generate_json = AsyncMock(return_value={"ok": True})
+    fb_unused3 = MagicMock()
+    fb_unused3.generate_json = AsyncMock()
+    assert await check_any_model_available(primary_provider=p_ok3, fallback_provider=fb_unused3, prefer_fallback=False) is True
+    p_ok3.generate_json.assert_called_once()
+    fb_unused3.generate_json.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_preflight_calls_separated_from_total_article_calls():
+    """Registration 2 Test: Pre-flight calls must not inflate _total_calls or call_count."""
+    from app.ai.provider import GeminiProvider
+
+    GeminiProvider.reset_call_counters()
+    mock_rotator = MagicMock()
+    mock_response = MagicMock()
+    mock_response.text = '{"ok": true}'
+    mock_rotator.execute = AsyncMock(return_value=mock_response)
+
+    provider = GeminiProvider(
+        primary_model="gemini-3.8-flash",
+        rotator=mock_rotator,
+        enable_fallback=False,
+    )
+
+    # 1. Execute pre-flight check call
+    res_pre = await provider.generate_json('Respond with {"ok": true}', is_preflight=True)
+    assert res_pre == {"ok": True}
+    assert GeminiProvider.get_preflight_calls() == 1
+    assert GeminiProvider.get_total_calls() == 0
+    assert provider.call_count == 0
+
+    # 2. Execute actual article analysis call
+    res_real = await provider.generate_json('{"title": "Test News"}', is_preflight=False)
+    assert res_real == {"ok": True}
+    assert GeminiProvider.get_preflight_calls() == 1
+    assert GeminiProvider.get_total_calls() == 1
+    assert provider.call_count == 1
 
 
 @pytest.mark.asyncio

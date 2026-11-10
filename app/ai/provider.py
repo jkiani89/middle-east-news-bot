@@ -34,7 +34,13 @@ class BaseAIProvider(ABC):
     """Abstract base class defining the AI Provider interface (ARCHITECTURE.md Section 3)."""
 
     @abstractmethod
-    async def generate_json(self, prompt: str, system_instruction: str | None = None) -> dict[str, Any]:
+    async def generate_json(
+        self,
+        prompt: str,
+        system_instruction: str | None = None,
+        *,
+        is_preflight: bool = False,
+    ) -> dict[str, Any]:
         """Generate structured JSON response for a given prompt, optionally with system instruction."""
         pass
 
@@ -94,6 +100,23 @@ class GeminiProvider(BaseAIProvider):
     """Google Gemini AI provider implementation using gemini-api-rotator with SQLite persistence."""
 
     _total_calls: int = 0
+    _preflight_calls: int = 0
+
+    @classmethod
+    def get_total_calls(cls) -> int:
+        """Total calls made for actual article analysis."""
+        return cls._total_calls
+
+    @classmethod
+    def get_preflight_calls(cls) -> int:
+        """Total calls made for health/pre-flight checks."""
+        return cls._preflight_calls
+
+    @classmethod
+    def reset_call_counters(cls) -> None:
+        """Reset call counters (useful in tests and daily cycles)."""
+        cls._total_calls = 0
+        cls._preflight_calls = 0
 
     def __init__(
         self,
@@ -177,7 +200,13 @@ class GeminiProvider(BaseAIProvider):
         if self._db_adapter and hasattr(self._db_adapter, "close"):
             self._db_adapter.close()
 
-    async def generate_json(self, prompt: str, system_instruction: str | None = None) -> dict[str, Any]:
+    async def generate_json(
+        self,
+        prompt: str,
+        system_instruction: str | None = None,
+        *,
+        is_preflight: bool = False,
+    ) -> dict[str, Any]:
         """Generate structured JSON response using Gemini via gemini-api-rotator."""
         extra_config: dict[str, Any] = {
             "response_mime_type": "application/json",
@@ -198,16 +227,26 @@ class GeminiProvider(BaseAIProvider):
             raw_text = getattr(response, "text", "") or ""
             self._last_used_model = target_model
             self._model = target_model
-            GeminiProvider._total_calls += 1
-            self.call_count += 1
             latency = time.monotonic() - start_time
-            logger.info(
-                "Gemini API call #%d completed: model=%s, prompt_len=%d, latency=%.2fs",
-                GeminiProvider._total_calls,
-                target_model,
-                len(prompt),
-                latency,
-            )
+
+            if is_preflight:
+                GeminiProvider._preflight_calls += 1
+                logger.info(
+                    "Gemini PRE-FLIGHT check #%d completed: model=%s, latency=%.2fs",
+                    GeminiProvider._preflight_calls,
+                    target_model,
+                    latency,
+                )
+            else:
+                GeminiProvider._total_calls += 1
+                self.call_count += 1
+                logger.info(
+                    "Gemini API call #%d completed: model=%s, prompt_len=%d, latency=%.2fs",
+                    GeminiProvider._total_calls,
+                    target_model,
+                    len(prompt),
+                    latency,
+                )
         except Exception as exc:
             # Fallback logic if primary model encounters retryable/transient/quota error
             if (
@@ -233,16 +272,26 @@ class GeminiProvider(BaseAIProvider):
                     raw_text = getattr(response, "text", "") or ""
                     self._last_used_model = target_model
                     self._model = target_model
-                    GeminiProvider._total_calls += 1
-                    self.call_count += 1
                     latency = time.monotonic() - start_time
-                    logger.info(
-                        "Fallback Gemini API call #%d completed: model=%s, prompt_len=%d, latency=%.2fs",
-                        GeminiProvider._total_calls,
-                        target_model,
-                        len(prompt),
-                        latency,
-                    )
+
+                    if is_preflight:
+                        GeminiProvider._preflight_calls += 1
+                        logger.info(
+                            "Fallback Gemini PRE-FLIGHT check #%d completed: model=%s, latency=%.2fs",
+                            GeminiProvider._preflight_calls,
+                            target_model,
+                            latency,
+                        )
+                    else:
+                        GeminiProvider._total_calls += 1
+                        self.call_count += 1
+                        logger.info(
+                            "Fallback Gemini API call #%d completed: model=%s, prompt_len=%d, latency=%.2fs",
+                            GeminiProvider._total_calls,
+                            target_model,
+                            len(prompt),
+                            latency,
+                        )
                 except Exception as fb_exc:
                     self._last_used_model = self._primary_model
                     self._model = self._primary_model
@@ -279,6 +328,7 @@ class MockAIProvider(BaseAIProvider):
         self._canned_response = canned_response or {}
         self._model = model
         self.call_count = 0
+        self.preflight_count = 0
         self.last_prompt: str | None = None
         self.last_system_instruction: str | None = None
 
@@ -289,8 +339,17 @@ class MockAIProvider(BaseAIProvider):
     def set_canned_response(self, response: dict[str, Any]) -> None:
         self._canned_response = response
 
-    async def generate_json(self, prompt: str, system_instruction: str | None = None) -> dict[str, Any]:
-        self.call_count += 1
+    async def generate_json(
+        self,
+        prompt: str,
+        system_instruction: str | None = None,
+        *,
+        is_preflight: bool = False,
+    ) -> dict[str, Any]:
+        if is_preflight:
+            self.preflight_count += 1
+        else:
+            self.call_count += 1
         self.last_prompt = prompt
         self.last_system_instruction = system_instruction
         return self._canned_response

@@ -46,46 +46,99 @@ async def count_pending_articles(session: AsyncSession) -> int:
 async def check_any_model_available(
     primary_provider: BaseAIProvider | None = None,
     fallback_provider: BaseAIProvider | None = None,
+    prefer_fallback: bool = True,
 ) -> bool:
     """Check if AT LEAST ONE model (primary or fallback) is available.
 
-    Skipping the hourly run must only happen if BOTH primary and fallback models are down.
+    Optimization (Option A):
+    When fallback is enabled and prefer_fallback is True, pre-flight check tests the
+    fallback model (e.g. gemini-3.5-flash-lite) first. This preserves 100% of the
+    precious primary model quota (gemini-3.8-flash, 20 RPD) for real article analyses,
+    since the fallback model operates on a much higher quota (1,500 RPD).
+    If the fallback test succeeds, API connectivity and authentication are proven.
+    If the fallback test fails, it falls back to checking the primary model.
+    Skipping the hourly run only happens if BOTH models are unavailable.
     """
-    # 1. Test primary model first
-    if primary_provider is None:
-        primary_provider = GeminiProvider(
-            primary_model=settings.gemini_primary_model,
-            enable_fallback=False,  # Test only primary
-        )
-    try:
-        res = await primary_provider.generate_json('Respond with {"ok": true}')
-        if res and res.get("ok") is True:
-            return True
-    except (AIRateLimitError, AIServiceUnavailableError):
-        logger.info("Primary model %s unavailable during pre-flight. Checking fallback...", settings.gemini_primary_model)
-    except Exception as exc:
-        logger.warning("Primary model pre-flight check error: %s", exc)
+    has_fallback = bool(settings.gemini_enable_fallback and settings.gemini_fallback_model)
 
-    # 2. Test fallback model if fallback is enabled
-    if not settings.gemini_enable_fallback or not settings.gemini_fallback_model:
+    if prefer_fallback and has_fallback:
+        # 1. Test fallback model first to save primary 20 RPD quota
+        if fallback_provider is None:
+            fallback_provider = GeminiProvider(
+                primary_model=settings.gemini_fallback_model,
+                enable_fallback=False,  # Test fallback directly
+            )
+        try:
+            res = await fallback_provider.generate_json('Respond with {"ok": true}', is_preflight=True)
+            if res and res.get("ok") is True:
+                logger.info(
+                    "Pre-flight check passed on fallback model %s (Option A: 0 RPD consumed from primary %s).",
+                    settings.gemini_fallback_model,
+                    settings.gemini_primary_model,
+                )
+                return True
+        except (AIRateLimitError, AIServiceUnavailableError) as exc:
+            logger.warning(
+                "Fallback model %s unavailable during pre-flight (%s). Checking primary model...",
+                settings.gemini_fallback_model,
+                exc,
+            )
+        except Exception as exc:
+            logger.warning("Fallback model pre-flight check error: %s", exc)
+
+        # 2. Fallback failed, test primary model as second chance
+        if primary_provider is None:
+            primary_provider = GeminiProvider(
+                primary_model=settings.gemini_primary_model,
+                enable_fallback=False,  # Test only primary
+            )
+        try:
+            res = await primary_provider.generate_json('Respond with {"ok": true}', is_preflight=True)
+            if res and res.get("ok") is True:
+                logger.info("Primary model %s is available during pre-flight.", settings.gemini_primary_model)
+                return True
+        except (AIRateLimitError, AIServiceUnavailableError):
+            logger.warning("Primary model %s also unavailable during pre-flight.", settings.gemini_primary_model)
+        except Exception as exc:
+            logger.warning("Primary model pre-flight check error: %s", exc)
+
         return False
 
-    if fallback_provider is None:
-        fallback_provider = GeminiProvider(
-            primary_model=settings.gemini_fallback_model,
-            enable_fallback=False,  # Test fallback directly
-        )
-    try:
-        res = await fallback_provider.generate_json('Respond with {"ok": true}')
-        if res and res.get("ok") is True:
-            logger.info("Fallback model %s is available and healthy during pre-flight.", settings.gemini_fallback_model)
-            return True
-    except (AIRateLimitError, AIServiceUnavailableError):
-        logger.warning("Fallback model %s also unavailable during pre-flight.", settings.gemini_fallback_model)
-    except Exception as exc:
-        logger.warning("Fallback model pre-flight check error: %s", exc)
+    else:
+        # Fallback disabled or prefer_fallback=False: Test primary first
+        if primary_provider is None:
+            primary_provider = GeminiProvider(
+                primary_model=settings.gemini_primary_model,
+                enable_fallback=False,  # Test only primary
+            )
+        try:
+            res = await primary_provider.generate_json('Respond with {"ok": true}', is_preflight=True)
+            if res and res.get("ok") is True:
+                return True
+        except (AIRateLimitError, AIServiceUnavailableError):
+            logger.info("Primary model %s unavailable during pre-flight. Checking fallback...", settings.gemini_primary_model)
+        except Exception as exc:
+            logger.warning("Primary model pre-flight check error: %s", exc)
 
-    return False
+        if not has_fallback:
+            return False
+
+        if fallback_provider is None:
+            fallback_provider = GeminiProvider(
+                primary_model=settings.gemini_fallback_model,
+                enable_fallback=False,  # Test fallback directly
+            )
+        try:
+            res = await fallback_provider.generate_json('Respond with {"ok": true}', is_preflight=True)
+            if res and res.get("ok") is True:
+                logger.info("Fallback model %s is available and healthy during pre-flight.", settings.gemini_fallback_model)
+                return True
+        except (AIRateLimitError, AIServiceUnavailableError):
+            logger.warning("Fallback model %s also unavailable during pre-flight.", settings.gemini_fallback_model)
+        except Exception as exc:
+            logger.warning("Fallback model pre-flight check error: %s", exc)
+
+        return False
 
 
 # Backward-compatible alias

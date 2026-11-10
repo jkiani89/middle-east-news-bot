@@ -189,6 +189,15 @@ async def reprocess_articles(
                 if not payload or not payload.get("is_relevant", True):
                     continue
                 match_res = await matcher.match_or_create_event(session, art, payload)
+                # Ensure article_event link is preserved
+                art_event = ArticleEvent(
+                    article_id=art.id,
+                    event_id=match_res.event_id,
+                    confidence=match_res.confidence,
+                    match_type=match_res.match_type,
+                )
+                session.add(art_event)
+
                 if match_res.match_type == "initial":
                     summary = Summary(
                         event_id=match_res.event_id,
@@ -196,7 +205,7 @@ async def reprocess_articles(
                         summary_fa=payload.get("summary_fa", art.title),
                         details_fa={"source": sources_map.get(art.source_id, "UN News"), "url": art.original_url},
                         verification_status=payload.get("verification_status", "confirmed"),
-                        model_name=payload.get("model_name", provider.model_name),
+                        model_name=payload.get("model_name") or "mock",
                         prompt_version=PROMPT_VERSION,
                     )
                     session.add(summary)
