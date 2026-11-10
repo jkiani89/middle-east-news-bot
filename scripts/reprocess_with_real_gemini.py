@@ -78,13 +78,21 @@ async def reprocess_articles(
                 to_process.append(art)
                 continue
 
-            # Check if current payload is mock
             payload = art.ai_payload or {}
+            model_name = str(payload.get("model_name", "")).lower()
             event_title = payload.get("event_title", "")
-            if event_title == "Regional Diplomatic Activity" or not payload:
-                to_process.append(art)
+
+            # Robust detection: check explicit model_name first, with documented fallback
+            is_real = False
+            if model_name and not any(m in model_name for m in ("mock", "test")):
+                is_real = True
+            elif not model_name and event_title and event_title != "Regional Diplomatic Activity":
+                is_real = True
+
+            if is_real:
+                logger.info("Article #%d already has real processing (model='%s', title='%s'). Skipping.", art.id, model_name or "gemini", event_title)
             else:
-                logger.info("Article #%d already has real processing ('%s'). Skipping.", art.id, event_title)
+                to_process.append(art)
 
         if limit:
             to_process = to_process[:limit]
@@ -125,7 +133,9 @@ async def reprocess_articles(
                 print(f"    Headline FA: {result.headline_fa[:60]}")
                 print(f"    Importance: {result.importance} | Injection Attempt: {result.is_injection_attempt}")
 
-                article.ai_payload = result.model_dump(mode="json")
+                payload_dict = result.model_dump(mode="json")
+                payload_dict["model_name"] = settings.gemini_model
+                article.ai_payload = payload_dict
                 if result.is_injection_attempt:
                     article.status = "flagged_for_review"
                     fp_count += 1

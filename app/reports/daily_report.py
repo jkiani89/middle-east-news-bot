@@ -387,6 +387,7 @@ async def _build_daily_report_with_session(
 
     payload = {
         "date": str(rep_date),
+        "content_quality": metadata.get("content_quality", "real"),
         "metadata": metadata,
         "formatted_text": formatted_text,
         "items": items,
@@ -431,6 +432,7 @@ async def generate_and_save_daily_report(
         )
         payload = {
             "date": str(rep_date),
+            "content_quality": metadata.get("content_quality", "real"),
             "metadata": metadata,
             "formatted_text": formatted_text,
             "items": items,

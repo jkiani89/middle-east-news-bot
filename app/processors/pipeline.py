@@ -91,7 +91,9 @@ async def process_collected_articles(
             processed_count += 1
             continue
 
-        article.ai_payload = result.model_dump(mode="json")
+        payload_dict = result.model_dump(mode="json")
+        payload_dict["model_name"] = ai_provider.model_name
+        article.ai_payload = payload_dict
 
         if result.is_injection_attempt:
             logger.warning(
