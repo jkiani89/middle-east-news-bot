@@ -194,9 +194,11 @@ async def test_analyze_article_detects_and_neutralizes_injection_attempt():
         provider=provider,
     )
 
-    # In summarizer.py, is_injection_attempt marks is_relevant = False automatically
+    # Security design (Concern 2 & 3): is_injection_attempt is recorded for human review (flagged_for_review),
+    # while preserving is_relevant=True to avoid the censorship/DoS attack vector
     assert result.is_injection_attempt is True
-    assert result.is_relevant is False
+    assert result.is_relevant is True
+    assert provider.last_system_instruction is not None
 
 
 def test_is_retryable_ai_error():

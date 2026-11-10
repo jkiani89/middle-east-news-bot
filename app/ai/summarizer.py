@@ -4,11 +4,12 @@ import logging
 from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.ai.provider import BaseAIProvider, GeminiProvider
+from app.ai.provider import BaseAIProvider, GeminiProvider, get_ai_provider
 
 logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = "v2"
+MAX_SCHEMA_REPAIR_ATTEMPTS = 1
 
 # 10 Strict Category Codes (EDITORIAL_POLICY.md & System Guidelines)
 CategoryCode = Literal[
@@ -117,15 +118,16 @@ EDITORIAL_SYSTEM_PROMPT = """
 
 
 def build_analysis_prompt(title: str, body: str, source_name: str) -> str:
-    """Build secure analysis prompt wrapping untrusted input with strict delimiters."""
+    """Build secure analysis user prompt wrapping untrusted input with strict delimiters.
+
+    System-level rules are passed via system_instruction (ARCHITECTURE.md Section 3).
+    """
     # Sanitize delimiters from untrusted inputs
     safe_title = title.replace("<<<", "[").replace(">>>", "]").strip()
     safe_body = body[:16000].replace("<<<", "[").replace(">>>", "]").strip()
     safe_source = source_name.replace("<<<", "[").replace(">>>", "]").strip()
 
-    prompt = f"""{EDITORIAL_SYSTEM_PROMPT}
-
-اطلاعات ورودی:
+    prompt = f"""اطلاعات ورودی:
 نام منبع خبری: {safe_source}
 عنوان خبر: {safe_title}
 
@@ -159,16 +161,16 @@ async def analyze_article(
     provider: BaseAIProvider | None = None,
 ) -> NewsAnalysis:
     """Analyze news article using AI provider with prompt injection defense and strict validation."""
-    ai_provider = provider or GeminiProvider()
+    ai_provider = provider or get_ai_provider()
     prompt = build_analysis_prompt(title, body, source_name)
 
-    data = await ai_provider.generate_json(prompt)
+    data = await ai_provider.generate_json(prompt, system_instruction=EDITORIAL_SYSTEM_PROMPT)
 
     try:
         analysis = NewsAnalysis.model_validate(data)
     except ValidationError as exc:
-        logger.warning("Pydantic validation failed for AI response: %s. Attempting self-correction...", exc)
-        # Attempt one schema recovery prompt without fabricating new data
+        logger.warning("Pydantic validation failed for AI response: %s. Attempting self-correction (max %d)...", exc, MAX_SCHEMA_REPAIR_ATTEMPTS)
+        # Attempt schema recovery prompt without fabricating new data
         repair_prompt = (
             f"Please fix the following JSON to strictly match the NewsAnalysis schema. "
             f"Do not invent new facts. Return only valid JSON.\n"
@@ -177,14 +179,16 @@ async def analyze_article(
             f"importance must be integer between 1 and 5.\n"
             f"Raw invalid data: {data}\nValidation error: {exc}"
         )
-        repaired_data = await ai_provider.generate_json(repair_prompt)
+        repaired_data = await ai_provider.generate_json(repair_prompt, system_instruction=EDITORIAL_SYSTEM_PROMPT)
         analysis = NewsAnalysis.model_validate(repaired_data)
 
     if analysis.is_injection_attempt:
         logger.warning(
-            "Security Alert: Potential Prompt Injection detected in article '%s' from source '%s'. Marking irrelevant.",
+            "Security Alert: Potential Prompt Injection detected in article '%s' from source '%s'. "
+            "Flagged for human review (preserving content without auto-reject).",
             title, source_name
         )
-        analysis.is_relevant = False
+        # Note: Do not auto-reject to prevent censorship/DoS attack vector;
+        # status transition to 'flagged_for_review' is handled by pipeline.
 
     return analysis

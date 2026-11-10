@@ -42,8 +42,8 @@ class BaseAIProvider(ABC):
     """Abstract base class defining the AI Provider interface (ARCHITECTURE.md Section 3)."""
 
     @abstractmethod
-    async def generate_json(self, prompt: str) -> dict[str, Any]:
-        """Generate structured JSON response for a given prompt."""
+    async def generate_json(self, prompt: str, system_instruction: str | None = None) -> dict[str, Any]:
+        """Generate structured JSON response for a given prompt, optionally with system instruction."""
         pass
 
     @property
@@ -71,6 +71,8 @@ def is_retryable_ai_error(exc: BaseException) -> bool:
 class GeminiProvider(BaseAIProvider):
     """Google Gemini AI provider implementation using google-genai SDK."""
 
+    _total_calls: int = 0
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -85,11 +87,12 @@ class GeminiProvider(BaseAIProvider):
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._request_timestamps: list[float] = []
         self._rate_limit_lock = asyncio.Lock()
+        self.call_count: int = 0
 
         if client is not None:
             self._client = client
         elif self._api_key and not self._api_key.startswith("YOUR_"):
-            self._client = genai.Client(api_key=self._api_key)
+            self._client = genai.Client(api_key=self._api_key, http_options={"api_version": "v1beta"})
         else:
             self._client = None
 
@@ -125,7 +128,7 @@ class GeminiProvider(BaseAIProvider):
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )
-    async def _call_api_with_retry(self, prompt: str) -> str:
+    async def _call_api_with_retry(self, prompt: str, system_instruction: str | None = None) -> str:
         """Execute Gemini API call with exponential backoff on transient errors."""
         if not self._client:
             raise AIProviderError("Gemini API key is not configured or client is uninitialized.")
@@ -133,14 +136,35 @@ class GeminiProvider(BaseAIProvider):
         await self._enforce_rate_limit()
 
         async with self._semaphore:
+            start_time = time.monotonic()
             try:
+                config_kwargs: dict[str, Any] = {
+                    "response_mime_type": "application/json",
+                    "temperature": 0.1,
+                }
+                if system_instruction:
+                    config_kwargs["system_instruction"] = system_instruction
+
                 response = await self._client.aio.models.generate_content(
                     model=self._model,
                     contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.1,
-                    ),
+                    config=types.GenerateContentConfig(**config_kwargs),
+                )
+                latency = time.monotonic() - start_time
+                GeminiProvider._total_calls += 1
+                self.call_count += 1
+
+                usage = getattr(response, "usage_metadata", None)
+                tokens_in = getattr(usage, "prompt_token_count", None) if usage else None
+                tokens_out = getattr(usage, "candidates_token_count", None) if usage else None
+                logger.info(
+                    "Gemini API call #%d completed: model=%s, prompt_len=%d, latency=%.2fs, tokens_in=%s, tokens_out=%s",
+                    GeminiProvider._total_calls,
+                    self._model,
+                    len(prompt),
+                    latency,
+                    tokens_in,
+                    tokens_out,
                 )
                 return response.text or "{}"
             except APIError as exc:
@@ -158,9 +182,9 @@ class GeminiProvider(BaseAIProvider):
                 logger.error("Unexpected error during Gemini API call: %s", exc)
                 raise AIProviderError(f"Unexpected error calling Gemini: {exc}") from exc
 
-    async def generate_json(self, prompt: str) -> dict[str, Any]:
+    async def generate_json(self, prompt: str, system_instruction: str | None = None) -> dict[str, Any]:
         """Generate structured JSON response using Gemini."""
-        raw_text = await self._call_api_with_retry(prompt)
+        raw_text = await self._call_api_with_retry(prompt, system_instruction=system_instruction)
         cleaned = raw_text.strip()
         # Strip potential markdown fences if present
         if cleaned.startswith("```json"):
@@ -186,6 +210,7 @@ class MockAIProvider(BaseAIProvider):
         self._model = model
         self.call_count = 0
         self.last_prompt: str | None = None
+        self.last_system_instruction: str | None = None
 
     @property
     def model_name(self) -> str:
@@ -194,7 +219,15 @@ class MockAIProvider(BaseAIProvider):
     def set_canned_response(self, response: dict[str, Any]) -> None:
         self._canned_response = response
 
-    async def generate_json(self, prompt: str) -> dict[str, Any]:
+    async def generate_json(self, prompt: str, system_instruction: str | None = None) -> dict[str, Any]:
         self.call_count += 1
         self.last_prompt = prompt
+        self.last_system_instruction = system_instruction
         return self._canned_response
+
+
+def get_ai_provider() -> BaseAIProvider:
+    """Factory to instantiate AI provider based on environment settings."""
+    if settings.app_env == "test" or settings.gemini_api_key.startswith("mock_") or settings.gemini_api_key.startswith("YOUR_"):
+        return MockAIProvider()
+    return GeminiProvider()

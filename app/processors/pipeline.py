@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 import logging
 from sqlalchemy import or_, select
@@ -6,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.connection import SessionLocal
 from app.database.models import Source, Article, Event, ArticleEvent, Summary, JobLog
 from app.collectors.rss_collector import fetch_feed
+from app.ai.provider import BaseAIProvider, get_ai_provider
 from app.ai.summarizer import PROMPT_VERSION, analyze_article
 from app.config import settings
 
@@ -35,15 +37,142 @@ async def is_duplicate_article(
     return existing_id is not None
 
 
-async def collect_and_process():
+async def process_collected_articles(
+    session: AsyncSession,
+    limit: int = 50,
+    provider: BaseAIProvider | None = None,
+) -> int:
+    """Process unanalyzed articles from database with AI Provider.
+
+    Strict financial guardrail (ISS-013 / Re-processing Prevention):
+    ONLY queries articles with status IN ('collected', 'pending_analysis').
+    Articles with status IN ('summarized', 'rejected', 'failed', 'flagged_for_review')
+    are STRICTLY EXCLUDED, preventing redundant LLM calls and unnecessary costs.
+    """
+    stmt = (
+        select(Article)
+        .where(Article.status.in_(["collected", "pending_analysis"]))
+        .order_by(Article.collected_at.asc())
+        .limit(limit)
+    )
+    res = await session.scalars(stmt)
+    articles_list = res.all() if hasattr(res, "all") else list(res)
+    if asyncio.iscoroutine(articles_list):
+        articles_list = await articles_list
+
+    if not articles_list:
+        logger.info("No unanalyzed articles found. Skipping AI processing (Gemini calls = 0).")
+        return 0
+
+    ai_provider = provider or get_ai_provider()
+    processed_count = 0
+
+    # Cache source names to minimize DB roundtrips
+    sources_stmt = select(Source.id, Source.name)
+    s_res = await session.execute(sources_stmt)
+    s_rows = s_res.all() if hasattr(s_res, "all") else list(s_res)
+    if asyncio.iscoroutine(s_rows):
+        s_rows = await s_rows
+    sources_map = dict(s_rows)
+
+    for article in articles_list:
+        source_name = sources_map.get(article.source_id, "Unknown Source")
+        try:
+            result = await analyze_article(
+                title=article.title,
+                body=article.original_text or "",
+                source_name=source_name,
+                provider=ai_provider,
+            )
+        except Exception as exc:
+            logger.error("AI analysis failed for article ID %d (%s): %s", article.id, article.title, exc)
+            article.status = "failed"
+            processed_count += 1
+            continue
+
+        article.ai_payload = result.model_dump(mode="json")
+
+        if result.is_injection_attempt:
+            logger.warning(
+                "Security Alert: Article ID %d contains potential prompt injection. "
+                "Setting status to 'flagged_for_review' (preserving intelligence for human review).",
+                article.id,
+            )
+            article.status = "flagged_for_review"
+            # Intelligence is preserved in DB, but blocked from automatic publishing
+            event = Event(
+                title=f"[FLAGGED] {result.event_title}",
+                event_type=result.categories[0] if result.categories else "SEC",
+                countries=result.countries,
+                actors=result.actors,
+                location=result.location,
+                importance=result.importance,
+                status="flagged",
+            )
+            session.add(event)
+            await session.flush()
+            session.add(ArticleEvent(article_id=article.id, event_id=event.id, match_type="initial", confidence=0.50))
+            session.add(
+                Summary(
+                    event_id=event.id,
+                    headline_fa=result.headline_fa,
+                    summary_fa=result.summary_fa,
+                    details_fa={"source": source_name, "url": article.original_url, "flag": "injection_detected"},
+                    verification_status="disputed",
+                    model_name=ai_provider.model_name,
+                    prompt_version=PROMPT_VERSION,
+                )
+            )
+            processed_count += 1
+            continue
+
+        if not result.is_relevant:
+            logger.info("Article ID %d deemed irrelevant to Middle East intelligence. Marked 'rejected'.", article.id)
+            article.status = "rejected"
+            processed_count += 1
+            continue
+
+        event = Event(
+            title=result.event_title,
+            event_type=result.categories[0] if result.categories else None,
+            countries=result.countries,
+            actors=result.actors,
+            location=result.location,
+            importance=result.importance,
+            status="active",
+        )
+        session.add(event)
+        await session.flush()
+        session.add(ArticleEvent(article_id=article.id, event_id=event.id, match_type="initial", confidence=0.70))
+        session.add(
+            Summary(
+                event_id=event.id,
+                headline_fa=result.headline_fa,
+                summary_fa=result.summary_fa,
+                details_fa={"source": source_name, "url": article.original_url},
+                verification_status=result.verification_status,
+                model_name=ai_provider.model_name,
+                prompt_version=PROMPT_VERSION,
+            )
+        )
+        article.status = "summarized"
+        processed_count += 1
+
+    await session.commit()
+    logger.info("Successfully processed %d articles via %s.", processed_count, ai_provider.model_name)
+    return processed_count
+
+
+async def collect_and_process(provider: BaseAIProvider | None = None):
     count = 0
     async with SessionLocal() as session:
         log = JobLog(job_name="hourly_collection")
         session.add(log)
         await session.flush()
         try:
-            sources = (await session.scalars(select(Source).where(
-                Source.is_active.is_(True), Source.feed_url.is_not(None)))).all()
+            sources = (
+                await session.scalars(select(Source).where(Source.is_active.is_(True), Source.feed_url.is_not(None)))
+            ).all()
             for source in sources:
                 try:
                     entries = await fetch_feed(source.feed_url)
@@ -51,7 +180,7 @@ async def collect_and_process():
                     logger.warning("Failed to collect feed for source %s: %s", source.name, exc)
                     continue
 
-                for item in entries[:settings.max_articles_per_batch]:
+                for item in entries[: settings.max_articles_per_batch]:
                     if await is_duplicate_article(session, item["canonical_url"], item["content_hash"]):
                         logger.debug("Skipping duplicate article: %s (%s)", item["title"], item["canonical_url"])
                         continue
@@ -75,42 +204,8 @@ async def collect_and_process():
                         await session.rollback()
                         continue
 
-                    try:
-                        result = await analyze_article(article.title, article.original_text or "", source.name)
-                    except Exception:
-                        article.status = "failed"
-                        continue
-
-                    article.ai_payload = result.model_dump(mode="json")
-                    if not result.is_relevant:
-                        article.status = "rejected"
-                        count += 1
-                        continue
-
-                    event = Event(
-                        title=result.event_title,
-                        event_type=result.categories[0] if result.categories else None,
-                        countries=result.countries,
-                        actors=result.actors,
-                        location=result.location,
-                        importance=result.importance,
-                    )
-                    session.add(event)
-                    await session.flush()
-                    session.add(ArticleEvent(article_id=article.id, event_id=event.id,
-                                             match_type="initial", confidence=0.60))
-                    session.add(Summary(
-                        event_id=event.id,
-                        headline_fa=result.headline_fa,
-                        summary_fa=result.summary_fa,
-                        details_fa={"source": source.name, "url": article.original_url},
-                        verification_status=result.verification_status,
-                        model_name=settings.gemini_model,
-                        prompt_version=PROMPT_VERSION,
-                    ))
-                    article.status = "summarized"
-                    count += 1
-
+            # Process collected articles adhering strictly to status filtering
+            count = await process_collected_articles(session, limit=settings.max_articles_per_batch, provider=provider)
             log.status, log.processed_count = "success", count
             log.finished_at = datetime.now(timezone.utc)
             await session.commit()
