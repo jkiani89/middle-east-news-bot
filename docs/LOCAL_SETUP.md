@@ -98,7 +98,49 @@ TELEGRAM_ADMIN_CHAT_ID=123456789
 
 ---
 
-## ۵. اجرای مایگریشن‌های Alembic
+## ۵. پیکربندی استخر کلیدهای Gemini (Multi-Key Gemini Configuration)
+
+برای پشتیبانی پایدار از زمان‌بندی ساعتی جمع‌آوری و خلاصه‌سازی اخبار بدون برخورد به سقف Quota (حل قطعی `ISS-020`)، سیستم از یک استخر چندکلیدی هوشمند با کتابخانه `gemini-api-rotator` بهره می‌برد:
+
+### ۵.۱. درک محدودیت سهمیه Google Cloud (Per-Project Quota Constraint)
+> [!IMPORTANT]
+> محدودیت‌های طرح رایگان Google AI Studio (شامل ۲۰ درخواست روزانه برای مدل‌های تحلیلی و ۱۵ RPM) **به ازای هر پروژه Google Cloud (Per-Project)** اعمال می‌شوند، نه به ازای هر API Key.
+> **ساخت چند کلید مختلف درون یک پروژه واحد هیچ افزایشی در سهمیه مصرفی ایجاد نمی‌کند.**
+> جهت افزایش واقعی سقف پردازش، باید کلیدها از پروژه‌های مجزا در Google Cloud (یا حساب‌های کاربری مجزا) تولید شوند.
+
+### ۵.۲. نحوه ساخت چند پروژه در Google Cloud
+1. وارد کنسول [Google AI Studio](https://aistudio.google.com/) یا [Google Cloud Console](https://console.cloud.google.com/) شوید.
+2. از منوی بالای صفحه روی Project Selector کلیک کرده و گزینه **New Project** را انتخاب کنید (مثلاً `newsbot-prod-01`, `newsbot-prod-02`, `newsbot-prod-03`).
+3. در هر پروژه، یک API Key اختصاصی تولید و کپی کنید.
+
+### ۵.۳. نحوه تنظیم کلیدها در فایل `.env`
+کلیدها را با الگوی شماره‌گذاری‌شده `GEMINI_KEY_1` تا `GEMINI_KEY_N` در فایل `.env` قرار دهید:
+```env
+# ── Gemini API Keys (چند پروژه جداگانه Google Cloud) ──
+GEMINI_KEY_1=AIzaSy...project1...
+GEMINI_KEY_2=AIzaSy...project2...
+GEMINI_KEY_3=AIzaSy...project3...
+
+# مدل اصلی با اولویت کیفیت استدلال و فارسی‌نویسی
+GEMINI_PRIMARY_MODEL=gemini-3.8-flash
+
+# مدل جایگزین سبک (اختیاری، فقط در صورت اتمام سهمیه مدل اصلی)
+GEMINI_FALLBACK_MODEL=gemini-3.5-flash-lite
+GEMINI_ENABLE_FALLBACK=false
+
+# مسیر ذخیره پایدار وضعیت و آمارهای کلیدها در SQLite
+GEMINI_KEY_DB_PATH=data/gemini_keys.db
+```
+سیستم به صورت خودکار تمام متغیرهای منطبق بر `GEMINI_KEY_\d+` و همچنین کلید تکی سنتی `GEMINI_API_KEY` را پایش کرده و به استخر تزریق می‌کند.
+
+### ۵.۴. پایداری وضعیت کلیدها در دیسک (SQLite Adapter)
+وضعیت کلیدها و آمار تاخیر و سوختن کلیدها (مانند `API_KEY_INVALID` یا `PERMISSION_DENIED`) در مسیر زیر پایدارسازی می‌شود:
+- مسیر پیش‌فرض: `data/gemini_keys.db`
+- این فایل مانع از آن می‌شود که پس از هر بار ری‌استارت ربات، کلیدهای نامعتبر مجدداً فراخوانی شوند.
+
+---
+
+## ۶. اجرای مایگریشن‌های Alembic
 
 برای ساخت جداول، ایندکس‌ها و ریویژن اولیه در پایگاه داده واقعی:
 

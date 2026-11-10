@@ -4,6 +4,40 @@
 
 ---
 
+## [2026-11-10] تکمیل موفقیت‌آمیز فاز ۷.۵: استخر کلیدهای Gemini و ارتقا به Gemini 3.8 Flash (Phase 7.5 Key Pool & Multi-Model)
+
+### ۱. اهداف و دستاوردهای کلیدی
+1. **حل قطعی محدودیت سهمیه (ISS-020 Resolution):**
+   - جایگزینی کلید تکی با استخر کلیدهای هوشمند با کتابخانه استاندارد `gemini-api-rotator` (نسخه ۲.۰+).
+   - پایش و استخراج متغیرهای `GEMINI_KEY_1..N` از محیط جهت تجمیع ظرفیت طرح رایگان در چندین پروژه مستقل Google Cloud.
+   - مستندسازی محدودیت Per-Project در `docs/LOCAL_SETUP.md` و `.env.example`.
+2. **ارتقای مدل اصلی هوش مصنوعی به Gemini 3.8 Flash:**
+   - ارتقای مدل اصلی از `gemini-2.5-flash` به `gemini-3.8-flash` (`settings.gemini_primary_model`) به دلیل اولویت کیفیت در استدلال، استخراج ساختاریافته JSON و نگارش روان فارسی.
+   - پشتیبانی از مدل سبک‌تر جایگزین `gemini-3.5-flash-lite` (`settings.gemini_fallback_model`) در صورت اتمام سهمیه مدل اصلی.
+3. **پایداری وضعیت کلیدها با SQLite:**
+   - اتصال `GeminiAPIRotator` به `SQLiteAdapter` در مسیر `data/gemini_keys.db`.
+   - پایدارسازی کلیدهای معلق (Suspended / Invalid / Disabled) در دیسک جهت ممانعت از فراخوانی مجدد آنها پس از ری‌استارت سیستم.
+4. **حذف لایه‌های زائد و پاکسازی کد:**
+   - حذف کامل سمافور دستی، لوپ Retry با Tenacity و Sliding Window Rate Limiter فاز ۴ از `app/ai/provider.py`.
+   - واگذاری کامل وظایف همروندی، Cooldown نمایی، مدیریت خطا و پایش تاخیر به `gemini-api-rotator`.
+
+### ۲. آزمون‌ها و پوشش کد
+- **فایل آزمون اختصاصی (`tests/test_gemini_rotator.py`):** نگارش ۱۰ آزمون جامع شامل ۶ سناریوی الزامی:
+  1. `test_rotator_skips_rate_limited_key`: پرش از کلید در حال Cooldown روی خطای 429 و انتخاب کلید سالم بعدی.
+  2. `test_rotator_marks_suspended_on_invalid_key`: بلک‌لیست دائم کلید نامعتبر با خطای `API_KEY_INVALID` یا `PERMISSION_DENIED`.
+  3. `test_rotator_persists_state_across_restart`: حفظ وضعیت کلیدهای Suspended در فایل SQLite پس از بستن و اجرای مجدد.
+  4. `test_rotator_falls_back_to_fallback_model_on_quota_exhaustion`: فال‌بک خودکار به `gemini-3.5-flash-lite` در صورت فعال بودن فلگ و وقوع 429 روی مدل اصلی.
+  5. `test_generate_json_uses_primary_model`: ارسال نام مدل `gemini-3.8-flash` به روتاتور.
+  6. `test_generate_json_returns_parsed_dict`: پارس خروجی JSON (حتی با کدهای مارک‌داون) به دیکشنری معتبر پایتون.
+  7. آزمون‌های تکمیلی مقداردهی پیش‌فرض با دیسک، خطای دکود JSON و خطاهای 503 Backend.
+- **به‌روزرسانی آزمون‌های `tests/test_ai.py`:** همگام‌سازی ۱۵ آزمون با معماری جدید بدون شکست یا هشدار.
+- **پوشش کد `app/ai/provider.py`:** **۹۰٪** (معیار پذیرش: $\ge 80\%$).
+- **پوشش کل بسته `app/ai`:** **۹۰٪**.
+- **مجموع آزمون‌های کل سامانه:** **۱۱۰ آزمون کاملاً سبز** (۰ شکست، ۰ هشدار).
+- **اعتبارسنجی یکپارچه سلامت سامانه:** خروجی موفقیت‌آمیز اسکریپت `scripts/verify.ps1`.
+
+---
+
 ## [2026-11-10] تکمیل موفقیت‌آمیز فاز ۷: سامانه انتشار مقاوم تلگرام و تحویل دوگانه (Phase 7 Telegram Publisher)
 
 ### ۱. رفع ابهامات پیش از انتشار و تصمیم‌گیری فرمت (Pre-Publish Decisions & Resolutions)

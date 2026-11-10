@@ -1,10 +1,16 @@
+import os
+import re
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_env: str = "development"
     database_url: str = "postgresql+asyncpg://newsbot:CHANGE_THIS_PASSWORD@localhost:5432/newsbot"
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_primary_model: str = "gemini-3.8-flash"
+    gemini_fallback_model: str = "gemini-3.5-flash-lite"
+    gemini_enable_fallback: bool = False
+    gemini_key_db_path: str = "data/gemini_keys.db"
+    gemini_model: str = "gemini-3.8-flash"
     telegram_bot_token: str = ""
     telegram_channel_id: str = ""
     telegram_admin_chat_id: int = 0
@@ -23,9 +29,27 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
+    def get_gemini_keys(self) -> list[str]:
+        """Extract all configured Gemini API keys from environment and settings."""
+        keys = []
+        # Check numbered keys: GEMINI_KEY_1, GEMINI_KEY_2, ...
+        for env_k, env_v in sorted(os.environ.items()):
+            if re.match(r"^GEMINI_KEY_\d+$", env_k) and env_v:
+                val = env_v.strip()
+                if val and val not in ("AIza...", "YOUR_GEMINI_API_KEY") and val not in keys:
+                    keys.append(val)
+
+        # Check legacy single key
+        if self.gemini_api_key:
+            single = self.gemini_api_key.strip()
+            if single and single not in ("AIza...", "YOUR_GEMINI_API_KEY") and single not in keys:
+                keys.append(single)
+
+        return keys
+
     def validate_runtime(self) -> list[str]:
         missing = []
-        if not self.gemini_api_key or "YOUR_GEMINI_API_KEY" in self.gemini_api_key:
+        if not self.get_gemini_keys():
             missing.append("GEMINI_API_KEY")
         if not self.telegram_bot_token or "YOUR_TELEGRAM_BOT_TOKEN" in self.telegram_bot_token:
             missing.append("TELEGRAM_BOT_TOKEN")

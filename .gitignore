@@ -7,3 +7,6 @@ __pycache__/
 htmlcov/
 logs/
 *.log
+data/
+*.db
+scratch/

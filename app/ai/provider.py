@@ -1,22 +1,14 @@
-"""AI provider abstraction layer and Gemini implementation with retry, rate-limiting, and error handling."""
+"""AI provider abstraction layer and Gemini implementation using gemini-api-rotator."""
 
 from abc import ABC, abstractmethod
-import asyncio
 import json
 import logging
+from pathlib import Path
 import time
 from typing import Any
 
-from google import genai
-from google.genai import types
-from google.genai.errors import APIError
-from tenacity import (
-    before_sleep_log,
-    retry,
-    retry_if_exception,
-    stop_after_attempt,
-    wait_exponential,
-)
+from gemini_rotator import GeminiAPIRotator, RotatorConfig, SQLiteAdapter
+from gemini_rotator.middleware import ErrorType, classify_error
 
 from app.config import settings
 
@@ -29,7 +21,7 @@ class AIProviderError(Exception):
 
 
 class AIRateLimitError(AIProviderError):
-    """Raised when rate limits are exceeded."""
+    """Raised when rate limits or quotas are exceeded."""
     pass
 
 
@@ -57,19 +49,49 @@ def is_retryable_ai_error(exc: BaseException) -> bool:
     """Determine whether an API error is transient and should be retried."""
     if isinstance(exc, (AIRateLimitError, AIServiceUnavailableError)):
         return True
-    if isinstance(exc, APIError):
-        # Retry 429 (ResourceExhausted), 503 (Unavailable), 500 (Internal)
-        code = getattr(exc, "code", None)
-        if code in {429, 500, 502, 503, 504}:
+    if isinstance(exc, Exception):
+        etype = classify_error(exc)
+        if etype in (ErrorType.RATE_LIMIT, ErrorType.TRANSIENT):
             return True
-        msg = str(exc).lower()
-        if "resource_exhausted" in msg or "quota" in msg or "overloaded" in msg or "unavailable" in msg:
-            return True
+    code = getattr(exc, "code", None)
+    if code in {429, 500, 502, 503, 504}:
+        return True
+    msg = str(exc).lower()
+    if "resource_exhausted" in msg or "quota" in msg or "overloaded" in msg or "unavailable" in msg:
+        return True
     return False
 
 
+def _is_rate_limit_or_quota(exc: Exception) -> bool:
+    """Check if exception corresponds to quota exhaustion or rate limit."""
+    if isinstance(exc, AIRateLimitError):
+        return True
+    if classify_error(exc) == ErrorType.RATE_LIMIT:
+        return True
+    msg = str(exc).lower()
+    if "429" in msg or "resource_exhausted" in msg or "quota" in msg or "all keys are suspended" in msg or "no api keys available" in msg:
+        return True
+    code = getattr(exc, "code", None)
+    return code == 429
+
+
+def _translate_and_raise(exc: Exception) -> None:
+    """Translate raw library / SDK exceptions to middle-east-news-bot domain exceptions."""
+    if isinstance(exc, AIProviderError):
+        raise exc
+    if _is_rate_limit_or_quota(exc):
+        raise AIRateLimitError(str(exc)) from exc
+    if classify_error(exc) == ErrorType.TRANSIENT:
+        raise AIServiceUnavailableError(str(exc)) from exc
+    code = getattr(exc, "code", None)
+    msg = str(exc)
+    if code in {500, 502, 503, 504} or "unavailable" in msg.lower() or "internal" in msg.lower():
+        raise AIServiceUnavailableError(str(exc)) from exc
+    raise AIProviderError(f"Gemini API error: {exc}") from exc
+
+
 class GeminiProvider(BaseAIProvider):
-    """Google Gemini AI provider implementation using google-genai SDK."""
+    """Google Gemini AI provider implementation using gemini-api-rotator with SQLite persistence."""
 
     _total_calls: int = 0
 
@@ -77,114 +99,135 @@ class GeminiProvider(BaseAIProvider):
         self,
         api_key: str | None = None,
         model: str | None = None,
-        max_rpm: int = 15,
-        max_concurrency: int = 3,
-        client: Any | None = None,
+        rotator: GeminiAPIRotator | None = None,
+        primary_model: str | None = None,
+        fallback_model: str | None = None,
+        enable_fallback: bool | None = None,
+        key_db_path: str | Path | None = None,
+        config: RotatorConfig | None = None,
+        **kwargs: Any,  # Absorb legacy kwargs (max_rpm, max_concurrency, client, etc.)
     ):
-        self._api_key = api_key or settings.gemini_api_key
-        self._model = model or settings.gemini_model
-        self._max_rpm = max_rpm
-        self._semaphore = asyncio.Semaphore(max_concurrency)
-        self._request_timestamps: list[float] = []
-        self._rate_limit_lock = asyncio.Lock()
+        self._primary_model = primary_model or model or settings.gemini_primary_model
+        self._fallback_model = fallback_model or settings.gemini_fallback_model
+        self._enable_fallback = enable_fallback if enable_fallback is not None else settings.gemini_enable_fallback
         self.call_count: int = 0
 
-        if client is not None:
-            self._client = client
-        elif self._api_key and not self._api_key.startswith("YOUR_"):
-            self._client = genai.Client(api_key=self._api_key, http_options={"api_version": "v1beta"})
+        # Maintain legacy attribute alias
+        self._model = self._primary_model
+
+        if rotator is not None:
+            self._rotator = rotator
+            self._db_adapter = getattr(rotator, "_db", None)
         else:
-            self._client = None
+            keys: list[str] = []
+            if api_key:
+                keys = [api_key]
+            else:
+                keys = settings.get_gemini_keys()
+
+            if not keys:
+                keys = ["mock_key_unconfigured"]
+
+            db_path_str = str(key_db_path or settings.gemini_key_db_path)
+            Path(db_path_str).parent.mkdir(parents=True, exist_ok=True)
+            self._db_adapter = SQLiteAdapter(db_path_str)
+
+            rotator_config = config or RotatorConfig()
+            self._rotator = GeminiAPIRotator(
+                keys=keys,
+                config=rotator_config,
+                db=self._db_adapter,
+            )
 
     @property
     def model_name(self) -> str:
-        return self._model
+        """Active primary model identifier conforming to ARCHITECTURE.md Section 3."""
+        return self._primary_model
+
+    @property
+    def rotator(self) -> GeminiAPIRotator:
+        """Underlying GeminiAPIRotator instance."""
+        return self._rotator
+
+    def close(self) -> None:
+        """Close SQLiteAdapter connection if present."""
+        if self._db_adapter and hasattr(self._db_adapter, "close"):
+            self._db_adapter.close()
 
     async def _enforce_rate_limit(self) -> None:
-        """Enforce requests per minute limit using a sliding window."""
-        if self._max_rpm <= 0:
-            return
-
-        async with self._rate_limit_lock:
-            now = time.monotonic()
-            # Retain only timestamps within the last 60 seconds
-            self._request_timestamps = [t for t in self._request_timestamps if now - t < 60.0]
-
-            if len(self._request_timestamps) >= self._max_rpm:
-                oldest = self._request_timestamps[0]
-                sleep_needed = 60.0 - (now - oldest) + 0.1
-                if sleep_needed > 0:
-                    logger.warning("Gemini rate limit threshold reached (%d RPM), throttling for %.2fs", self._max_rpm, sleep_needed)
-                    await asyncio.sleep(sleep_needed)
-                    now = time.monotonic()
-                    self._request_timestamps = [t for t in self._request_timestamps if now - t < 60.0]
-
-            self._request_timestamps.append(time.monotonic())
-
-    @retry(
-        retry=retry_if_exception(is_retryable_ai_error),
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        before_sleep=before_sleep_log(logger, logging.WARNING),
-        reraise=True,
-    )
-    async def _call_api_with_retry(self, prompt: str, system_instruction: str | None = None) -> str:
-        """Execute Gemini API call with exponential backoff on transient errors."""
-        if not self._client:
-            raise AIProviderError("Gemini API key is not configured or client is uninitialized.")
-
-        await self._enforce_rate_limit()
-
-        async with self._semaphore:
-            start_time = time.monotonic()
-            try:
-                config_kwargs: dict[str, Any] = {
-                    "response_mime_type": "application/json",
-                    "temperature": 0.1,
-                }
-                if system_instruction:
-                    config_kwargs["system_instruction"] = system_instruction
-
-                response = await self._client.aio.models.generate_content(
-                    model=self._model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(**config_kwargs),
-                )
-                latency = time.monotonic() - start_time
-                GeminiProvider._total_calls += 1
-                self.call_count += 1
-
-                usage = getattr(response, "usage_metadata", None)
-                tokens_in = getattr(usage, "prompt_token_count", None) if usage else None
-                tokens_out = getattr(usage, "candidates_token_count", None) if usage else None
-                logger.info(
-                    "Gemini API call #%d completed: model=%s, prompt_len=%d, latency=%.2fs, tokens_in=%s, tokens_out=%s",
-                    GeminiProvider._total_calls,
-                    self._model,
-                    len(prompt),
-                    latency,
-                    tokens_in,
-                    tokens_out,
-                )
-                return response.text or "{}"
-            except APIError as exc:
-                code = getattr(exc, "code", None)
-                msg = str(exc)
-                if code == 429 or "resource_exhausted" in msg.lower():
-                    logger.warning("Gemini rate limit exceeded (429): %s", msg)
-                    raise AIRateLimitError(msg) from exc
-                if code in {500, 502, 503, 504} or "unavailable" in msg.lower():
-                    logger.warning("Gemini service unavailable (%s): %s", code, msg)
-                    raise AIServiceUnavailableError(msg) from exc
-                logger.error("Gemini API error (non-retryable): %s", msg)
-                raise AIProviderError(f"Gemini API error: {msg}") from exc
-            except Exception as exc:
-                logger.error("Unexpected error during Gemini API call: %s", exc)
-                raise AIProviderError(f"Unexpected error calling Gemini: {exc}") from exc
+        """Deprecated legacy rate limiter hook retained for backward compatibility."""
+        pass
 
     async def generate_json(self, prompt: str, system_instruction: str | None = None) -> dict[str, Any]:
-        """Generate structured JSON response using Gemini."""
-        raw_text = await self._call_api_with_retry(prompt, system_instruction=system_instruction)
+        """Generate structured JSON response using Gemini via gemini-api-rotator."""
+        extra_config: dict[str, Any] = {
+            "response_mime_type": "application/json",
+            "temperature": 0.1,
+        }
+
+        target_model = self._primary_model
+        start_time = time.monotonic()
+        raw_text: str | None = None
+
+        try:
+            response = await self._rotator.execute(
+                prompt,
+                model=target_model,
+                system=system_instruction,
+                extra_config=extra_config,
+            )
+            raw_text = getattr(response, "text", "") or ""
+            GeminiProvider._total_calls += 1
+            self.call_count += 1
+            latency = time.monotonic() - start_time
+            logger.info(
+                "Gemini API call #%d completed: model=%s, prompt_len=%d, latency=%.2fs",
+                GeminiProvider._total_calls,
+                target_model,
+                len(prompt),
+                latency,
+            )
+        except Exception as exc:
+            # Fallback logic if primary model is rate-limited / quota-exhausted
+            if (
+                _is_rate_limit_or_quota(exc)
+                and self._enable_fallback
+                and self._fallback_model
+                and target_model != self._fallback_model
+            ):
+                logger.warning(
+                    "Primary model %s rate-limited/exhausted (%s). Attempting fallback to %s.",
+                    target_model,
+                    exc,
+                    self._fallback_model,
+                )
+                try:
+                    target_model = self._fallback_model
+                    response = await self._rotator.execute(
+                        prompt,
+                        model=target_model,
+                        system=system_instruction,
+                        extra_config=extra_config,
+                    )
+                    raw_text = getattr(response, "text", "") or ""
+                    GeminiProvider._total_calls += 1
+                    self.call_count += 1
+                    latency = time.monotonic() - start_time
+                    logger.info(
+                        "Fallback Gemini API call #%d completed: model=%s, prompt_len=%d, latency=%.2fs",
+                        GeminiProvider._total_calls,
+                        target_model,
+                        len(prompt),
+                        latency,
+                    )
+                except Exception as fb_exc:
+                    _translate_and_raise(fb_exc)
+            else:
+                _translate_and_raise(exc)
+
+        if raw_text is None:
+            raw_text = "{}"
+
         cleaned = raw_text.strip()
         # Strip potential markdown fences if present
         if cleaned.startswith("```json"):
@@ -228,11 +271,11 @@ class MockAIProvider(BaseAIProvider):
 
 def get_ai_provider() -> BaseAIProvider:
     """Factory to instantiate AI provider based on environment settings."""
-    if (
-        settings.app_env == "test"
-        or not settings.gemini_api_key
-        or settings.gemini_api_key.startswith("mock_")
-        or settings.gemini_api_key.startswith("YOUR_")
-    ):
+    keys = settings.get_gemini_keys()
+    has_real_key = any(
+        k and not k.startswith("mock_") and not k.startswith("YOUR_")
+        for k in keys
+    )
+    if settings.app_env == "test" or not has_real_key:
         return MockAIProvider()
     return GeminiProvider()

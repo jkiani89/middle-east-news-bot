@@ -20,6 +20,7 @@ pydantic-settings>=2.4,<3
 # AI & Generation
 # Note: google-genai 3.0.0 internally depends on httpx2==2.16.0 and httpcore2==2.16.0 (pydantic/httpx2 fork)
 google-genai>=1.0,<4
+gemini-api-rotator[genai]>=2.0,<3
 
 # Platform-specific
 tzdata>=2024.1; platform_system == "Windows"

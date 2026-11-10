@@ -46,19 +46,20 @@ async def reprocess_articles(
     print("=" * 80)
     print("  REPROCESS ARTICLES WITH REAL GOOGLE GEMINI AI")
     print("=" * 80)
-    print(f"Model: {settings.gemini_model}")
+    print(f"Model: {settings.gemini_primary_model}")
     print(f"Delay between calls: {delay_seconds}s")
     print(f"Dry run: {dry_run}")
     print(f"Force all articles: {force_all}")
 
-    if not settings.gemini_api_key or "YOUR_GEMINI_API_KEY" in settings.gemini_api_key:
-        print("\n[ERROR] GEMINI_API_KEY is not configured in .env or environment!")
+    keys = settings.get_gemini_keys()
+    if not keys:
+        print("\n[ERROR] No valid Gemini API keys configured in .env or environment!")
         sys.exit(1)
 
     provider = GeminiProvider(
-        api_key=settings.gemini_api_key,
-        model=settings.gemini_model,
-        max_rpm=10,
+        primary_model=settings.gemini_primary_model,
+        fallback_model=settings.gemini_fallback_model,
+        enable_fallback=settings.gemini_enable_fallback,
     )
 
     async with SessionLocal() as session:
