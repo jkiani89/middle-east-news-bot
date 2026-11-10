@@ -209,15 +209,15 @@ class GeminiProvider(BaseAIProvider):
                 latency,
             )
         except Exception as exc:
-            # Fallback logic if primary model is rate-limited / quota-exhausted
+            # Fallback logic if primary model encounters retryable/transient/quota error
             if (
-                _is_rate_limit_or_quota(exc)
+                is_retryable_ai_error(exc)
                 and self._enable_fallback
                 and self._fallback_model
                 and target_model != self._fallback_model
             ):
                 logger.warning(
-                    "Primary model %s rate-limited/exhausted (%s). Attempting fallback to %s.",
+                    "Primary model %s encountered retryable error (%s). Attempting fallback to %s.",
                     target_model,
                     exc,
                     self._fallback_model,

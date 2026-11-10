@@ -384,5 +384,28 @@ def test_init_fails_when_primary_equals_fallback():
         )
 
 
+@pytest.mark.asyncio
+async def test_fallback_triggers_on_503_unavailable():
+    """Regression test: 503 UNAVAILABLE on primary model must trigger fallback to fallback_model."""
+    mock_rotator = MagicMock()
+    error_503 = Exception("503 UNAVAILABLE: High demand spike on gemini-3.8-flash")
+    success = MagicMock()
+    success.text = '{"status": "ok_via_fallback_after_503"}'
+    mock_rotator.execute = AsyncMock(side_effect=[error_503, success])
+
+    provider = GeminiProvider(
+        rotator=mock_rotator,
+        primary_model="gemini-3.8-flash",
+        fallback_model="gemini-3.5-flash-lite",
+        enable_fallback=True,
+    )
+
+    result = await provider.generate_json("test prompt")
+    assert result == {"status": "ok_via_fallback_after_503"}
+    assert provider.model_name == "gemini-3.5-flash-lite"
+    assert mock_rotator.execute.call_count == 2
+
+
+
 
 
