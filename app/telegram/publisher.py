@@ -288,10 +288,39 @@ async def publish_report(
         own_bot = True
 
     sent: list[dict[str, Any]] = []
+
+    # Check for existing partial delivery from previous failed attempts (Idempotency Resume)
+    start_chunk_idx = 0
+    if db_report is not None and db_report.telegram_message_ids:
+        existing_ids = list(db_report.telegram_message_ids)
+        if len(existing_ids) < len(chunks):
+            start_chunk_idx = len(existing_ids)
+            sent = [
+                {"chat_id": target_channel, "message_id": mid, "type": "channel"}
+                for mid in existing_ids
+            ]
+            logger.info(
+                "Resuming partial publish for date %s: skipping %d already sent chunks, sending remaining %d chunks",
+                report_date,
+                start_chunk_idx,
+                len(chunks) - start_chunk_idx,
+            )
+        elif len(existing_ids) >= len(chunks):
+            start_chunk_idx = len(chunks)
+            sent = [
+                {"chat_id": target_channel, "message_id": mid, "type": "channel"}
+                for mid in existing_ids[:len(chunks)]
+            ]
+            logger.info(
+                "All %d chunks already sent for date %s. Skipping channel delivery.",
+                len(chunks),
+                report_date,
+            )
+
     try:
-        # Step 1: Send chunks to public Telegram channel
-        if target_channel:
-            for part in chunks:
+        # Step 1: Send remaining chunks to public Telegram channel
+        if target_channel and start_chunk_idx < len(chunks):
+            for part in chunks[start_chunk_idx:]:
                 msg = await send_telegram_message_resilient(
                     bot=bot,
                     chat_id=target_channel,
@@ -348,8 +377,14 @@ async def publish_report(
 async def _run_cli_dry_run() -> None:
     parser = argparse.ArgumentParser(description="Telegram Publisher - Middle East News Bot")
     parser.add_argument("--dry-run", action="store_true", help="Perform dry run without calling Telegram API")
+    parser.add_argument("--confirm", action="store_true", help="Explicit confirmation for production real publish")
     parser.add_argument("--date", type=str, default=None, help="Report date (YYYY-MM-DD)")
     args = parser.parse_args()
+
+    # Guardrail against accidental real publish in production environment
+    if settings.app_env == "production" and not args.dry_run and not args.confirm:
+        print("ERROR: Real publish in production environment requires explicit --confirm flag!")
+        return
 
     target_date = date.fromisoformat(args.date) if args.date else date.today()
 

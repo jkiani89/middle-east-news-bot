@@ -480,6 +480,8 @@ async def _build_daily_report_with_session(
         report.content = payload
         report.status = "generated"
         report.generated_at = _utcnow()
+        report.telegram_message_ids = []
+        report.published_at = None
     else:
         report = DailyReport(
             report_date=rep_date,

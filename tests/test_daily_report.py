@@ -195,6 +195,46 @@ def test_format_persian_daily_report_html_tags_and_split():
         assert chunk.count("<b>") > 0  # Proves tags are actively present in every chunk!
 
 
+def test_article_with_html_special_chars_escaped():
+    """Verify that dangerous HTML characters in news titles/summaries/URLs are properly escaped."""
+    import re
+    from app.telegram.publisher import split_text
+
+    rep_date = date(2026, 11, 10)
+    items = [{
+        "importance": 5,
+        "headline_fa": 'Iran & Israel <tensions> rise "quoted"',
+        "summary_fa": 'A & B < C & "peace talks" > war',
+        "category_fa": "امنیت & دفاع <منطقه>",
+        "event_type": "SEC",
+        "verification_status_fa": "تأییدشده & معتبر",
+        "primary_source": "UN & Partners <Official>",
+        "primary_url": "https://news.un.org/feed?x=1&y=2&tag=<special>",
+        "countries": ["Iran & Iraq <Border>"],
+        "actors": ["Gov & Opposition <All>"],
+        "additional_sources": [{"source": "Parallel & Independent <Source>", "url": "https://example.com?p=1&q=2"}],
+    }]
+
+    report_text = format_persian_daily_report(rep_date, items, as_html=True)
+
+    # 1. Verify entity conversions
+    assert "&amp;" in report_text
+    assert "&lt;" in report_text
+    assert "&gt;" in report_text
+    assert "&quot;" in report_text
+
+    # 2. Verify no raw unescaped < or > exists outside valid Telegram HTML tags
+    stripped = re.sub(r"<(/)?(b|code|a)(\s+[^>]*)?>", "", report_text)
+    assert "<" not in stripped
+    assert ">" not in stripped
+
+    # 3. Verify tag balance and splitter compatibility
+    chunks = split_text(report_text, limit=3900)
+    assert len(chunks) == 1
+    assert chunks[0].count("<b>") == chunks[0].count("</b>")
+    assert chunks[0].count("<a ") == chunks[0].count("</a>")
+
+
 def test_format_persian_daily_report_multi_source_citations():
     """Verify that multi-source events display supplementary sources from details_fa['sources']."""
     rep_date = date(2026, 11, 10)
@@ -311,6 +351,7 @@ async def test_fetch_report_items_filters_by_importance_and_time_window():
 async def test_build_daily_report_creates_daily_report_record():
     """Verify that build_daily_report persists DailyReport with status='generated'."""
     session = AsyncMock()
+    session.add = MagicMock()
 
     ev1 = _make_mock_event(1, importance=4)
     sm1 = _make_mock_summary(1)
@@ -344,8 +385,9 @@ async def test_build_daily_report_creates_daily_report_record():
 
 @pytest.mark.asyncio
 async def test_build_daily_report_updates_existing_record():
-    """Verify that build_daily_report updates an already existing DailyReport record."""
+    """Verify that build_daily_report resets publishing state on an existing DailyReport record."""
     session = AsyncMock()
+    session.add = MagicMock()
 
     ev1 = _make_mock_event(1, importance=4)
     sm1 = _make_mock_summary(1)
@@ -361,14 +403,19 @@ async def test_build_daily_report_updates_existing_record():
     session.execute.side_effect = [mock_result_events, mock_result_articles]
 
     existing_report = MagicMock()
-    existing_report.status = "draft"
+    existing_report.status = "published"
+    existing_report.telegram_message_ids = [999, 1000]
+    existing_report.published_at = datetime.now(timezone.utc)
     session.scalar.return_value = existing_report
 
     rep_day, items = await build_daily_report(
         report_date=date(2026, 11, 10), session=session
     )
 
+    # Verify complete reset of publishing state
     assert existing_report.status == "generated"
+    assert existing_report.telegram_message_ids == []
+    assert existing_report.published_at is None
     assert "formatted_text" in existing_report.content
     assert not session.add.called
 
@@ -409,6 +456,7 @@ async def test_fetch_report_items_multiple_linked_articles_distinct_urls():
 async def test_build_daily_report_with_none_session_uses_sessionlocal():
     """Verify that build_daily_report uses SessionLocal when session is None."""
     mock_session = AsyncMock()
+    mock_session.add = MagicMock()
     mock_session.commit = AsyncMock()
 
     ev1 = _make_mock_event(1, importance=4)
@@ -437,6 +485,7 @@ async def test_build_daily_report_with_none_session_uses_sessionlocal():
 async def test_generate_and_save_daily_report_creates_or_updates():
     """Verify that generate_and_save_daily_report returns (date, items, formatted_text)."""
     mock_session = AsyncMock()
+    mock_session.add = MagicMock()
     mock_session.commit = AsyncMock()
 
     ev1 = _make_mock_event(1, importance=4)

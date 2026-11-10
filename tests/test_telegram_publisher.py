@@ -359,6 +359,103 @@ async def test_resilient_send_permanent_api_error_fails_immediately():
 
 
 # ==============================================================================
+# Idempotency & Partial Resume Tests
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_publish_skips_already_sent_chunks():
+    """Verify that retrying after partial failure skips already delivered chunks (Idempotency)."""
+    # 3-chunk report
+    report_text = "\n".join([f"<b>Item {i}</b>: " + "analysis content " * 15 for i in range(36)])
+    assert len(split_text(report_text, limit=3900)) == 3
+
+    # Simulate existing DB state where chunk 1 was sent (message_id=101) but chunk 2 failed
+    mock_db_report = MagicMock()
+    mock_db_report.telegram_message_ids = [101]
+    mock_db_report.status = "failed"
+
+    mock_session = AsyncMock()
+    mock_session.scalar.return_value = mock_db_report
+
+    mock_bot = AsyncMock()
+    # On retry, mock responses for remaining chunks: chunk 2 (102), chunk 3 (103), admin (104)
+    mock_bot.send_message.side_effect = [
+        MagicMock(message_id=102),
+        MagicMock(message_id=103),
+        MagicMock(message_id=104),
+    ]
+    mock_bot.session.close = AsyncMock()
+
+    sent = await publish_report(
+        report_date="2026-11-10",
+        content_quality="real",
+        report_text=report_text,
+        bot=mock_bot,
+        session=mock_session,
+        channel_id="@channel",
+        admin_chat_id="12345",
+    )
+
+    # Crucial assertion: send_message was called 3 times (chunk 2, chunk 3, admin), NOT 4!
+    # Chunk 1 was NEVER re-sent!
+    assert mock_bot.send_message.call_count == 3
+
+    # First call must be chunk 2, NOT chunk 1
+    chunk_2_call_text = mock_bot.send_message.call_args_list[0].kwargs["text"]
+    assert "Item 0" not in chunk_2_call_text  # Item 0 was in chunk 1
+
+    # Sent array and database records contain all 4 message IDs
+    assert [s["message_id"] for s in sent] == [101, 102, 103, 104]
+    assert mock_db_report.telegram_message_ids == [101, 102, 103, 104]
+    assert mock_db_report.status == "published"
+
+
+@pytest.mark.asyncio
+async def test_publish_all_chunks_already_sent_skips_channel():
+    """Verify that when all chunks are already sent, channel delivery is completely bypassed."""
+    report_text = "\n".join([f"<b>Item {i}</b>: " + "analysis content " * 15 for i in range(36)])
+    assert len(split_text(report_text, limit=3900)) == 3
+
+    mock_db_report = MagicMock()
+    mock_db_report.telegram_message_ids = [101, 102, 103]
+    mock_db_report.status = "failed"
+
+    mock_session = AsyncMock()
+    mock_session.scalar.return_value = mock_db_report
+
+    mock_bot = AsyncMock()
+    mock_bot.send_message.return_value = MagicMock(message_id=104)
+
+    sent = await publish_report(
+        report_date="2026-11-10",
+        content_quality="real",
+        report_text=report_text,
+        bot=mock_bot,
+        session=mock_session,
+        channel_id="@channel",
+        admin_chat_id="12345",
+    )
+
+    # Only 1 call made: to admin chat! Zero channel calls!
+    assert mock_bot.send_message.call_count == 1
+    assert mock_bot.send_message.call_args.kwargs["chat_id"] == "12345"
+    assert mock_db_report.status == "published"
+
+
+@pytest.mark.asyncio
+async def test_cli_production_guardrail():
+    """Verify CLI in production rejects real publish unless --confirm is specified."""
+    from app.telegram.publisher import _run_cli_dry_run
+
+    with patch.object(settings, "app_env", "production"):
+        with patch("sys.argv", ["publisher.py", "--date", "2026-11-10"]):
+            # Missing --confirm and --dry-run -> should exit without publishing
+            with patch("app.telegram.publisher.publish_report") as mock_pub:
+                await _run_cli_dry_run()
+                assert not mock_pub.called
+
+
+# ==============================================================================
 # Additional Coverage Boosters (Target >= 90%)
 # ==============================================================================
 
