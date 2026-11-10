@@ -9,6 +9,7 @@ from app.database.models import Source, Article, Event, ArticleEvent, Summary, J
 from app.collectors.rss_collector import fetch_feed
 from app.ai.provider import BaseAIProvider, get_ai_provider
 from app.ai.summarizer import PROMPT_VERSION, analyze_article
+from app.processors.event_matcher import EventMatcher
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -132,29 +133,46 @@ async def process_collected_articles(
             processed_count += 1
             continue
 
-        event = Event(
-            title=result.event_title,
-            event_type=result.categories[0] if result.categories else None,
-            countries=result.countries,
-            actors=result.actors,
-            location=result.location,
-            importance=result.importance,
-            status="active",
+        # Phase 5: Event Matching & Clustering
+        matcher = EventMatcher()
+        match_res = await matcher.match_or_create_event(
+            session=session,
+            article=article,
+            analysis_data=result.model_dump(mode="json"),
+            source_name=source_name,
         )
-        session.add(event)
-        await session.flush()
-        session.add(ArticleEvent(article_id=article.id, event_id=event.id, match_type="initial", confidence=0.70))
+
         session.add(
-            Summary(
-                event_id=event.id,
-                headline_fa=result.headline_fa,
-                summary_fa=result.summary_fa,
-                details_fa={"source": source_name, "url": article.original_url},
-                verification_status=result.verification_status,
-                model_name=ai_provider.model_name,
-                prompt_version=PROMPT_VERSION,
+            ArticleEvent(
+                article_id=article.id,
+                event_id=match_res.event_id,
+                match_type=match_res.match_type,
+                confidence=match_res.confidence,
             )
         )
+
+        if match_res.is_new_event:
+            session.add(
+                Summary(
+                    event_id=match_res.event_id,
+                    headline_fa=result.headline_fa,
+                    summary_fa=result.summary_fa,
+                    details_fa={
+                        "source": source_name,
+                        "url": article.original_url,
+                        "sources": [{
+                            "source": source_name,
+                            "url": article.original_url,
+                            "article_id": article.id,
+                            "added_at": (article.collected_at or datetime.now(timezone.utc)).isoformat(),
+                        }],
+                    },
+                    verification_status=result.verification_status,
+                    model_name=ai_provider.model_name,
+                    prompt_version=PROMPT_VERSION,
+                )
+            )
+
         article.status = "summarized"
         processed_count += 1
 

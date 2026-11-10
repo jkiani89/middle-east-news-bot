@@ -63,6 +63,9 @@ class Event(Base):
     last_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     importance: Mapped[int] = mapped_column(SmallInteger, default=3)
     status: Mapped[str] = mapped_column(String(30), default="active")
+    parent_event_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("events.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     article_links: Mapped[list["ArticleEvent"]] = relationship(back_populates="event")
     summaries: Mapped[list["Summary"]] = relationship(back_populates="event")
 

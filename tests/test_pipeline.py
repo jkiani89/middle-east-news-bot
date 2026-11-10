@@ -106,9 +106,12 @@ async def test_process_collected_articles_flags_injection_for_review():
 
     session = AsyncMock()
     session.add = MagicMock()
-    scalars_mock = MagicMock()
-    scalars_mock.all.return_value = [article]
-    session.scalars.return_value = scalars_mock
+    scalars_articles = MagicMock()
+    scalars_articles.all.return_value = [article]
+    scalars_empty = MagicMock()
+    scalars_empty.all.return_value = []
+    scalars_empty.first.return_value = None
+    session.scalars.side_effect = [scalars_articles, scalars_empty, scalars_empty]
 
     execute_mock = MagicMock()
     execute_mock.all.return_value = [(1, "Test Source")]
@@ -154,9 +157,12 @@ async def test_process_collected_articles_rejects_irrelevant_news():
 
     session = AsyncMock()
     session.add = MagicMock()
-    scalars_mock = MagicMock()
-    scalars_mock.all.return_value = [article]
-    session.scalars.return_value = scalars_mock
+    scalars_articles = MagicMock()
+    scalars_articles.all.return_value = [article]
+    scalars_empty = MagicMock()
+    scalars_empty.all.return_value = []
+    scalars_empty.first.return_value = None
+    session.scalars.side_effect = [scalars_articles, scalars_empty, scalars_empty]
 
     execute_mock = MagicMock()
     execute_mock.all.return_value = [(1, "Test Source")]
@@ -202,9 +208,12 @@ async def test_process_collected_articles_summarizes_valid_news():
 
     session = AsyncMock()
     session.add = MagicMock()
-    scalars_mock = MagicMock()
-    scalars_mock.all.return_value = [article]
-    session.scalars.return_value = scalars_mock
+    scalars_articles = MagicMock()
+    scalars_articles.all.return_value = [article]
+    scalars_empty = MagicMock()
+    scalars_empty.all.return_value = []
+    scalars_empty.first.return_value = None
+    session.scalars.side_effect = [scalars_articles, scalars_empty, scalars_empty]
 
     execute_mock = MagicMock()
     execute_mock.all.return_value = [(1, "Test Source")]

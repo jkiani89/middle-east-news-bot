@@ -91,6 +91,7 @@ erDiagram
 | `last_updated_at` | DateTime(tz) | زمان آخرین به‌روزرسانی یا الحاق خبر جدید |
 | `importance` | SmallInteger | درجه اهمیت از ۱ (پایین) تا ۵ (فوق‌العاده مهم) |
 | `status` | String(30) | وضعیت رویداد (`active`, `resolved`, `archived`) |
+| `parent_event_id` | BigInteger (FK -> events.id, Index) | شناسه رویداد والد (برای اتصال رویدادهای پیگیری فراتر از ۴۸ ساعت) |
 
 ### ۴. جدول `article_events` (پیوند چندبه‌چند مقالات و رویدادها)
 | فیلد | نوع داده | توضیحات |
