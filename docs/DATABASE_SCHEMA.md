@@ -65,7 +65,7 @@ erDiagram
 | `published_at` | DateTime(tz) (Index) | زمان انتشار اعلام‌شده توسط منبع |
 | `collected_at` | DateTime(tz) | زمان ثبت و دریافت در ربات |
 | `content_hash` | String(64) | مقدار هش SHA-256 نرمال‌شده‌ی عنوان و متن |
-| `status` | String(30) | وضعیت پردازش (`new`, `processed`, `summarized`, `rejected`, `failed`) |
+| `status` | String(30) | وضعیت پردازش: `collected` (بلافاصله پس از دریافت ست می‌شود؛ `new` صرفاً برای سازگاری اولیه حفظ شده)، `processed`, `summarized`, `rejected`, `failed` |
 | `ai_payload` | JSONB | پاسخ خام ساخت‌یافته دریافتی از مدل هوش مصنوعی |
 
 ### ۳. جدول `events` (رویدادهای کلیدی)

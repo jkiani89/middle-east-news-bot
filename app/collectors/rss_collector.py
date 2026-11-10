@@ -192,6 +192,7 @@ async def fetch_feed(
         )
 
     results: list[dict] = []
+    missing_pubdate_count = 0
     for entry in parsed.entries:
         raw_url = entry.get("link")
         title = entry.get("title", "").strip()
@@ -219,13 +220,24 @@ async def fetch_feed(
             except Exception:
                 published = None
 
+        if published is None:
+            missing_pubdate_count += 1
+
         summary = (entry.get("summary") or entry.get("description") or "").strip()
         article_text = summary
 
-        # If requested or summary is too brief, attempt full-text extraction via Trafilatura
-        if extract_full_text or (len(summary) < min_summary_length and extract_full_text):
+        # Fallback to Trafilatura full-text extraction if explicitly requested or summary is too short (< min_summary_length)
+        if extract_full_text or (len(summary) < min_summary_length and bool(raw_url)):
             full_text = await fetch_article_full_text(raw_url, client=client, timeout=req_timeout)
-            if full_text and len(full_text) > len(summary):
+            len_summary = len(summary)
+            len_extracted = len(full_text) if full_text else 0
+            logger.info(
+                "Trafilatura triggered: url=%s, rss_summary_len=%d, extracted_len=%d",
+                raw_url,
+                len_summary,
+                len_extracted,
+            )
+            if full_text and len(full_text) > len_summary:
                 article_text = full_text
 
         content_hash = make_hash(title, article_text)
@@ -238,6 +250,13 @@ async def fetch_feed(
             "text": article_text,
             "content_hash": content_hash,
         })
+
+    if missing_pubdate_count > 0:
+        logger.warning(
+            "pubDate missing for %d entries from %s (published_at will remain NULL)",
+            missing_pubdate_count,
+            feed_url,
+        )
 
     logger.info("Successfully fetched %d entries from %s", len(results), feed_url)
     return results
