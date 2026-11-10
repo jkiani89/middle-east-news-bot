@@ -1,11 +1,16 @@
-import asyncio
-from app.database.connection import engine
-from app.database.models import Base
+"""Database initialization script using Alembic migrations."""
 
-async def main():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    print("Database tables created.")
+from pathlib import Path
+from alembic.config import Config
+from alembic import command
+
+
+def run_migrations() -> None:
+    ini_path = Path(__file__).resolve().parents[1] / "alembic.ini"
+    alembic_cfg = Config(str(ini_path))
+    command.upgrade(alembic_cfg, "head")
+    print("Database migrations applied successfully to head.")
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_migrations()

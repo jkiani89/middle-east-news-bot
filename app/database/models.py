@@ -1,9 +1,12 @@
-from datetime import datetime, timezone
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String, Text, UniqueConstraint, Index
+from datetime import date, datetime, timezone
+from sqlalchemy import (
+    BigInteger, Boolean, Date, DateTime, ForeignKey, Integer,
+    Numeric, SmallInteger, String, Text, UniqueConstraint, Index
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-def utcnow():
+def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 class Base(DeclarativeBase):
@@ -25,7 +28,12 @@ class Source(Base):
 
 class Article(Base):
     __tablename__ = "articles"
-    __table_args__ = (UniqueConstraint("canonical_url", name="uq_articles_canonical_url"), Index("ix_articles_published_at", "published_at"))
+    __table_args__ = (
+        UniqueConstraint("canonical_url", name="uq_articles_canonical_url"),
+        Index("ix_articles_published_at", "published_at"),
+        Index("ix_articles_content_hash", "content_hash"),
+        Index("ix_articles_collected_at", "collected_at"),
+    )
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"), nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
@@ -86,7 +94,7 @@ class DailyReport(Base):
     __tablename__ = "daily_reports"
     __table_args__ = (UniqueConstraint("report_date", name="uq_daily_report_date"),)
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    report_date: Mapped[object] = mapped_column(Date, nullable=False)
+    report_date: Mapped[date] = mapped_column(Date, nullable=False)
     content: Mapped[dict] = mapped_column(JSONB, default=dict)
     telegram_message_ids: Mapped[list] = mapped_column(JSONB, default=list)
     status: Mapped[str] = mapped_column(String(30), default="generated")
