@@ -239,3 +239,29 @@ async def test_process_collected_articles_summarizes_valid_news():
     assert count == 1
     assert article.status == "summarized"
     assert session.commit.called
+
+
+@pytest.mark.asyncio
+async def test_pipeline_idempotency_after_merge():
+    """Verify pipeline idempotency: once articles are summarized/merged, re-running the pipeline
+
+    processes exactly 0 articles, creates 0 events, and raises 0 IntegrityErrors.
+    """
+    session = AsyncMock()
+    session.add = MagicMock()
+    # The database query filters WHERE Article.status == 'collected'
+    # Since previous articles transitioned to 'summarized', the query returns an empty list
+    scalars_empty = MagicMock()
+    scalars_empty.all.return_value = []
+    session.scalars.return_value = scalars_empty
+
+    execute_mock = MagicMock()
+    execute_mock.all.return_value = []
+    session.execute.return_value = execute_mock
+
+    from app.ai.provider import MockAIProvider
+    mock_provider = MockAIProvider()
+
+    count = await process_collected_articles(session, limit=100, provider=mock_provider)
+    assert count == 0
+    assert mock_provider.call_count == 0

@@ -190,7 +190,7 @@ class EventMatcher:
         self,
         time_window_hours: int = 48,
         follow_up_window_days: int = 14,
-        merge_threshold: float = 0.65,
+        merge_threshold: float = 0.70,
         follow_up_threshold: float = 0.80,
     ):
         self.time_window_hours = time_window_hours

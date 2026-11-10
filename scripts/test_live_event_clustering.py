@@ -48,7 +48,7 @@ REALISTIC_METADATA = {
     17: {"event_title": "Surge in Attacks on Critical Water Facilities in Conflict Zones", "categories": ["HUM", "SEC"], "countries": ["Syria", "Yemen", "Ukraine"], "actors": ["UNICEF"], "location": "Regional", "importance": 4},
     18: {"event_title": "Ebola Vaccine Clinical Trials Approved in DR Congo", "categories": ["HUM"], "countries": ["DR Congo"], "actors": ["WHO"], "location": "Kinshasa", "importance": 3},
     19: {"event_title": "COP31 Climate Conference Summit Negotiations in Antalya", "categories": ["POL", "ENE"], "countries": ["Turkiye"], "actors": ["UNFCCC Delegates"], "location": "Antalya", "importance": 4},
-    20: {"event_title": "UN Peacekeeping Security Vacuum Warnings in Abyei", "categories": ["MIL", "SEC"], "countries": ["Sudan", "South Sudan"], "actors": ["UNISFA", "Jean-Pierre Lacroix"], "location": "Abyei", "importance": 4},
+    20: {"event_title": "UN Peacekeeping Security Vacuum Warnings in Lebanon and Western Sahara", "categories": ["MIL", "SEC"], "countries": ["Lebanon", "Western Sahara"], "actors": ["Blue Helmets", "Jean-Pierre Lacroix"], "location": "New York", "importance": 4},
     21: {"event_title": "Rafah Displacement Camp Tents Damaged in Crossfire", "categories": ["HUM", "MIL"], "countries": ["Palestine"], "actors": ["UNRWA"], "location": "Rafah", "importance": 4},
     22: {"event_title": "Global Fuel Price Inflation Impact on Developing Economies", "categories": ["ECO"], "countries": [], "actors": ["UNCTAD"], "location": "Geneva", "importance": 3},
     23: {"event_title": "Syria Conflict Children Civil Registration Crisis", "categories": ["HUM"], "countries": ["Syria"], "actors": ["UNICEF"], "location": "Damascus", "importance": 3},

@@ -362,3 +362,124 @@ async def test_scenario_5_follow_up_event_past_48h_sets_parent_event_id():
     assert result.confidence >= 0.80
     assert result.event.parent_event_id == 15
     assert result.event.title.startswith("[پیگیری]")
+
+
+def test_edge_cases_empty_and_partial_metadata():
+    """Verify edge cases: None text, empty tokens, only one has actors, neither has location/category."""
+    assert normalize_text(None) == ""
+    assert tokenize(None) == set()
+
+    # Event with actors, incoming without actors
+    event = Event(
+        id=50,
+        title="OPEC Oil Production Quota Discussion",
+        event_type=None,
+        countries=["Saudi Arabia"],
+        actors=["OPEC Secretariat"],
+        location=None,
+    )
+    incoming = {
+        "event_title": "Oil Market Supply Quota Discussions in Riyadh",
+        "categories": [],
+        "countries": ["Saudi Arabia"],
+        "actors": [],
+        "location": None,
+    }
+    sim = calculate_event_similarity(event, incoming)
+    # Exactly one has actors: actors weight should be 0.0, countries 0.35
+    assert sim.weights_applied["actors"] == 0.0
+    assert sim.weights_applied["countries"] == 0.35
+    assert sim.category_score == 0.5
+    assert sim.location_score == 0.5
+
+
+@pytest.mark.asyncio
+async def test_multiple_articles_merge_into_same_event():
+    """Verify that multiple subsequent articles correctly merge into the same event,
+
+    accumulating sources in details_fa and repeatedly updating last_updated_at.
+    """
+    t0 = datetime(2026, 11, 10, 10, 0, tzinfo=timezone.utc)
+    t1 = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 11, 10, 14, 0, tzinfo=timezone.utc)
+
+    event = Event(
+        id=77,
+        title="Red Sea Commercial Shipping Route Security Coalition",
+        event_type="SEC",
+        countries=["Yemen"],
+        actors=["Houthi Forces", "Naval Coalition"],
+        location="Bab el-Mandeb",
+        first_seen_at=t0,
+        last_updated_at=t0,
+        importance=3,
+        status="active",
+    )
+    summary = Summary(
+        id=77,
+        event_id=77,
+        headline_fa="ائتلاف دریایی برای تأمین امنیت تردد تجاری در دریای سرخ",
+        summary_fa="کشتی‌های تجاری توسط ناوگان بین‌المللی اسکورت می‌شوند.",
+        details_fa={
+            "sources": [{
+                "source": "Initial Wire",
+                "url": "https://example.com/art1",
+                "article_id": 101,
+                "added_at": t0.isoformat(),
+            }]
+        },
+    )
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    scalars_mock = MagicMock()
+    scalars_mock.all.return_value = [event]
+    scalars_mock.first.return_value = summary
+    session.scalars.return_value = scalars_mock
+
+    matcher = EventMatcher(merge_threshold=0.70)
+
+    # Article 2 arrives at t1
+    art2 = Article(
+        id=102,
+        title="Naval coalition repels maritime attack in Bab el-Mandeb",
+        original_url="https://example.com/art2",
+        collected_at=t1,
+    )
+    ai2 = {
+        "event_title": "Red Sea Commercial Shipping Attack Repelled",
+        "categories": ["SEC"],
+        "countries": ["Yemen"],
+        "actors": ["Naval Coalition", "Houthi Forces"],
+        "location": "Bab el-Mandeb",
+        "importance": 4,  # Escalation
+    }
+    res2 = await matcher.match_or_create_event(session, art2, ai2, source_name="Reuters")
+    assert res2.is_new_event is False
+    assert res2.match_type == "auto"
+    assert event.last_updated_at == t1
+    assert event.importance == 4
+    assert len(summary.details_fa["sources"]) == 2
+    assert summary.details_fa["sources"][1]["source"] == "Reuters"
+
+    # Article 3 arrives at t2 (naive datetime without tzinfo to test conversion)
+    art3 = Article(
+        id=103,
+        title="Commercial vessels resume transit through Bab el-Mandeb",
+        original_url="https://example.com/art3",
+        collected_at=datetime(2026, 11, 10, 14, 0),  # naive datetime
+    )
+    ai3 = {
+        "event_title": "Bab el-Mandeb Shipping Traffic Resumes Under Naval Escort",
+        "categories": ["SEC"],
+        "countries": ["Yemen"],
+        "actors": ["Naval Coalition"],
+        "location": "Bab el-Mandeb",
+        "importance": 4,
+    }
+    res3 = await matcher.match_or_create_event(session, art3, ai3, source_name="AFP")
+    assert res3.is_new_event is False
+    assert res3.match_type == "auto"
+    assert event.last_updated_at == t2
+    assert len(summary.details_fa["sources"]) == 3
+    assert summary.details_fa["sources"][2]["source"] == "AFP"
