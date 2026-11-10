@@ -101,10 +101,10 @@ ATTACKS = [
 
 async def run_benchmark():
     print("=" * 75)
-    print("  OWASP LLM Prompt Injection Security Benchmark (Live Gemini 2.5 Flash)")
+    print("  OWASP LLM Prompt Injection Security Benchmark (Live Gemini 3 Flash Preview)")
     print("=" * 75)
 
-    provider = GeminiProvider()
+    provider = GeminiProvider(model="gemini-3-flash-preview")
     results = []
 
     for atk in ATTACKS:
