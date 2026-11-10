@@ -22,7 +22,7 @@ from typing import Sequence
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.provider import AIRateLimitError, GeminiProvider
+from app.ai.provider import AIProviderError, AIRateLimitError, AIServiceUnavailableError, GeminiProvider
 from app.ai.summarizer import PROMPT_VERSION, analyze_article
 from app.config import settings
 from app.database.connection import SessionLocal
@@ -59,7 +59,7 @@ async def reprocess_articles(
     provider = GeminiProvider(
         primary_model=settings.gemini_primary_model,
         fallback_model=settings.gemini_fallback_model,
-        enable_fallback=settings.gemini_enable_fallback,
+        enable_fallback=True,
     )
 
     async with SessionLocal() as session:
@@ -135,7 +135,7 @@ async def reprocess_articles(
                 print(f"    Importance: {result.importance} | Injection Attempt: {result.is_injection_attempt}")
 
                 payload_dict = result.model_dump(mode="json")
-                payload_dict["model_name"] = settings.gemini_model
+                payload_dict["model_name"] = provider.model_name
                 article.ai_payload = payload_dict
                 if result.is_injection_attempt:
                     article.status = "flagged_for_review"
@@ -148,16 +148,15 @@ async def reprocess_articles(
                 successful_count += 1
                 await session.commit()
 
-            except AIRateLimitError as rle:
-                print(f"\n[ALERT] Rate limit / Quota reached: {rle}")
+            except (AIRateLimitError, AIServiceUnavailableError) as err:
+                print(f"\n[ALERT] API Error / Quota / Service Unavailable: {err}")
                 print(f"Progress saved up to Article #{article.id}. You can resume later.")
                 rate_limited = True
                 break
             except Exception as exc:
                 err_str = str(exc)
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                    print(f"\n[ALERT] Quota exhausted (429 RESOURCE_EXHAUSTED): {err_str}")
-                    print(f"Progress saved up to Article #{article.id}. You can resume later.")
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str:
+                    print(f"\n[ALERT] Quota / Server Error ({err_str}): Progress saved up to Article #{article.id}.")
                     rate_limited = True
                     break
                 else:
@@ -197,7 +196,7 @@ async def reprocess_articles(
                         summary_fa=payload.get("summary_fa", art.title),
                         details_fa={"source": sources_map.get(art.source_id, "UN News"), "url": art.original_url},
                         verification_status=payload.get("verification_status", "confirmed"),
-                        model_name=settings.gemini_model,
+                        model_name=payload.get("model_name", provider.model_name),
                         prompt_version=PROMPT_VERSION,
                     )
                     session.add(summary)

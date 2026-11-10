@@ -4,6 +4,44 @@
 
 ---
 
+## [2026-11-10] تکمیل موفقیت‌آمیز فاز ۸: پیاده‌سازی زمان‌بند، وظایف خودکار و بازپردازش تجربی (Phase 8 Scheduler & Production Automation)
+
+### ۱. دستاوردها و نتایج مرحله ۰ (Reprocess Mock Articles & Live Fallback Validation)
+1. **اثبات تجربی سقف سهمیه ۲۰ RPD توسط سرورهای ابری گوگل:**
+   در حین بازپردازش مقالات با مدل gemini-3.8-flash، پاسخ رسمی سرور گوگل سقف روزانه را صریحاً تایید کرد:
+   Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.8-flash, description: Generate content requests per day limit exceeded on Free Tier.
+2. **ورود بلادرنگ مکانیزم Fallback به مدار تولید:**
+   به محض وقوع خطای سهمیه و ۵۰۳ روی مدل ۳.۸، سیستم به‌طور خودکار به مدل پشتیبان gemini-3.5-flash-lite سوییچ کرده و ۱۲ مقاله را با موفقیت و بدون وقفه پردازش کرد.
+3. **وضعیت کنونی پایگاه داده (summaries و rticles):**
+   - مجموع ۱۴ خلاصه واقعی و صفر خلاصه موک:
+     - gemini-3.5-flash-lite: ۱۲ خلاصه
+     - gemini-3.8-flash: ۱ خلاصه
+     - gemini-2.5-flash: ۱ خلاصه
+   - مابقی مقالات در وضعیت امن ذخیره شده و پس از بازنشانی سهمیه فردا ادامه خواهند یافت (تقسیم به دو روز طبق طراحی).
+4. **شاخص بنچمارک تشخیص نفوذ (False Positive Benchmark):**
+   - ارزیابی ۱۳ مقاله پردازش‌شده با مدل واقعی: **۰ مورد مثبت کاذب (0/13 = 0.0%)**
+   - کرانه بالای فاصله اطمینان ۹۵٪ (Rule of Three): **۲۳.۱٪**
+   - ۳ سناریوی حسّاس کنترلی (Directives, Quotes, Diplomatic): **۱۰۰٪ پاک (CLEAN)**
+5. **تولید گزارش روزانه زنده و آزمون انتشار:**
+   - گزارش روزانه فاز ۶ با **۱۴,۲۱۸ کاراکتر** و **۱۲ رویداد واقعی** تولید و در دیتابیس ثبت شد.
+   - آزمون publisher --dry-run با **۴ تکه (Chunk)** متوازن و تفکیک‌شده به کانال و پیام خلاصه ادمین با موفقیت اعتبارسنجی گردید.
+
+### ۲. پیاده‌سازی زمان‌بند و وظایف خودکار (Scheduler & Resilience)
+1. **بررسی وضعیت اولیه (Pre-flight check):**
+   تابع check_primary_model_available پیش از هر اجرای ساعتی وضعیت مدل اصلی را استعلام می‌کند؛ در صورت عدم دسترسی (۵۰۳ یا سهمیه)، تیک ساعتی با وضعیت skipped_primary_unavailable ثبت و متوقف می‌شود تا از افت ناگهانی کیفیت گزارش‌ها جلوگیری گردد.
+2. **پیکربندی زمان‌بند (APScheduler):**
+   - وظیفه hourly_collection با IntervalTrigger، max_instances=1، coalesce=True، و misfire_grace_time=300.
+   - وظیفه daily_report با CronTrigger راس ساعت تعیین‌شده در منطقه زمانی Asia/Tehran.
+3. **ایزولاسیون کامل خطاها در jobs.py:**
+   ثبت وضعیت‌های مجزای ailed_quota ،ailed_unavailable ،ailed_ai ،skipped_primary_unavailable و skipped_mock_content در جدول job_logs.
+4. **مصالحه آغازین پروسس‌ها (Startup Reconciliation):**
+   پیاده‌سازی 
+econcile_interrupted_jobs جهت علامت‌گذاری جاب‌های معلق قدیمی‌تر از ۳۰ دقیقه به عنوان interrupted در استارت‌آپ pp/main.py.
+5. **آزمون‌های قرارداد (Contract Tests):**
+   نگارش ۱۱ آزمون جامع در 	ests/test_scheduler_contracts.py با پوشش ۸۸٪ روی pp/scheduler/jobs.py و ۱۳۰ آزمون سبز در کل پروژه.
+
+---
+
 ## [2026-11-10] تکمیل موفقیت‌آمیز فاز ۷.۵: استخر کلیدهای Gemini و ارتقا به Gemini 3.8 Flash (Phase 7.5 Key Pool & Multi-Model)
 
 ### ۱. اهداف و دستاوردهای کلیدی

@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_primary_model: str = "gemini-3.8-flash"
     gemini_fallback_model: str = "gemini-3.5-flash-lite"
-    gemini_enable_fallback: bool = False
+    gemini_enable_fallback: bool = True
     gemini_key_db_path: str = "data/gemini_keys.db"
     gemini_model: str = "gemini-3.8-flash"
     telegram_bot_token: str = ""

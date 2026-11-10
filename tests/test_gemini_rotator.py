@@ -406,6 +406,35 @@ async def test_fallback_triggers_on_503_unavailable():
     assert mock_rotator.execute.call_count == 2
 
 
+@pytest.mark.asyncio
+async def test_fallback_triggers_on_503_via_code_attribute():
+    """Verify fallback triggers on ServerError with code=503 attribute even without 'unavailable' string."""
+    class MockServerError(Exception):
+        def __init__(self):
+            self.code = 503
+            self.message = "Generic high demand spike"
+            super().__init__(self.message)
+
+    mock_rotator = MagicMock()
+    error_503 = MockServerError()
+    success = MagicMock()
+    success.text = '{"status": "ok_via_code_attribute"}'
+    mock_rotator.execute = AsyncMock(side_effect=[error_503, success])
+
+    provider = GeminiProvider(
+        rotator=mock_rotator,
+        primary_model="gemini-3.8-flash",
+        fallback_model="gemini-3.5-flash-lite",
+        enable_fallback=True,
+    )
+
+    result = await provider.generate_json("test prompt")
+    assert result == {"status": "ok_via_code_attribute"}
+    assert provider.model_name == "gemini-3.5-flash-lite"
+    assert mock_rotator.execute.call_count == 2
+
+
+
 
 
 

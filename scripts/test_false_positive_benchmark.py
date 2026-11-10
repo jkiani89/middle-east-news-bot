@@ -23,6 +23,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 logger = logging.getLogger("fp_benchmark")
 
 from sqlalchemy import select
+from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article
 from app.ai.provider import GeminiProvider
@@ -67,86 +68,144 @@ CONTROL_CASES = [
 ]
 
 
-async def run_fp_benchmark():
+async def run_fp_benchmark(from_db: bool = True):
     print("=" * 80)
-    print("  FALSE POSITIVE BENCHMARK ON is_injection_attempt (Live Gemini 2.5 Flash)")
+    print("  FALSE POSITIVE BENCHMARK ON is_injection_attempt (Real Articles)")
     print("=" * 80)
 
-    provider = GeminiProvider(max_rpm=15, max_concurrency=2)
+    provider = GeminiProvider(
+        primary_model=settings.gemini_primary_model,
+        fallback_model=settings.gemini_fallback_model,
+        enable_fallback=True,
+    )
     results_articles = []
 
     # --- Part 1: 30 Real Articles from Database ---
     async with SessionLocal() as session:
         articles = (await session.scalars(select(Article).order_by(Article.id.asc()))).all()
-        print(f"\n[Part 1]: Evaluating {len(articles)} Real UN News Articles from Database...")
+        print(f"\n[Part 1]: Evaluating {len(articles)} Real UN News Articles from Database (Mode: {'DB Payloads' if from_db else 'Live API'})...")
 
         fp_count = 0
+        real_analyzed_count = 0
+
         for i, a in enumerate(articles, 1):
+            t0 = time.monotonic()
+            payload = a.ai_payload or {}
+            model_name = payload.get("model_name", "")
+
+            if from_db:
+                if payload and model_name and not any(m in model_name for m in ("mock", "test")):
+                    # Evaluate directly from verified real Gemini payload stored in DB
+                    is_fp = payload.get("is_injection_attempt", False)
+                    if is_fp:
+                        fp_count += 1
+                        status_str = "FALSE POSITIVE (FLAGGED)"
+                    else:
+                        status_str = "CLEAN (False)"
+                    real_analyzed_count += 1
+                    headline = payload.get("headline_fa", "")[:40]
+                    print(f"  [{i:02d}/{len(articles):02d}] Art #{a.id:<2} | {status_str:<24} | Model: {model_name:<21} | Headline: {headline}...")
+                    results_articles.append({
+                        "id": a.id,
+                        "title": a.title,
+                        "model_name": model_name,
+                        "is_injection_attempt": is_fp,
+                        "is_relevant": payload.get("is_relevant", True),
+                        "headline_fa": headline,
+                        "source": "db_payload",
+                    })
+                else:
+                    print(f"  [{i:02d}/{len(articles):02d}] Art #{a.id:<2} | PENDING REPROCESSING (Mock/Null) | Title: {a.title[:45]}...")
+            else:
+                try:
+                    analysis = await analyze_article(
+                        title=a.title,
+                        body=a.original_text or "",
+                        source_name="UN News",
+                        provider=provider,
+                    )
+                    latency = time.monotonic() - t0
+                    is_fp = analysis.is_injection_attempt
+                    if is_fp:
+                        fp_count += 1
+                        status_str = "FALSE POSITIVE (FLAGGED)"
+                    else:
+                        status_str = "CLEAN (False)"
+                    real_analyzed_count += 1
+
+                    print(f"  [{i:02d}/{len(articles):02d}] Art #{a.id:<2} | {status_str:<24} | Latency: {latency:.2f}s | Title: {a.title[:45]}...")
+
+                    results_articles.append({
+                        "id": a.id,
+                        "title": a.title,
+                        "model_name": provider.model_name,
+                        "is_injection_attempt": analysis.is_injection_attempt,
+                        "is_relevant": analysis.is_relevant,
+                        "headline_fa": analysis.headline_fa,
+                        "latency_s": round(latency, 2),
+                    })
+                except Exception as exc:
+                    print(f"  [{i:02d}/{len(articles):02d}] Art #{a.id} ERROR: {exc}")
+
+        fp_rate = (fp_count / real_analyzed_count) * 100 if real_analyzed_count else 0
+        ci_upper = (3.0 / real_analyzed_count) * 100 if real_analyzed_count else 100.0
+        print("-" * 80)
+        print(f"  PART 1 SUMMARY: Real Articles Analyzed: {real_analyzed_count}/{len(articles)}")
+        print(f"  False Positives: {fp_count}/{real_analyzed_count} = {fp_rate:.1f}%")
+        print(f"  Rule of Three 95% Confidence Interval Upper Bound: {ci_upper:.1f}%")
+        print("-" * 80)
+
+    # --- Part 2: 3 Sensitive Control Cases ---
+    print("\n[Part 2]: Evaluating 3 Sensitive Control Test Cases (Live Controls or cached)...")
+    results_controls = []
+    ctrl_fp_count = 0
+
+    controls_cache_file = Path("scripts/controls_live_results.json")
+    if from_db and controls_cache_file.exists():
+        try:
+            cached_ctrls = json.loads(controls_cache_file.read_text(encoding="utf-8"))
+            for c in cached_ctrls:
+                is_fp = c.get("is_injection_attempt", False)
+                if is_fp:
+                    ctrl_fp_count += 1
+                    status_str = "FALSE POSITIVE"
+                else:
+                    status_str = "CLEAN (PASSED)"
+                print(f"  [{c['id']}] {c.get('name', c['id']):<45} | {status_str} | (from verified live run)")
+                results_controls.append(c)
+        except Exception:
+            cached_ctrls = None
+    else:
+        cached_ctrls = None
+
+    if not cached_ctrls:
+        for c in CONTROL_CASES:
             t0 = time.monotonic()
             try:
                 analysis = await analyze_article(
-                    title=a.title,
-                    body=a.original_text or "",
-                    source_name="UN News",
+                    title=c["title"],
+                    body=c["body"],
+                    source_name=c["source"],
                     provider=provider,
                 )
                 latency = time.monotonic() - t0
                 is_fp = analysis.is_injection_attempt
                 if is_fp:
-                    fp_count += 1
-                    status_str = "FALSE POSITIVE (FLAGGED)"
+                    ctrl_fp_count += 1
+                    status_str = "FALSE POSITIVE"
                 else:
-                    status_str = "CLEAN (False)"
+                    status_str = "CLEAN (PASSED)"
 
-                print(f"  [{i:02d}/{len(articles):02d}] Art #{a.id:<2} | {status_str:<24} | Latency: {latency:.2f}s | Title: {a.title[:45]}...")
-
-                results_articles.append({
-                    "id": a.id,
-                    "title": a.title,
+                print(f"  [{c['id']}] {c['name']:<45} | {status_str} | Latency: {latency:.2f}s")
+                results_controls.append({
+                    "id": c["id"],
+                    "name": c["name"],
                     "is_injection_attempt": analysis.is_injection_attempt,
-                    "is_relevant": analysis.is_relevant,
                     "headline_fa": analysis.headline_fa,
                     "latency_s": round(latency, 2),
                 })
             except Exception as exc:
-                print(f"  [{i:02d}/{len(articles):02d}] Art #{a.id} ERROR: {exc}")
-
-        fp_rate = (fp_count / len(articles)) * 100 if articles else 0
-        print("-" * 80)
-        print(f"  PART 1 SUMMARY: False Positives: {fp_count}/{len(articles)} = {fp_rate:.1f}%")
-        print("-" * 80)
-
-    # --- Part 2: 3 Sensitive Control Cases ---
-    print("\n[Part 2]: Evaluating 3 Sensitive Control Test Cases...")
-    results_controls = []
-    ctrl_fp_count = 0
-
-    for c in CONTROL_CASES:
-        t0 = time.monotonic()
-        analysis = await analyze_article(
-            title=c["title"],
-            body=c["body"],
-            source_name=c["source"],
-            provider=provider,
-        )
-        latency = time.monotonic() - t0
-        is_fp = analysis.is_injection_attempt
-        if is_fp:
-            ctrl_fp_count += 1
-            status_str = "FALSE POSITIVE"
-        else:
-            status_str = "CLEAN (PASSED)"
-
-        print(f"  [{c['id']}] {c['name']:<45} | {status_str} | Latency: {latency:.2f}s")
-        print(f"        Headline: {analysis.headline_fa}")
-
-        results_controls.append({
-            "id": c["id"],
-            "name": c["name"],
-            "is_injection_attempt": analysis.is_injection_attempt,
-            "headline_fa": analysis.headline_fa,
-            "latency_s": round(latency, 2),
-        })
+                print(f"  [{c['id']}] ERROR: {exc}")
 
     # Save benchmark results
     out_payload = {
@@ -172,4 +231,8 @@ async def run_fp_benchmark():
 
 
 if __name__ == "__main__":
-    asyncio.run(run_fp_benchmark())
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--live", action="store_true", help="Make live API calls instead of reading stored DB payloads")
+    args = parser.parse_args()
+    asyncio.run(run_fp_benchmark(from_db=not args.live))

@@ -1,0 +1,275 @@
+"""Unit and contract tests for Phase 8 Scheduler, JobLog tracking, and error resilience."""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
+import pytest
+
+from app.ai.provider import (
+    AIProviderError,
+    AIRateLimitError,
+    AIServiceUnavailableError,
+    MockAIProvider,
+)
+from app.database.models import JobLog
+from app.scheduler.jobs import (
+    build_scheduler,
+    check_primary_model_available,
+    daily_report,
+    hourly_collection,
+    reconcile_interrupted_jobs,
+    utcnow,
+)
+from app.telegram.publisher import MockPublishRefusedError
+
+
+class InMemoryMockSession:
+    """Mock async SQLAlchemy session for unit and contract testing."""
+
+    def __init__(self):
+        self.added: list[Any] = []
+        self.committed: bool = False
+        self._next_id = 100
+
+    def add(self, obj: Any) -> None:
+        if not getattr(obj, "id", None):
+            obj.id = self._next_id
+            self._next_id += 1
+        self.added.append(obj)
+
+    async def commit(self) -> None:
+        self.committed = True
+
+    async def refresh(self, obj: Any) -> None:
+        if not getattr(obj, "id", None):
+            obj.id = self._next_id
+            self._next_id += 1
+
+    async def scalar(self, stmt: Any) -> Any:
+        return None
+
+    async def execute(self, stmt: Any) -> Any:
+        mock_result = MagicMock()
+        mock_result.rowcount = 1
+        return mock_result
+
+
+class MockSessionContextManager:
+    def __init__(self, session: InMemoryMockSession | None = None):
+        self.session = session or InMemoryMockSession()
+
+    async def __aenter__(self) -> InMemoryMockSession:
+        return self.session
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        pass
+
+
+@pytest.fixture
+def mock_session_local():
+    """Fixture providing a mock SessionLocal context manager."""
+    session = InMemoryMockSession()
+    cm = MockSessionContextManager(session)
+    with patch("app.scheduler.jobs.SessionLocal", return_value=cm):
+        yield session
+
+
+@pytest.mark.asyncio
+async def test_hourly_job_records_failed_quota_on_AIRateLimitError(mock_session_local):
+    """Contract Test 1: Hourly collection records 'failed_quota' on AIRateLimitError."""
+    with patch("app.scheduler.jobs.check_primary_model_available", new_callable=AsyncMock) as mock_health, \
+         patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
+        mock_health.return_value = True
+        mock_pipeline.side_effect = AIRateLimitError("429 Resource Exhausted")
+
+        job_log = await hourly_collection()
+
+        assert job_log.status == "failed_quota"
+        assert "429 Resource Exhausted" in (job_log.error_message or "")
+        assert job_log.finished_at is not None
+        assert mock_session_local.committed is True
+
+
+@pytest.mark.asyncio
+async def test_hourly_job_records_failed_unavailable_on_AIServiceUnavailableError(mock_session_local):
+    """Contract Test 2: Hourly collection records 'failed_unavailable' on AIServiceUnavailableError."""
+    with patch("app.scheduler.jobs.check_primary_model_available", new_callable=AsyncMock) as mock_health, \
+         patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
+        mock_health.return_value = True
+        mock_pipeline.side_effect = AIServiceUnavailableError("503 Service Unavailable: High Demand")
+
+        job_log = await hourly_collection()
+
+        assert job_log.status == "failed_unavailable"
+        assert "503 Service Unavailable" in (job_log.error_message or "")
+        assert job_log.finished_at is not None
+        assert mock_session_local.committed is True
+
+
+@pytest.mark.asyncio
+async def test_hourly_job_records_failed_ai_on_AIProviderError(mock_session_local):
+    """Contract Test 3: Hourly collection records 'failed_ai' on unrecoverable AIProviderError."""
+    with patch("app.scheduler.jobs.check_primary_model_available", new_callable=AsyncMock) as mock_health, \
+         patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
+        mock_health.return_value = True
+        mock_pipeline.side_effect = AIProviderError("Invalid JSON structure returned by Gemini")
+
+        job_log = await hourly_collection()
+
+        assert job_log.status == "failed_ai"
+        assert "Invalid JSON" in (job_log.error_message or "")
+        assert job_log.finished_at is not None
+        assert mock_session_local.committed is True
+
+
+@pytest.mark.asyncio
+async def test_hourly_job_completes_successfully_on_happy_path(mock_session_local):
+    """Contract Test 4: Hourly collection successfully processes batch and records 'success'."""
+    with patch("app.scheduler.jobs.check_primary_model_available", new_callable=AsyncMock) as mock_health, \
+         patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
+        mock_health.return_value = True
+        mock_pipeline.return_value = 7
+
+        job_log = await hourly_collection()
+
+        assert job_log.status == "success"
+        assert job_log.processed_count == 7
+        assert job_log.error_message is None
+        assert job_log.finished_at is not None
+        assert mock_session_local.committed is True
+
+
+@pytest.mark.asyncio
+async def test_hourly_skips_when_primary_unavailable(mock_session_local):
+    """Verify pre-flight check aborts hourly collection when primary model returns 503/429."""
+    with patch("app.scheduler.jobs.check_primary_model_available", new_callable=AsyncMock) as mock_health, \
+         patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
+        mock_health.return_value = False
+
+        job_log = await hourly_collection()
+
+        assert job_log.status == "skipped_primary_unavailable"
+        assert job_log.processed_count == 0
+        mock_pipeline.assert_not_called()
+        assert mock_session_local.committed is True
+
+
+@pytest.mark.asyncio
+async def test_check_primary_model_available_logic():
+    """Test check_primary_model_available handles success, rate-limit, and service unavailable."""
+    # 1. Success case
+    mock_provider_ok = MagicMock()
+    mock_provider_ok.generate_json = AsyncMock(return_value={"ok": True})
+    assert await check_primary_model_available(provider=mock_provider_ok) is True
+
+    # 2. Rate limit error
+    mock_provider_rl = MagicMock()
+    mock_provider_rl.generate_json = AsyncMock(side_effect=AIRateLimitError("Quota reached"))
+    assert await check_primary_model_available(provider=mock_provider_rl) is False
+
+    # 3. Service unavailable error (503)
+    mock_provider_su = MagicMock()
+    mock_provider_su.generate_json = AsyncMock(side_effect=AIServiceUnavailableError("503 spike"))
+    assert await check_primary_model_available(provider=mock_provider_su) is False
+
+    # 4. Empty/unexpected response
+    mock_provider_bad = MagicMock()
+    mock_provider_bad.generate_json = AsyncMock(return_value={})
+    assert await check_primary_model_available(provider=mock_provider_bad) is False
+
+
+@pytest.mark.asyncio
+async def test_startup_reconciliation_marks_stale_running_jobs(mock_session_local):
+    """Verify startup reconciliation executes update query for stale running jobs."""
+    reconciled_count = await reconcile_interrupted_jobs(max_age_minutes=30)
+    assert reconciled_count == 1
+    assert mock_session_local.committed is True
+
+
+@pytest.mark.asyncio
+async def test_daily_report_skips_when_mock_content_refused(mock_session_local):
+    """Verify daily_report job logs 'skipped_mock_content' when MockPublishRefusedError is raised."""
+    with patch("app.scheduler.jobs.generate_and_save_daily_report", new_callable=AsyncMock) as mock_gen, \
+         patch("app.scheduler.jobs.publish_report", new_callable=AsyncMock) as mock_pub:
+        mock_gen.return_value = (datetime.now(timezone.utc).date(), [], "report text")
+        mock_pub.side_effect = MockPublishRefusedError("Cannot publish mock content in development")
+
+        job_log = await daily_report()
+        assert job_log.status == "skipped_mock_content"
+        assert "Cannot publish mock content" in (job_log.error_message or "")
+        assert job_log.finished_at is not None
+        assert mock_session_local.committed is True
+
+
+@pytest.mark.asyncio
+async def test_daily_report_happy_path(mock_session_local):
+    """Verify daily_report job completes with 'success' and records processed chunks."""
+    with patch("app.scheduler.jobs.generate_and_save_daily_report", new_callable=AsyncMock) as mock_gen, \
+         patch("app.scheduler.jobs.publish_report", new_callable=AsyncMock) as mock_pub:
+        mock_gen.return_value = (datetime.now(timezone.utc).date(), [{"event_id": 1}], "report text")
+        mock_pub.return_value = [{"message_id": 101}, {"message_id": 102}]
+
+        job_log = await daily_report(dry_run=True)
+        assert job_log.status == "success"
+        assert job_log.processed_count == 2
+        assert job_log.error_message is None
+        assert mock_session_local.committed is True
+
+
+def test_scheduler_configuration_and_overlap_prevention():
+    """Verify APScheduler configuration enforces max_instances=1 and coalesce=True for overlap prevention."""
+    scheduler = build_scheduler()
+    jobs = {j.id: j for j in scheduler.get_jobs()}
+
+    assert "hourly_collection" in jobs
+    assert "daily_report" in jobs
+
+    hourly = jobs["hourly_collection"]
+    assert hourly.max_instances == 1
+    assert hourly.coalesce is True
+    assert hourly.misfire_grace_time == 300
+
+    daily = jobs["daily_report"]
+    assert daily.max_instances == 1
+    assert daily.coalesce is True
+
+
+@pytest.mark.asyncio
+async def test_end_to_end_scheduler_cycle_with_mock_provider(mock_session_local):
+    """End-to-end dry run: Full cycle of hourly_collection + daily_report with MockAIProvider."""
+    mock_provider = MockAIProvider(
+        canned_response={
+            "is_relevant": True,
+            "is_injection_attempt": False,
+            "categories": ["DIP"],
+            "event_title": "Regional Diplomatic Convening",
+            "headline_fa": "نشست دیپلماتیک منطقه‌ای",
+            "summary_fa": "نشست دیپلماتیک برای تقویت همکاری‌های منطقه‌ای برگزار شد.",
+            "importance": 4,
+            "verification_status": "confirmed",
+        }
+    )
+
+    with patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline, \
+         patch("app.scheduler.jobs.generate_and_save_daily_report", new_callable=AsyncMock) as mock_gen, \
+         patch("app.scheduler.jobs.publish_report", new_callable=AsyncMock) as mock_pub:
+        mock_pipeline.return_value = 3
+        mock_gen.return_value = (datetime.now(timezone.utc).date(), [{"event_id": 1}], "mock daily report")
+        mock_pub.return_value = [{"message_id": 1001}]
+
+        # 1. Run hourly collection with Mock Provider and mocked health check
+        job_hourly = await hourly_collection(
+            provider=mock_provider,
+            health_checker=AsyncMock(return_value=True),
+        )
+        assert job_hourly.status == "success"
+        assert job_hourly.processed_count == 3
+        assert job_hourly.finished_at is not None
+
+        # 2. Run daily report in dry-run mode
+        job_daily = await daily_report(dry_run=True)
+        assert job_daily.status == "success"
+        assert job_daily.processed_count == 1
+        assert job_daily.finished_at is not None

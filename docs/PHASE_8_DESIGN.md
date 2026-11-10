@@ -68,6 +68,28 @@ flowchart TD
 
 ---
 
-## ۴. چرخه حیات و مدیریت نشست‌های دیتابیس (Session Management)
+## ۴. بررسی وضعیت اولیه پیش از اجرا (Pre-flight check) قبل از هر چرخه ساعتی
 
-در `app/scheduler/jobs.py`، نشست‌های دیتابیس باید به‌صورت context manager مستقل (`async with SessionLocal() as session:`) اداره شوند تا نشت اتصال (Connection Leak) در طول اجرای طولانی‌مدت پروسس رخ ندهد.
+قبل از هر اجرای `hourly_collection`، یک call سریع و سبک به `gemini-3.8-flash` با prompt ساده (`Respond with {"ok": true}`) ارسال می‌شود:
+- **اگر پاسخ معتبر بازگشت (`OK`):** پایپ‌لاین جمع‌آوری و پردازش با مدل اصلی (`3.8-flash`) آغاز می‌گردد.
+- **اگر خطای ۵۰۳ یا عدم دسترسی بازگشت (`503 UNAVAILABLE` / `429`):** اجرای این تیک ساعتی skip می‌شود، در جدول `job_logs` با وضعیت `skipped_primary_unavailable` ثبت می‌گردد، و تلاش بعدی به ساعت بعد موکول می‌شود.
+
+- **هزینه:** ۱ فراخوانی سبک در هر ساعت (در صورت سلامت مدل ۳.۸)
+- **سود راهبردی:** جلوگیری از پردازش دسته‌جمعی ۳۰ مقاله با مدل Fallback کیفیت پایین‌تر و حفظ خط‌مشی اولویت کیفیت تحلیلی.
+
+---
+
+## ۵. چرخه حیات، مصالحه آغازین پروسس و مدیریت نشست‌ها (Startup Reconciliation & Session Management)
+
+### ۵.۱. مصالحه پروسس‌های ناتمام در آغاز به کار (`reconcile_interrupted_jobs`):
+اگر در اثر ری‌استارت سرور یا اختلال موقت، وظیفه‌ای در وضعیت `running` باقی مانده باشد، در هنگام استارت‌آپ سیستم:
+```sql
+UPDATE job_logs 
+SET status = 'interrupted', finished_at = NOW() 
+WHERE status = 'running' AND started_at < NOW() - INTERVAL '30 minutes';
+```
+پروسس‌های مسدود به صورت خودکار آزاد شده و مانع از اجرای مجدد چرخه‌ها نمی‌شوند.
+
+### ۵.۲. مدیریت نشست‌های پایگاه داده:
+در `app/scheduler/jobs.py`، تمام نشست‌های دیتابیس به‌صورت context manager مستقل (`async with SessionLocal() as session:`) اداره می‌شوند تا نشت اتصال (Connection Leak) در طول اجرای طولانی‌مدت پروسس رخ ندهد.
+
