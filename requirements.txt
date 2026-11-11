@@ -5,6 +5,7 @@ APScheduler>=3.10,<4
 asyncpg>=0.29,<1
 greenlet>=3.0,<4
 SQLAlchemy>=2.0,<3
+psycopg[binary]>=3.2,<4
 
 # HTTP, Parsing & News Collection
 feedparser>=6.0,<7
