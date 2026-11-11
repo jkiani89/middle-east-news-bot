@@ -1,6 +1,8 @@
 import os
 import re
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
     app_env: str = "development"
@@ -10,6 +12,7 @@ class Settings(BaseSettings):
     gemini_fallback_model: str = "gemini-3.5-flash-lite"
     gemini_enable_fallback: bool = True
     gemini_key_db_path: str = "data/gemini_keys.db"
+    gemini_log_retention_days: int = 30  # Retention days for gemini_request_log cleanup
     gemini_model: str = "gemini-3.8-flash"
     telegram_bot_token: str = ""
     telegram_channel_id: str = ""

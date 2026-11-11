@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timedelta, timezone
 import logging
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Coroutine
 from zoneinfo import ZoneInfo
 
@@ -285,6 +285,45 @@ async def reconcile_interrupted_jobs(max_age_minutes: int = 30) -> int:
         return count
 
 
+async def cleanup_gemini_request_log() -> None:
+    """Daily: delete old rows from gemini_request_log to prevent unbounded growth.
+
+    Retention: settings.gemini_log_retention_days (default 30 days).
+    Skipped in APP_ENV=test to keep tests isolated and fast.
+
+    Runs in-process via psycopg (sync). For 30-day DELETE with proper
+    index, expected < 1s. Future: move to asyncio.to_thread if it grows.
+    """
+    if settings.app_env == "test":
+        logger.debug("Skipping cleanup_gemini_request_log in test environment")
+        return
+
+    # Import inside function to avoid circular imports at module load
+    from app.ai.postgres_adapter import PostgresAdapter
+    from app.ai.provider import GeminiProvider
+
+    adapter: PostgresAdapter | None = None
+    try:
+        dsn = GeminiProvider._convert_dsn(settings.database_url)
+        adapter = PostgresAdapter(dsn)
+        cutoff = time.time() - settings.gemini_log_retention_days * 86400
+        cur = adapter._ensure().execute(
+            "DELETE FROM gemini_request_log WHERE ts < %s",
+            (cutoff,),
+        )
+        logger.info(
+            "Cleaned %d rows from gemini_request_log (retention=%d days, cutoff_ts=%.0f)",
+            cur.rowcount,
+            settings.gemini_log_retention_days,
+            cutoff,
+        )
+    except Exception:
+        logger.exception("cleanup_gemini_request_log failed")
+    finally:
+        if adapter is not None:
+            adapter.close()
+
+
 def build_scheduler() -> AsyncIOScheduler:
     """Build and configure APScheduler instance."""
     scheduler = AsyncIOScheduler(timezone=ZoneInfo(settings.timezone))
@@ -305,6 +344,14 @@ def build_scheduler() -> AsyncIOScheduler:
         id="daily_report",
         max_instances=1,
         coalesce=True,
+    )
+    scheduler.add_job(
+        cleanup_gemini_request_log,
+        trigger=CronTrigger(hour=3, minute=0),
+        id="cleanup_gemini_request_log",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=600,
     )
     return scheduler
 
