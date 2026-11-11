@@ -5,7 +5,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from gemini_rotator import GeminiAPIRotator, RotatorConfig
 from gemini_rotator.adapters import MemoryAdapter
@@ -41,9 +41,18 @@ class BaseAIProvider(ABC):
         prompt: str,
         system_instruction: str | None = None,
         *,
-        is_preflight: bool = False,
+        purpose: Literal["analysis", "preflight", "schema_repair"] = "analysis",
     ) -> dict[str, Any]:
-        """Generate structured JSON response for a given prompt, optionally with system instruction."""
+        """Generate structured JSON response for a given prompt, optionally with system instruction.
+
+        Args:
+            prompt: Text prompt to send to the model.
+            system_instruction: Optional system instruction to guide model behaviour.
+            purpose: Distinguishes call types for quota tracking and logging.
+                - "analysis": regular article analysis (counts against quota)
+                - "preflight": health check (separate counter)
+                - "schema_repair": retry after Pydantic validation failure
+        """
         pass
 
     @property
@@ -224,9 +233,18 @@ class GeminiProvider(BaseAIProvider):
         prompt: str,
         system_instruction: str | None = None,
         *,
-        is_preflight: bool = False,
+        purpose: Literal["analysis", "preflight", "schema_repair"] = "analysis",
     ) -> dict[str, Any]:
-        """Generate structured JSON response using Gemini via gemini-api-rotator."""
+        """Generate structured JSON response using Gemini via gemini-api-rotator.
+
+        Args:
+            prompt: Text prompt to send to the model.
+            system_instruction: Optional system instruction to guide model behaviour.
+            purpose: Distinguishes call types for quota tracking and logging.
+                - "analysis": regular article analysis (counts against quota)
+                - "preflight": health check (separate counter)
+                - "schema_repair": retry after Pydantic validation failure
+        """
         extra_config: dict[str, Any] = {
             "response_mime_type": "application/json",
             "temperature": 0.1,
@@ -248,7 +266,7 @@ class GeminiProvider(BaseAIProvider):
             self._model = target_model
             latency = time.monotonic() - start_time
 
-            if is_preflight:
+            if purpose == "preflight":
                 GeminiProvider._preflight_calls += 1
                 logger.info(
                     "Gemini PRE-FLIGHT check #%d completed: model=%s, latency=%.2fs",
@@ -260,8 +278,9 @@ class GeminiProvider(BaseAIProvider):
                 GeminiProvider._total_calls += 1
                 self.call_count += 1
                 logger.info(
-                    "Gemini API call #%d completed: model=%s, prompt_len=%d, latency=%.2fs",
+                    "Gemini API call #%d completed [%s]: model=%s, prompt_len=%d, latency=%.2fs",
                     GeminiProvider._total_calls,
+                    purpose,
                     target_model,
                     len(prompt),
                     latency,
@@ -293,7 +312,7 @@ class GeminiProvider(BaseAIProvider):
                     self._model = target_model
                     latency = time.monotonic() - start_time
 
-                    if is_preflight:
+                    if purpose == "preflight":
                         GeminiProvider._preflight_calls += 1
                         logger.info(
                             "Fallback Gemini PRE-FLIGHT check #%d completed: model=%s, latency=%.2fs",
@@ -305,8 +324,9 @@ class GeminiProvider(BaseAIProvider):
                         GeminiProvider._total_calls += 1
                         self.call_count += 1
                         logger.info(
-                            "Fallback Gemini API call #%d completed: model=%s, prompt_len=%d, latency=%.2fs",
+                            "Fallback Gemini API call #%d completed [%s]: model=%s, prompt_len=%d, latency=%.2fs",
                             GeminiProvider._total_calls,
+                            purpose,
                             target_model,
                             len(prompt),
                             latency,
@@ -346,10 +366,29 @@ class MockAIProvider(BaseAIProvider):
     def __init__(self, canned_response: dict[str, Any] | None = None, model: str = "mock-model-v1"):
         self._canned_response = canned_response or {}
         self._model = model
-        self.call_count = 0
-        self.preflight_count = 0
+        self.calls_by_purpose: dict[str, int] = {
+            "analysis": 0,
+            "preflight": 0,
+            "schema_repair": 0,
+        }
         self.last_prompt: str | None = None
         self.last_system_instruction: str | None = None
+
+    @property
+    def call_count(self) -> int:
+        return self.calls_by_purpose["analysis"]
+
+    @call_count.setter
+    def call_count(self, value: int) -> None:
+        self.calls_by_purpose["analysis"] = value
+
+    @property
+    def preflight_count(self) -> int:
+        return self.calls_by_purpose["preflight"]
+
+    @preflight_count.setter
+    def preflight_count(self, value: int) -> None:
+        self.calls_by_purpose["preflight"] = value
 
     @property
     def model_name(self) -> str:
@@ -363,12 +402,16 @@ class MockAIProvider(BaseAIProvider):
         prompt: str,
         system_instruction: str | None = None,
         *,
-        is_preflight: bool = False,
+        purpose: Literal["analysis", "preflight", "schema_repair"] = "analysis",
     ) -> dict[str, Any]:
-        if is_preflight:
-            self.preflight_count += 1
-        else:
-            self.call_count += 1
+        """Generate structured JSON mock response.
+
+        Args:
+            prompt: Text prompt to send to the mock.
+            system_instruction: Optional system instruction.
+            purpose: Distinguishes call types for quota tracking and logging.
+        """
+        self.calls_by_purpose[purpose] = self.calls_by_purpose.get(purpose, 0) + 1
         self.last_prompt = prompt
         self.last_system_instruction = system_instruction
         return self._canned_response

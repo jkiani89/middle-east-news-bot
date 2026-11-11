@@ -69,7 +69,7 @@ async def check_any_model_available(
                 enable_fallback=False,  # Test fallback directly
             )
         try:
-            res = await fallback_provider.generate_json('Respond with {"ok": true}', is_preflight=True)
+            res = await fallback_provider.generate_json('Respond with {"ok": true}', purpose="preflight")
             if res and res.get("ok") is True:
                 logger.info(
                     "Pre-flight check passed on fallback model %s (Option A: 0 RPD consumed from primary %s).",
@@ -93,7 +93,7 @@ async def check_any_model_available(
                 enable_fallback=False,  # Test only primary
             )
         try:
-            res = await primary_provider.generate_json('Respond with {"ok": true}', is_preflight=True)
+            res = await primary_provider.generate_json('Respond with {"ok": true}', purpose="preflight")
             if res and res.get("ok") is True:
                 logger.info("Primary model %s is available during pre-flight.", settings.gemini_primary_model)
                 return True
@@ -112,7 +112,7 @@ async def check_any_model_available(
                 enable_fallback=False,  # Test only primary
             )
         try:
-            res = await primary_provider.generate_json('Respond with {"ok": true}', is_preflight=True)
+            res = await primary_provider.generate_json('Respond with {"ok": true}', purpose="preflight")
             if res and res.get("ok") is True:
                 return True
         except (AIRateLimitError, AIServiceUnavailableError):
@@ -129,7 +129,7 @@ async def check_any_model_available(
                 enable_fallback=False,  # Test fallback directly
             )
         try:
-            res = await fallback_provider.generate_json('Respond with {"ok": true}', is_preflight=True)
+            res = await fallback_provider.generate_json('Respond with {"ok": true}', purpose="preflight")
             if res and res.get("ok") is True:
                 logger.info("Fallback model %s is available and healthy during pre-flight.", settings.gemini_fallback_model)
                 return True

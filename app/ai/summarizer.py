@@ -164,7 +164,11 @@ async def analyze_article(
     ai_provider = provider or get_ai_provider()
     prompt = build_analysis_prompt(title, body, source_name)
 
-    data = await ai_provider.generate_json(prompt, system_instruction=EDITORIAL_SYSTEM_PROMPT)
+    data = await ai_provider.generate_json(
+        prompt,
+        system_instruction=EDITORIAL_SYSTEM_PROMPT,
+        purpose="analysis",
+    )
 
     try:
         analysis = NewsAnalysis.model_validate(data)
@@ -179,7 +183,11 @@ async def analyze_article(
             f"importance must be integer between 1 and 5.\n"
             f"Raw invalid data: {data}\nValidation error: {exc}"
         )
-        repaired_data = await ai_provider.generate_json(repair_prompt, system_instruction=EDITORIAL_SYSTEM_PROMPT)
+        repaired_data = await ai_provider.generate_json(
+            repair_prompt,
+            system_instruction=EDITORIAL_SYSTEM_PROMPT,
+            purpose="schema_repair",
+        )
         analysis = NewsAnalysis.model_validate(repaired_data)
 
     if analysis.is_injection_attempt:

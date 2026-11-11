@@ -304,3 +304,39 @@ def test_get_ai_provider_factory():
     # In development with real key
     provider = get_ai_provider()
     assert isinstance(provider, (GeminiProvider, MockAIProvider))
+
+
+@pytest.mark.asyncio
+async def test_mock_ai_provider_purpose_tracking():
+    """Verify MockAIProvider tracks calls_by_purpose and properties correctly (ISS-026)."""
+    provider = MockAIProvider(canned_response={"ok": True})
+    assert provider.call_count == 0
+    assert provider.preflight_count == 0
+    assert provider.calls_by_purpose == {"analysis": 0, "preflight": 0, "schema_repair": 0}
+
+    # 1. Analysis call
+    res1 = await provider.generate_json("Prompt 1", purpose="analysis")
+    assert res1 == {"ok": True}
+    assert provider.call_count == 1
+    assert provider.preflight_count == 0
+    assert provider.calls_by_purpose["analysis"] == 1
+
+    # 2. Preflight call
+    res2 = await provider.generate_json("Prompt 2", purpose="preflight")
+    assert res2 == {"ok": True}
+    assert provider.call_count == 1
+    assert provider.preflight_count == 1
+    assert provider.calls_by_purpose["preflight"] == 1
+
+    # 3. Schema repair call
+    res3 = await provider.generate_json("Prompt 3", purpose="schema_repair")
+    assert res3 == {"ok": True}
+    assert provider.call_count == 1
+    assert provider.preflight_count == 1
+    assert provider.calls_by_purpose["schema_repair"] == 1
+
+    # 4. Default call (no purpose kwarg defaults to analysis)
+    res4 = await provider.generate_json("Prompt 4")
+    assert res4 == {"ok": True}
+    assert provider.call_count == 2
+    assert provider.calls_by_purpose["analysis"] == 2

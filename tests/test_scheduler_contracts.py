@@ -290,14 +290,14 @@ async def test_preflight_calls_separated_from_total_article_calls():
     )
 
     # 1. Execute pre-flight check call
-    res_pre = await provider.generate_json('Respond with {"ok": true}', is_preflight=True)
+    res_pre = await provider.generate_json('Respond with {"ok": true}', purpose="preflight")
     assert res_pre == {"ok": True}
     assert GeminiProvider.get_preflight_calls() == 1
     assert GeminiProvider.get_total_calls() == 0
     assert provider.call_count == 0
 
     # 2. Execute actual article analysis call
-    res_real = await provider.generate_json('{"title": "Test News"}', is_preflight=False)
+    res_real = await provider.generate_json('{"title": "Test News"}', purpose="analysis")
     assert res_real == {"ok": True}
     assert GeminiProvider.get_preflight_calls() == 1
     assert GeminiProvider.get_total_calls() == 1
