@@ -3,13 +3,13 @@ import json
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.ai.provider import GeminiProvider
-from app.ai.summarizer import analyze_article
-from scripts.test_false_positive_benchmark import CONTROL_CASES
+from app.ai.provider import GeminiProvider  # noqa: E402
+from app.ai.summarizer import analyze_article  # noqa: E402
+from test_false_positive_benchmark import CONTROL_CASES  # noqa: E402
 
 async def main():
     print("Running 3 Control Cases on Live Google Gemini...")

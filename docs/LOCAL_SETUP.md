@@ -172,7 +172,7 @@ python -m app.init_db
 
 ## ۶. راستی‌آزمایی سلامت کل سامانه (Verify Script)
 
-یک اسکریپت خودکار در مسیر `scripts/verify.ps1` تعبیه شده است که:
+یک اسکریپت خودکار در مسیر `scripts/dev_only/verify.ps1` تعبیه شده است که:
 1. ارتباط با PostgreSQL را بررسی می‌کند.
 2. آزمون‌های جامع `pytest` را اجرا می‌کند.
 3. خطای متادیتای شناخته‌شده `pip check` (ISS-009) را اعتبارسنجی و گزارش می‌کند.
@@ -180,5 +180,5 @@ python -m app.init_db
 
 اجرای اعتبارسنجی:
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/verify.ps1
+powershell -ExecutionPolicy Bypass -File scripts/dev_only/verify.ps1
 ```

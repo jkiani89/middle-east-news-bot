@@ -40,7 +40,7 @@
 
 ```powershell
 # اجرای تست جامع به همراه بررسی پیش‌نیازها و ایمپورت‌ها
-powershell -ExecutionPolicy Bypass -File scripts/verify.ps1
+powershell -ExecutionPolicy Bypass -File scripts/dev_only/verify.ps1
 
 # اجرای تمامی تست‌ها در محیط مجازی با pytest
 .\.venv\Scripts\pytest.exe -v
@@ -49,5 +49,5 @@ powershell -ExecutionPolicy Bypass -File scripts/verify.ps1
 .\.venv\Scripts\pytest.exe --cov=app --cov-report=term-missing
 
 # اجرای تست زنده دریافت اخبار UN News و ثبت در دیتابیس
-.\.venv\Scripts\python.exe scripts/fetch_live_un_news.py
+.\.venv\Scripts\python.exe scripts/dev_only/fetch_live_un_news.py
 ```
