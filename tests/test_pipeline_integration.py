@@ -6,18 +6,37 @@ Test C-10 proves the rollback bug (ISS-031) where JobLog is lost on article Inte
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from sqlalchemy import or_, select
 
 from app.ai.provider import MockAIProvider
 from app.config import settings
-from app.database.models import Article, ArticleEvent, Event, JobLog, Source, Summary
+from app.database.models import Article, JobLog, Source, Summary
 from app.processors.pipeline import collect_and_process
+
+
+class _Savepoint:
+    """Simulates session.begin_nested() savepoint semantics."""
+
+    def __init__(self, session: RollbackAwareMockSession):
+        self.session = session
+        self._pending_snap: list[Any] | None = None
+        self._flushed_snap: list[Any] | None = None
+
+    async def __aenter__(self) -> _Savepoint:
+        self._pending_snap = list(self.session.pending_adds)
+        self._flushed_snap = list(self.session.flushed)
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, tb: Any) -> bool:
+        if exc_type is not None:
+            if self._pending_snap is not None:
+                self.session.pending_adds = self._pending_snap
+            if self._flushed_snap is not None:
+                self.session.flushed = self._flushed_snap
+        return False
 
 
 class RollbackAwareMockSession:
@@ -37,6 +56,9 @@ class RollbackAwareMockSession:
         self.rollback_count = 0
         self.flush_count = 0
         self._next_id = 100
+
+    def begin_nested(self) -> _Savepoint:
+        return _Savepoint(self)
 
     def add(self, obj: Any) -> None:
         self.pending_adds.append(obj)
@@ -130,8 +152,8 @@ class _ScalarsResult:
                 articles = [a for a in articles if getattr(a, "status", None) == target_status]
             return articles
 
-        if entity is Event:
-            events = [o for o in self._all_objects if isinstance(o, Event)]
+        if getattr(entity, "__name__", "") == "Event":
+            events = [o for o in self._all_objects if type(o).__name__ == "Event"]
             if "active" in where_str:
                 events = [e for e in events if getattr(e, "status", None) == "active"]
             return events
@@ -436,14 +458,18 @@ async def test_fatal_error_in_process_raises_and_logs():
 
 @pytest.mark.asyncio
 async def test_rollback_in_integrity_error_loses_joblog_BUG_PROOF():
-    """PROOF OF BUG (not fix). Will FAIL on current code, pass after fix.
+    """Regression test for ISS-031.
 
-    Bug: except IntegrityError: await session.rollback() kills JobLog
-    flushed earlier. Scenario: pre-existing Article X in DB, feed returns
-    [X, Y], X triggers IntegrityError, Y succeeds.
-    Expected: Y saved + JobLog recorded. Current buggy: Y saved, JobLog lost.
+    HISTORICAL: Added in Phase C to prove the JobLog-loss bug. Failed
+    on pre-fix code (rollback cleared flushed JobLog).
+
+    FIXED in Phase D via savepoint (session.begin_nested). Test now
+    passes because savepoint isolates the failed article without
+    destroying the outer transaction.
+
+    If this test ever fails again, the savepoint fix was broken.
     """
-    from app.database.models import Article, Source, JobLog
+    from app.database.models import Article, JobLog, Source
     from app.ai.provider import MockAIProvider
     from app.processors.pipeline import collect_and_process
 

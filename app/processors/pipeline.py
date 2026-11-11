@@ -217,11 +217,15 @@ async def collect_and_process(provider: BaseAIProvider | None = None):
                         text_source=item.get("text_source", "rss_summary"),
                         status="collected",
                     )
-                    session.add(article)
                     try:
-                        await session.flush()
+                        async with session.begin_nested():
+                            session.add(article)
+                            await session.flush()
                     except IntegrityError:
-                        await session.rollback()
+                        logger.debug(
+                            "Duplicate article skipped via DB constraint: %s",
+                            item["canonical_url"],
+                        )
                         continue
 
             # Process collected articles adhering strictly to status filtering
