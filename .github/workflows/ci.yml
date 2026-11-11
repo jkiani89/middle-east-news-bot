@@ -70,6 +70,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install --no-deps 'aiogram==3.22.0'
           pip install -r requirements-dev.txt
 
       - name: Run migrations on test DB

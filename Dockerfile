@@ -8,7 +8,8 @@ WORKDIR /build
 
 # Install dependencies from requirements.txt into /install
 COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+RUN pip install --no-cache-dir --prefix=/install --no-deps 'aiogram==3.22.0' \
+    && pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 
 FROM python:3.15.2-slim AS runtime
