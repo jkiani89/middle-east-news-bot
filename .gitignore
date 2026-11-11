@@ -10,3 +10,11 @@ logs/
 data/
 *.db
 scratch/
+# Audit / scratch files
+*.diff
+git_history.txt
+diff_*.txt
+
+# Agent-generated runtime artifacts (should not be committed)
+data/gemini_keys.db
+data/
