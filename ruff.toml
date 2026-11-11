@@ -1,0 +1,20 @@
+line-length = 120
+target-version = "py315"
+
+exclude = [
+    ".venv",
+    "alembic/versions",
+    "scripts/dev_only",
+    "data",
+    "__pycache__",
+    "*.egg-info",
+]
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+ignore = [
+    "E501",  # line too long (handled by line-length above)
+]
+
+[lint.isort]
+known-first-party = ["app"]
