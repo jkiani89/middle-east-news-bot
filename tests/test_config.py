@@ -46,3 +46,12 @@ def test_settings_validate_runtime_valid():
     )
     missing = settings.validate_runtime()
     assert len(missing) == 0
+
+
+def test_settings_comma_separated_gemini_keys():
+    """Verify GEMINI_API_KEY supports comma-separated list of keys."""
+    settings = Settings(
+        gemini_api_key="AIzaKeyOne, AIzaKeyTwo, AIzaKeyThree",
+    )
+    keys = settings.get_gemini_keys()
+    assert keys == ["AIzaKeyOne", "AIzaKeyTwo", "AIzaKeyThree"]

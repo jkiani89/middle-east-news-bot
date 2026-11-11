@@ -35,15 +35,17 @@ class Settings(BaseSettings):
         # Check numbered keys: GEMINI_KEY_1, GEMINI_KEY_2, ...
         for env_k, env_v in sorted(os.environ.items()):
             if re.match(r"^GEMINI_KEY_\d+$", env_k) and env_v:
-                val = env_v.strip()
+                for item in env_v.split(","):
+                    val = item.strip()
+                    if val and val not in ("AIza...", "YOUR_GEMINI_API_KEY") and val not in keys:
+                        keys.append(val)
+
+        # Check GEMINI_API_KEY (supports single key or comma-separated keys: key1, key2, ...)
+        if self.gemini_api_key:
+            for item in self.gemini_api_key.split(","):
+                val = item.strip()
                 if val and val not in ("AIza...", "YOUR_GEMINI_API_KEY") and val not in keys:
                     keys.append(val)
-
-        # Check legacy single key
-        if self.gemini_api_key:
-            single = self.gemini_api_key.strip()
-            if single and single not in ("AIza...", "YOUR_GEMINI_API_KEY") and single not in keys:
-                keys.append(single)
 
         return keys
 
