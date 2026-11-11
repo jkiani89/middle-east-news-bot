@@ -186,7 +186,7 @@
 ### ۱.۳۳. بدهی Lint Ruff پس از استقرار (ISS-033) [LOW]
 - **شرح مسئله:** با نصب ruff 0.17.4 در فاز G و اجرای اولیه روی `app/ tests/ alembic/`، **۱۹۵ خطا** کشف شد (۱۴۱ مورد با `--fix` خودکار قابل رفع). بیشتر خطاها: `I001` (import sort)، `UP035` (modern Python imports). تا قبل از این فاز، ruff در venv نبود و این بدهی پنهان مانده بود.
 - **راهکار پیشنهادی:** یک فاز اختصاصی Lint Cleanup (پیشنهادی: فاز I). اجرای `ruff check --fix` برای ۱۴۱ مورد، بازبینی دستی موارد باقیمانده، افزودن `ruff.toml` با config مناسب، و اجرای ruff در CI.
-- **وضعیت:** 🟡 ثبت‌شده، فاز آینده (I).
+- **وضعیت:** 🟢 حل‌شده در فاز I. ۱۹۵ خطا (۱۱۷ پس از exclude) → صفر. ۱۱۲ خودکار (ruff --fix)، ۵ دستی. ruff.toml با `force-exclude = true` و exclude برای `alembic/versions` و `scripts/dev_only` اضافه شد.
 
 ---
 
@@ -225,4 +225,4 @@
 | ISS-030 | همگام‌سازی خودکار PROMPT_VERSION با متن پرامپت | فاز G | 🟢 حل‌شده (schema hash) |
 | ISS-031 | از دست رفتن JobLog در rollback حلقه مقاله‌ها | فاز D | 🟢 حل‌شده (savepoint fix) |
 | ISS-032 | شمارنده‌های in-memory در سطح کلاس GeminiProvider | فاز G یا H | 🟡 ثبت‌شده |
-| ISS-033 | بدهی Lint Ruff (۱۹۵ خطا، ۱۴۱ fixable) | فاز آینده (I) | 🟡 ثبت‌شده |
+| ISS-033 | بدهی Lint Ruff (۱۹۵ خطا، ۱۴۱ fixable) | فاز I | 🟢 حل‌شده (ruff.toml + fixes) |

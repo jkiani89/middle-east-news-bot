@@ -554,3 +554,41 @@ ruff باید از ابتدای پروژه در CI فعال باشد. اضافه
 ### وضعیت نهایی
 **فاز G بسته.** ۴ ISS رفع شد. ruff نصب شد (اجرا در فاز I).
 
+---
+
+## [2026-11-11] فاز I — Lint Cleanup و پیکربندی ruff
+
+### زمینه
+فاز G نصب ruff را انجام داد ولی ۱۹۵ خطای lint کشف شد (ISS-033). این فاز آن بدهی را رفع کرد.
+
+### اقدامات
+- **ruff.toml:** ایجاد config با `force-exclude = true` و exclude برای:
+  * `alembic/versions` — migrationهای تاریخی نباید reformat شوند (checksum drift)
+  * `scripts/dev_only` — ابزار دستی توسعه، بخش production نیست
+- **`ruff check --fix app/ tests/`:** ۱۱۲ خطا خودکار رفع شد (۲۴ فایل)
+  * I001: import sorting
+  * UP035: modern Python imports
+  * F401: unused imports
+- **۵ خطای دستی:** رفع با تحلیل دقیق (بدون تغییر رفتار):
+  * `managed_session = False` در publisher.py — dead code از refactor
+  * `ev1`/`sm1` در test_daily_report.py — dead code از refactor
+  * `sent = ` در دو تست telegram_publisher.py — پاکسازی، بدون assert جدید
+- **کل خطاها:** ۱۹۵ → ۰ (۱۱۷ فعال پس از exclude)
+
+### نتایج
+- `ruff check app/ tests/ alembic/ scripts/dev_only/` = All checks passed
+- `ruff check .` = All checks passed
+- ۱۶۲ تست pass (بدون تغییر)
+- ISS-033 → 🟢
+
+### درس
+**دو تله‌ی ruff که کشف شد:**
+1. **`target-version = "py315"` ممکن است ruff آن را هنوز نپذیرد** — fallback به `py313` استفاده شد. در آینده با آپدیت ruff، این را به py315 برگردان.
+2. **آرگومان‌های صریح CLI، `exclude` را override می‌کنند** — راه‌حل استاندارد `force-exclude = true` در `ruff.toml` است. بدون این، هر کسی که `ruff check scripts/dev_only/` را تایپ کند، ۶۷ خطای کاذب می‌بیند.
+
+**درس بلندمدت:** ruff باید از فاز ۱ با `ruff.toml` کامل (شامل `force-exclude`) نصب می‌شد تا ۱۹۵ خطا تجمع نکند.
+
+### وضعیت نهایی
+**فاز I بسته.** کدبیس آماده برای CI سخت‌گیرانه در فاز H (Deployment).
+
+
