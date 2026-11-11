@@ -150,7 +150,6 @@ class GeminiProvider(BaseAIProvider):
         enable_fallback: bool | None = None,
         key_db_path: str | Path | None = None,  # DEPRECATED: ignored; SQLite removed in F-1
         config: RotatorConfig | None = None,
-        **kwargs: Any,  # Absorb legacy kwargs (max_rpm, max_concurrency, client, etc.)
     ):
         self._primary_model = primary_model or model or settings.gemini_primary_model
         self._fallback_model = fallback_model or settings.gemini_fallback_model
