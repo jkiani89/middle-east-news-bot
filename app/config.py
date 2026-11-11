@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     gemini_primary_model: str = "gemini-3.8-flash"
     gemini_fallback_model: str = "gemini-3.5-flash-lite"
     gemini_enable_fallback: bool = True
-    gemini_key_db_path: str = "data/gemini_keys.db"
+    gemini_key_db_path: str = "data/gemini_keys.db"  # DEPRECATED (F-1): ignored; SQLite removed, state in PostgreSQL
     gemini_log_retention_days: int = 30  # Retention days for gemini_request_log cleanup
     gemini_model: str = "gemini-3.8-flash"
     telegram_bot_token: str = ""

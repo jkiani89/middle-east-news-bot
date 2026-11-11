@@ -160,9 +160,9 @@
 - **وضعیت:** 🟡 ثبت‌شده به عنوان بدهی پاکسازی کد مرده (Dead Code Cleanup).
 
 ### ۱.۲۸. ذخیره‌سازی شمارنده‌های فراخوانی در سطح کلاس به جای سطح نمونه (ISS-028) [MEDIUM]
-- **شرح مسئله:** متغیرهای `_total_calls` و `_preflight_calls` در `GeminiProvider` به صورت متغیرهای کلاس (Class-level attributes) تعریف شده‌اند. در صورت نمونه‌سازی همزمان چند Provider یا اجرای تست‌های موازی (Parallel Tests)، این شمارنده‌ها میان تمام نمونه‌ها مشترک بوده و ممکن است آمار تفکیکی هر نمونه را تحت تأثیر قرار دهند.
-- **راهکار پیشنهادی برای آینده:** انتقال شمارنده‌ها به سطح هر نمونه (`self.total_calls` و `self.preflight_calls`) و در صورت نیاز ارائه متد تجمیعی در سطح ارکستریتور یا سیستم مانیتورینگ.
-- **وضعیت:** 🟡 ثبت‌شده به عنوان بدهی معماری داده‌های پایش (State Isolation Debt).
+- **شرح مسئله قبلی:** متغیرهای `_total_calls` و `_preflight_calls` در `GeminiProvider` به صورت متغیرهای کلاس (Class-level attributes) تعریف شده بودند.
+- **راهکار پیاده‌شده:** با حذف SQLiteAdapter و انتقال state به PostgreSQL در فاز F-1، شمارنده‌های class-level منتفی شدند (state در دیتابیس PostgreSQL و جداول `gemini_key_stats` و `gemini_request_log` نگهداری می‌شود).
+- **وضعیت:** 🟢 حل‌شده در فاز F-1 با انتقال پایداری وضعیت به دیتابیس PostgreSQL.
 
 ### ۱.۲۹. شکست اعتبارسنجی NewsAnalysis در غیاب canned_response در MockAIProvider (ISS-029) [MEDIUM]
 - **شرح مسئله:** کلاس `MockAIProvider` در حالت پیش‌فرض مقدار `{}` را به عنوان `_canned_response` برمی‌گرداند. اگر ماژولی بدون ست کردن پاسخ شبیه‌سازی‌شده معتبر، متد `analyze_article` را با این ارائه‌دهنده فراخوانی کند، به دلیل غیاب فیلدهای اجباری (`is_relevant`, `headline_fa`, ...) خطای `ValidationError` پی‌دانتیک رخ می‌دهد و حتی پروسه خودترمیمی اسکیما نیز شکست می‌خورد.
@@ -211,7 +211,7 @@
 | ISS-025 | انتساب نادرست model_name به خلاصه‌های موک در اسکریپت بازپردازش | فاز ۸ | 🟢 حل‌شده (تصحیح دیتابیس و کد اسکریپت) |
 | ISS-026 | is_preflight به جای purpose: Literal در BaseAIProvider | فاز آینده | ⚪ ثبت‌شده |
 | ISS-027 | حذف **kwargs: Any از GeminiProvider.__init__ | فاز آینده | ⚪ ثبت‌شده |
-| ISS-028 | شمارنده‌های GeminiProvider در سطح نمونه به جای کلاس | فاز آینده | ⚪ ثبت‌شده |
+| ISS-028 | شمارنده‌های GeminiProvider در سطح نمونه به جای کلاس | فاز F-1 | 🟢 حل‌شده (انتقال state به PostgreSQL) |
 | ISS-029 | canned_response پیش‌فرض معتبر در MockAIProvider | فاز آینده | ⚪ ثبت‌شده |
 | ISS-030 | همگام‌سازی خودکار PROMPT_VERSION با متن پرامپت | فاز آینده | ⚪ ثبت‌شده |
 | ISS-031 | از دست رفتن JobLog در rollback حلقه مقاله‌ها | فاز D | 🟢 حل‌شده (savepoint fix) |

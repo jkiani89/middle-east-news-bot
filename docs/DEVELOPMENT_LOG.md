@@ -482,3 +482,48 @@ ROADMAP.md پس از ممیزی به نسخه a38aeec برگشته بود. کد 
 ### نتیجه
 ROADMAP با واقعیت کد همگام شد. اسکریپت‌های توسعه از scripts/ اصلی جدا شدند.
 
+---
+
+## [2026-11-11] فاز F-1 — جایگزینی SQLite با PostgreSQL در استخر چرخش کلیدهای Gemini (Gemini API Rotator)
+
+### زمینه و ضرورت معماری
+سامانه از پکیج `gemini-api-rotator` برای مدیریت کلیدهای متعدد و فال‌بک خودکار استفاده می‌کرد، اما وضعیت تعلیق و لاگ‌ها در یک دیتابیس دوم SQLite در مسیر `data/gemini_keys.db` ذخیره می‌شد. بر اساس ممیزی حاکمیت معماری و اصل تک‌دیتابیس متمرکز، فاز تحقیق F-0 نشان داد که کتابخانه فاقد آداپتور بومی PostgreSQL است و پروتکل `DBAdapter` از متدهای همگام استفاده می‌کند. فاز F-1 برای ساخت آداپتور اختصاصی PostgreSQL و حذف کامل دیتابیس دوم طراحی و اجرا شد.
+
+### اقدامات انجام‌شده و زنجیره کامیت‌ها
+1. **کامیت ۱ (`67a6667`):** `feat(ai): add PostgresAdapter implementing DBAdapter via psycopg3`
+   - افزودن پکیج رسمی `psycopg[binary]>=3.2,<4` به `requirements.txt` (با تأیید صریح R-05).
+   - پیاده‌سازی کلاس `PostgresAdapter` در `app/ai/postgres_adapter.py` بر اساس پروتکل `DBAdapter` با متدهای همگام و ایمن در برابر خطاهای اتصال (`OperationalError`).
+2. **کامیت ۲ (`e662a68`):** `feat(migrations): add gemini rotator tables + exclude from autogenerate`
+   - ایجاد مایگریشن اختصاصی `alembic/versions/f1a2b3c4d5e6_add_gemini_rotator_tables.py` برای ساخت جداول `gemini_suspended_keys`، `gemini_key_stats` و `gemini_request_log` همراه با ایندکس‌های لازم.
+   - اعمال موفق مایگریشن روی پایگاه داده `newsbot`.
+   - تنظیم فیلتر `include_object` در `alembic/env.py` برای ممانعت از حذف خودکار جداول خام توسط `autogenerate`.
+   - به‌روزرسانی زنجیره اسنپ‌شات در `tests/test_alembic.py` با تأیید صریح R-09/R-10.
+3. **کامیت ۳ (`5138d1f`):** `refactor(ai): replace SQLiteAdapter with MemoryAdapter (test) / PostgresAdapter (prod)`
+   - حذف کامل ایمپورت و استفاده از `SQLiteAdapter` در `app/ai/provider.py`.
+   - استفاده از `MemoryAdapter` در محیط تست (`APP_ENV=test`) و `PostgresAdapter` در محیط‌های عملیاتی و توسعه.
+   - تبدیل خودکار DSNهای `postgresql+asyncpg://` به فرمت استاندارد `postgresql://` در متد `_convert_dsn`.
+   - حفظ آرگومان `key_db_path` به عنوان فیلد deprecate شده و بدون اثر جهت تضمین سازگاری پس‌رو با تست‌های پیشین.
+4. **کامیت ۴ (`0621ddc`):** `feat(scheduler): daily cleanup of gemini_request_log`
+   - افزودن تنظیم `gemini_log_retention_days: int = 30` در `app/config.py` و مستندسازی در `.env.example`.
+   - پیاده‌سازی جاب سنکرون `cleanup_gemini_request_log()` در `app/scheduler/jobs.py` با رفتار no-op در محیط تست.
+   - ثبت جاب کرون روزانه در زمان‌بند سامانه (`build_scheduler`) در ساعت ۰۳:۰۰ منطقه زمانی تهران.
+5. **کامیت ۵ (`c1265bc`):** `test(ai): add PostgresAdapter integration tests (15 tests)`
+   - ساخت پایگاه داده مجزای `newsbot_test` روی PostgreSQL محلی با تأیید صریح R-05/R-10.
+   - افزودن فیکسچرهای ایزوله دیتابیس در `tests/conftest.py`.
+   - طراحی و اجرای ۱۵ آزمون یکپارچگی جامع در `tests/test_postgres_adapter.py` جهت پوشش کامل متدهای `PostgresAdapter`.
+   - دستیابی به ۹۶٪ پوشش کد روی فایل `app/ai/postgres_adapter.py`.
+6. **کامیت ۶:** `docs(f1): update docs, close ISS-028, archive SQLite, deprecate GEMINI_KEY_DB_PATH`
+   - انتقال فایل قدیمی `data/gemini_keys.db` به `data/backup/gemini_keys.db.2026-11-11.bak` و حذف هرگونه وابستگی به آن.
+   - نشانه‌گذاری `gemini_key_db_path` به عنوان DEPRECATED در `app/config.py` و کامنت‌گذاری در `.env.example`.
+   - به‌روزرسانی بخش ۳.۱ در `docs/ARCHITECTURE.md` جهت انعکاس معماری تک‌دیتابیس PostgreSQL و سیاست Retention.
+   - به‌روزرسانی `docs/PHASE_F_PLAN.md` (تصحیح ادعای `close()`، ماتریس تصمیم sync/async و جدول ۵ تصمیم مصوب).
+   - افزودن سند نهایی برنامه فاز `docs/PHASE_F1_PLAN.md`.
+   - بستن رسمی مسئله ISS-028 در `docs/KNOWN_ISSUES.md`.
+
+### دستاوردها و نتایج کلیدی
+- **تک‌دیتابیس کامل:** حذف کامل فایل SQLite و انتقال تمام پایگاه‌های داده به PostgreSQL.
+- **تعداد کل آزمون‌ها:** افزایش تست‌های سبز از ۱۴۴ به ۱۵۹ آزمون (۱۰۰٪ قبولی).
+- **پوشش کد آداپتور جدید:** ۹۶٪ پوشش خطوط در `app/ai/postgres_adapter.py`.
+- **انطباق استانداردهای کیفیت:** قبولی کامل در `ruff check` (شامل فرمت و ترتیب ایمپورت‌ها).
+- **بسته شدن موفقیت‌آمیز فاز F-1** بدون بدهی فنی باز.
+

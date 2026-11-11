@@ -57,7 +57,7 @@ flowchart TD
 
 ### ۳.۱. لایه انتقال داده و ارتباط با مدل‌ها (`app/ai/provider.py`)
 - **اینترفیس پایه (`BaseAIProvider`):** تعریف متد انتزاعی ناهمگام `generate_json(prompt, system_instruction, *, is_preflight)` و پراپرتی `model_name`. این لایه به عنوان یک لایه کمینه‌گرا (Transport Layer) صرفاً وظیفه ارسال پرامپت و دریافت پاسخ معتبر JSON را بر عهده دارد و کاملاً مستقل از منطق تجاری و تحریریه خبر است.
-- **ارائه‌دهنده جمنای (`GeminiProvider`):** پیاده‌سازی رسمی با استفاده از `gemini-api-rotator`، مدیریت استخر چندکلیدی در سطح چند پروژه Google Cloud، پایداری وضعیت کلیدهای تعلیق‌شده در SQLite (`data/gemini_keys.db`)، و مکانیزم فال‌بک خودکار از مدل اصلی (`gemini-3.8-flash`) به مدل پشتیبان (`gemini-3.5-flash-lite`).
+- **ارائه‌دهنده جمنای (`GeminiProvider`):** پیاده‌سازی رسمی با استفاده از `gemini-api-rotator`، مدیریت استخر چندکلیدی در سطح چند پروژه Google Cloud، پایداری وضعیت کلیدهای تعلیق‌شده و آمار درخواست‌ها در PostgreSQL (جداول `gemini_suspended_keys`، `gemini_key_stats`، `gemini_request_log`) و مکانیزم فال‌بک خودکار از مدل اصلی (`gemini-3.8-flash`) به مدل پشتیبان (`gemini-3.5-flash-lite`). سیاست retention: حذف خودکار ردیف‌های `gemini_request_log` قدیمی‌تر از `gemini_log_retention_days` (پیش‌فرض ۳۰ روز) با یک جاب روزانه در ساعت ۰۳:۰۰ تهران. آداپتور `PostgresAdapter` (`app/ai/postgres_adapter.py`) پیاده‌سازی همگام از پروتکل `DBAdapter` با `psycopg3` است که بدون بلاک محسوس event loop اجرا می‌شود.
 - **ارائه‌دهنده تستی (`MockAIProvider`):** جهت اجرای آزمون‌های قطعی واحد، آفلاین و خط لوله بدون نیاز به شبکه یا کلید واقعی.
 
 ### ۳.۲. لایه دامنه و تحریریه هوش مصنوعی (`app/ai/summarizer.py`)
