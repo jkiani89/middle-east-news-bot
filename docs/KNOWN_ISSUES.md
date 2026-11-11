@@ -188,6 +188,12 @@
 - **راهکار پیشنهادی:** یک فاز اختصاصی Lint Cleanup (پیشنهادی: فاز I). اجرای `ruff check --fix` برای ۱۴۱ مورد، بازبینی دستی موارد باقیمانده، افزودن `ruff.toml` با config مناسب، و اجرای ruff در CI.
 - **وضعیت:** 🟢 حل‌شده در فاز I. ۱۹۵ خطا (۱۱۷ پس از exclude) → صفر. ۱۱۲ خودکار (ruff --fix)، ۵ دستی. ruff.toml با `force-exclude = true` و exclude برای `alembic/versions` و `scripts/dev_only` اضافه شد.
 
+### ۱.۳۴. هشدار coroutine 'Connection._cancel' در تست‌های telegram_publisher (ISS-034) [LOW]
+- **شرح مسئله:** ۳ تست در `tests/test_telegram_publisher.py` هنگام اجرا، warning `RuntimeWarning: coroutine 'Connection._cancel' was never awaited` می‌دهند. منبع: `unittest.mock.py:2263`. احتمالاً mock session/connection در teardown به درستی await نمی‌شود.
+- **تأثیر:** در زمان حاضر، تست‌ها pass می‌شوند. ولی اگر `pytest -W error` یا `filterwarnings = error` در `pytest.ini` تنظیم شود، این ۳ تست fail می‌شوند.
+- **راهکار پیشنهادی:** استفاده از `pytest-asyncio` با `auto` mode برای mock session، یا اضافه کردن `await session.close()` صریح در teardown تست. تصمیم در فاز H یا J.
+- **وضعیت:** 🟡 ثبت‌شده، فاز H یا J.
+
 ---
 
 ## ۲. ردیاب رفع مسائل
@@ -226,3 +232,4 @@
 | ISS-031 | از دست رفتن JobLog در rollback حلقه مقاله‌ها | فاز D | 🟢 حل‌شده (savepoint fix) |
 | ISS-032 | شمارنده‌های in-memory در سطح کلاس GeminiProvider | فاز G یا H | 🟡 ثبت‌شده |
 | ISS-033 | بدهی Lint Ruff (۱۹۵ خطا، ۱۴۱ fixable) | فاز I | 🟢 حل‌شده (ruff.toml + fixes) |
+| ISS-034 | هشدار coroutine 'Connection._cancel' در تست‌های telegram_publisher | فاز H یا J | 🟡 ثبت‌شده |
