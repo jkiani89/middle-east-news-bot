@@ -160,9 +160,8 @@
 - **وضعیت:** 🟡 ثبت‌شده به عنوان بدهی پاکسازی کد مرده (Dead Code Cleanup).
 
 ### ۱.۲۸. ذخیره‌سازی شمارنده‌های فراخوانی در سطح کلاس به جای سطح نمونه (ISS-028) [MEDIUM]
-- **شرح مسئله قبلی:** متغیرهای `_total_calls` و `_preflight_calls` در `GeminiProvider` به صورت متغیرهای کلاس (Class-level attributes) تعریف شده بودند.
-- **راهکار پیاده‌شده:** با حذف SQLiteAdapter و انتقال state به PostgreSQL در فاز F-1، شمارنده‌های class-level منتفی شدند (state در دیتابیس PostgreSQL و جداول `gemini_key_stats` و `gemini_request_log` نگهداری می‌شود).
-- **وضعیت:** 🟢 حل‌شده در فاز F-1 با انتقال پایداری وضعیت به دیتابیس PostgreSQL.
+- **شرح مسئله:** متغیرهای `_total_calls` و `_preflight_calls` در `GeminiProvider` به صورت متغیرهای کلاس (Class-level attributes) تعریف شده‌اند.
+- **وضعیت:** 🟡 بازگشایی‌شده در فاز G. توضیح F-1 فقط برای state پایدار (key_stats, request_log) درست بود. شمارنده‌های in-memory `_total_calls` و `_preflight_calls` هنوز class-level هستند. حل در ISS-032 (فاز G یا بعد).
 
 ### ۱.۲۹. شکست اعتبارسنجی NewsAnalysis در غیاب canned_response در MockAIProvider (ISS-029) [MEDIUM]
 - **شرح مسئله:** کلاس `MockAIProvider` در حالت پیش‌فرض مقدار `{}` را به عنوان `_canned_response` برمی‌گرداند. اگر ماژولی بدون ست کردن پاسخ شبیه‌سازی‌شده معتبر، متد `analyze_article` را با این ارائه‌دهنده فراخوانی کند، به دلیل غیاب فیلدهای اجباری (`is_relevant`, `headline_fa`, ...) خطای `ValidationError` پی‌دانتیک رخ می‌دهد و حتی پروسه خودترمیمی اسکیما نیز شکست می‌خورد.
@@ -178,6 +177,11 @@
 - **شرح مسئله:** در `collect_and_process`، رکورد `JobLog` ابتدا add و flush می‌شود. هنگام `IntegrityError` روی یک مقاله، `await session.rollback()` نه‌فقط مقاله مشکل‌دار، بلکه `JobLog` فلاش‌شده را نیز از بین می‌برد. نتیجه: حتی اگر خط لوله در ادامه موفق شود، هیچ لاگی در `job_logs` ثبت نمی‌شود.
 - **راهکار پیشنهادی:** استفاده از `session.begin_nested()` (savepoint) برای هر مقاله.
 - **وضعیت:** 🟢 حل‌شده در فاز D با session.begin_nested (savepoint). تست C-10 از FAIL به PASS تبدیل شد.
+
+### ۱.۳۲. شمارنده‌های in-memory در سطح کلاس GeminiProvider (ISS-032) [LOW]
+- **شرح مسئله:** `GeminiProvider._total_calls` و `GeminiProvider._preflight_calls` شمارنده‌های monitoring در حافظه هستند که در سطح کلاس تعریف شده‌اند (نه instance). در test با چند provider مشترکند و در سناریوی چند worker (آینده) ناسازگار می‌شوند.
+- **راهکار پیشنهادی:** انتقال به instance-level (`self._total_calls`, `self._preflight_calls`). برای backward compat با متدهای classmethod فعلی (`get_total_calls()`, `get_preflight_calls()`)، این متدها را به instance method تبدیل کن، یا یک registry از instanceها نگه دار. تصمیم در فاز G یا H.
+- **وضعیت:** 🟡 ثبت‌شده، فاز G.
 
 ---
 
@@ -211,7 +215,8 @@
 | ISS-025 | انتساب نادرست model_name به خلاصه‌های موک در اسکریپت بازپردازش | فاز ۸ | 🟢 حل‌شده (تصحیح دیتابیس و کد اسکریپت) |
 | ISS-026 | is_preflight به جای purpose: Literal در BaseAIProvider | فاز آینده | ⚪ ثبت‌شده |
 | ISS-027 | حذف **kwargs: Any از GeminiProvider.__init__ | فاز آینده | ⚪ ثبت‌شده |
-| ISS-028 | شمارنده‌های GeminiProvider در سطح نمونه به جای کلاس | فاز F-1 | 🟢 حل‌شده (انتقال state به PostgreSQL) |
+| ISS-028 | شمارنده‌های GeminiProvider در سطح نمونه به جای کلاس | فاز G | 🟡 بازگشایی: in-memory counters |
 | ISS-029 | canned_response پیش‌فرض معتبر در MockAIProvider | فاز آینده | ⚪ ثبت‌شده |
 | ISS-030 | همگام‌سازی خودکار PROMPT_VERSION با متن پرامپت | فاز آینده | ⚪ ثبت‌شده |
 | ISS-031 | از دست رفتن JobLog در rollback حلقه مقاله‌ها | فاز D | 🟢 حل‌شده (savepoint fix) |
+| ISS-032 | شمارنده‌های in-memory در سطح کلاس GeminiProvider | فاز G یا H | 🟡 ثبت‌شده |
