@@ -152,12 +152,12 @@
 ### ۱.۲۶. استفاده از پرچم بولی is_preflight به‌جای تایپ مقید purpose: Literal (ISS-026) [LOW]
 - **شرح مسئله:** در متد `generate_json` از پارامتر بولی `is_preflight: bool = False` استفاده شده است. با گسترش سیستم و احتمال افزوده شدن انواع دیگر فراخوانی‌ها (مانند خودترمیمی اسکیما `repair`، آزمون نفوذ `security_test`، یا خلاصه‌سازی گزارش `report_generation`)، استفاده از Boolean ناکافی بوده و منجر به افزایش فلگ‌های بولی (Flag Argument Smell) می‌شود.
 - **راهکار پیشنهادی برای آینده:** بازآرایی این پارامتر به `purpose: Literal["article", "preflight", "repair"] = "article"` در لایه `BaseAIProvider`.
-- **وضعیت:** 🟡 ثبت‌شده به عنوان بهبود طراحی (Design Debt).
+- **وضعیت:** 🟢 حل‌شده در فاز G. `purpose: Literal["analysis", "preflight", "schema_repair"]` جایگزین `is_preflight: bool` شد. کاملاً حذف شد (نه deprecated).
 
 ### ۱.۲۷. وجود آرگومان‌های پسماند **kwargs: Any در سازنده GeminiProvider (ISS-027) [LOW]
 - **شرح مسئله:** در متد `GeminiProvider.__init__` آرگومان `**kwargs: Any` با کامنت `# Absorb legacy kwargs (max_rpm, max_concurrency, client, etc.)` باقی مانده است. این آرگومان پسماند کدهای فاز ۴ پیش از مهاجرت به `gemini-api-rotator` است و وجود آن شفافیت رابط کلاس را کاهش می‌دهد و خطاهای تایپی در پاس دادن پارامترها را می‌بلعد.
 - **راهکار پیشنهادی برای آینده:** پس از بازبینی کامل تست‌ها و اطمینان از عدم ارسال پارامترهای سنتی، حذف قطعی `**kwargs`.
-- **وضعیت:** 🟡 ثبت‌شده به عنوان بدهی پاکسازی کد مرده (Dead Code Cleanup).
+- **وضعیت:** 🟢 حل‌شده در فاز G. `**kwargs` حذف شد. AST scan تأیید کرد هیچ فراخوانی با پارامتر ناشناخته وجود ندارد.
 
 ### ۱.۲۸. ذخیره‌سازی شمارنده‌های فراخوانی در سطح کلاس به جای سطح نمونه (ISS-028) [MEDIUM]
 - **شرح مسئله:** متغیرهای `_total_calls` و `_preflight_calls` در `GeminiProvider` به صورت متغیرهای کلاس (Class-level attributes) تعریف شده‌اند.
@@ -166,12 +166,12 @@
 ### ۱.۲۹. شکست اعتبارسنجی NewsAnalysis در غیاب canned_response در MockAIProvider (ISS-029) [MEDIUM]
 - **شرح مسئله:** کلاس `MockAIProvider` در حالت پیش‌فرض مقدار `{}` را به عنوان `_canned_response` برمی‌گرداند. اگر ماژولی بدون ست کردن پاسخ شبیه‌سازی‌شده معتبر، متد `analyze_article` را با این ارائه‌دهنده فراخوانی کند، به دلیل غیاب فیلدهای اجباری (`is_relevant`, `headline_fa`, ...) خطای `ValidationError` پی‌دانتیک رخ می‌دهد و حتی پروسه خودترمیمی اسکیما نیز شکست می‌خورد.
 - **راهکار پیشنهادی برای آینده:** قرار دادن یک نمونه پی‌لود کمینه اما معتبر Pydantic به عنوان پیش‌فرض در `MockAIProvider` تا تست‌های سریع بدون تنظیم دستی دچار کرش نشوند.
-- **وضعیت:** 🟡 ثبت‌شده جهت تقویت آزمون‌پذیری (Mock Robustness).
+- **وضعیت:** 🟢 حل‌شده در فاز G. `DEFAULT_VALID_CANNED` به `MockAIProvider` اضافه شد. `MockAIProvider()` بدون پارامتر، payload معتبر `NewsAnalysis` برمی‌گرداند.
 
 ### ۱.۳۰. عدم همگامی خودکار PROMPT_VERSION با متن پرامپت در summarizer.py (ISS-030) [LOW]
 - **شرح مسئله:** مقدار `PROMPT_VERSION = "v2"` به صورت یک متغیر رشته‌ای ثابت هاردکد شده است. اگر توسعه‌دهنده‌ای متن `EDITORIAL_SYSTEM_PROMPT` یا ساختار `build_analysis_prompt` را تغییر دهد اما فراموش کند نسخه را افزایش دهد، رکوردهای خلاصه‌سازی در پایگاه داده با نسخه اشتباه برچسب می‌خورند که ردیابی تاریخی کیفیت خروجی را مخدوش می‌کند.
 - **راهکار پیشنهادی برای آینده:** محاسبه هش محتوای پرامپت (مثلاً ترکیب هش سیستم پرامپت با نسخه اسکیما) یا ایجاد آزمون خودکار تطبیق نسخه در `tests/test_ai.py`.
-- **وضعیت:** 🟡 ثبت‌شده جهت تضمین انطباق متادیتا (Metadata Integrity Debt).
+- **وضعیت:** 🟢 حل‌شده در فاز G. `PROMPT_VERSION = f"v2-{hash8}"` محاسبه‌شده از هش `EDITORIAL_SYSTEM_PROMPT` + schema `NewsAnalysis`. تغییر prompt یا schema، هش را تغییر می‌دهد.
 
 ### ۱.۳۱. از دست رفتن JobLog در اثر rollback در حلقه مقاله‌ها (ISS-031) [HIGH]
 - **شرح مسئله:** در `collect_and_process`، رکورد `JobLog` ابتدا add و flush می‌شود. هنگام `IntegrityError` روی یک مقاله، `await session.rollback()` نه‌فقط مقاله مشکل‌دار، بلکه `JobLog` فلاش‌شده را نیز از بین می‌برد. نتیجه: حتی اگر خط لوله در ادامه موفق شود، هیچ لاگی در `job_logs` ثبت نمی‌شود.
@@ -182,6 +182,11 @@
 - **شرح مسئله:** `GeminiProvider._total_calls` و `GeminiProvider._preflight_calls` شمارنده‌های monitoring در حافظه هستند که در سطح کلاس تعریف شده‌اند (نه instance). در test با چند provider مشترکند و در سناریوی چند worker (آینده) ناسازگار می‌شوند.
 - **راهکار پیشنهادی:** انتقال به instance-level (`self._total_calls`, `self._preflight_calls`). برای backward compat با متدهای classmethod فعلی (`get_total_calls()`, `get_preflight_calls()`)، این متدها را به instance method تبدیل کن، یا یک registry از instanceها نگه دار. تصمیم در فاز G یا H.
 - **وضعیت:** 🟡 ثبت‌شده، فاز G.
+
+### ۱.۳۳. بدهی Lint Ruff پس از استقرار (ISS-033) [LOW]
+- **شرح مسئله:** با نصب ruff 0.17.4 در فاز G و اجرای اولیه روی `app/ tests/ alembic/`، **۱۹۵ خطا** کشف شد (۱۴۱ مورد با `--fix` خودکار قابل رفع). بیشتر خطاها: `I001` (import sort)، `UP035` (modern Python imports). تا قبل از این فاز، ruff در venv نبود و این بدهی پنهان مانده بود.
+- **راهکار پیشنهادی:** یک فاز اختصاصی Lint Cleanup (پیشنهادی: فاز I). اجرای `ruff check --fix` برای ۱۴۱ مورد، بازبینی دستی موارد باقیمانده، افزودن `ruff.toml` با config مناسب، و اجرای ruff در CI.
+- **وضعیت:** 🟡 ثبت‌شده، فاز آینده (I).
 
 ---
 
@@ -213,10 +218,11 @@
 | ISS-023 | ثبت فیلد model_name در ai_payload جهت تشخیص قطعی داده واقعی | فاز ۶ | 🟢 حل‌شده و مستقر در کد |
 | ISS-024 | عدم امکان استعلام مستقیم سهمیه‌های RPD/RPM از طریق API | فاز ۷.۵ | 🟡 ثبت‌شده جهت پایش تجربی در MODEL_QUOTAS.md |
 | ISS-025 | انتساب نادرست model_name به خلاصه‌های موک در اسکریپت بازپردازش | فاز ۸ | 🟢 حل‌شده (تصحیح دیتابیس و کد اسکریپت) |
-| ISS-026 | is_preflight به جای purpose: Literal در BaseAIProvider | فاز آینده | ⚪ ثبت‌شده |
-| ISS-027 | حذف **kwargs: Any از GeminiProvider.__init__ | فاز آینده | ⚪ ثبت‌شده |
+| ISS-026 | is_preflight به جای purpose: Literal در BaseAIProvider | فاز G | 🟢 حل‌شده (purpose enum) |
+| ISS-027 | حذف **kwargs: Any از GeminiProvider.__init__ | فاز G | 🟢 حل‌شده (kwargs removed) |
 | ISS-028 | شمارنده‌های GeminiProvider در سطح نمونه به جای کلاس | فاز G | 🟡 بازگشایی: in-memory counters |
-| ISS-029 | canned_response پیش‌فرض معتبر در MockAIProvider | فاز آینده | ⚪ ثبت‌شده |
-| ISS-030 | همگام‌سازی خودکار PROMPT_VERSION با متن پرامپت | فاز آینده | ⚪ ثبت‌شده |
+| ISS-029 | canned_response پیش‌فرض معتبر در MockAIProvider | فاز G | 🟢 حل‌شده (default canned) |
+| ISS-030 | همگام‌سازی خودکار PROMPT_VERSION با متن پرامپت | فاز G | 🟢 حل‌شده (schema hash) |
 | ISS-031 | از دست رفتن JobLog در rollback حلقه مقاله‌ها | فاز D | 🟢 حل‌شده (savepoint fix) |
 | ISS-032 | شمارنده‌های in-memory در سطح کلاس GeminiProvider | فاز G یا H | 🟡 ثبت‌شده |
+| ISS-033 | بدهی Lint Ruff (۱۹۵ خطا، ۱۴۱ fixable) | فاز آینده (I) | 🟡 ثبت‌شده |

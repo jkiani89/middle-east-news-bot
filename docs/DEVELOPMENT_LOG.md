@@ -527,3 +527,30 @@ ROADMAP با واقعیت کد همگام شد. اسکریپت‌های توسع
 - **انطباق استانداردهای کیفیت:** قبولی کامل در `ruff check` (شامل فرمت و ترتیب ایمپورت‌ها).
 - **بسته شدن موفقیت‌آمیز فاز F-1** بدون بدهی فنی باز.
 
+---
+
+## [2026-11-11] فاز G — رفع ۴ ISS + استقرار ruff
+
+### زمینه
+پس از F-1، ۴ ISS کم‌اهمیت باقیمانده بود (026، 027، 029، 030) و ruff به عنوان ابزار lint در venv نصب نبود.
+
+### اقدامات
+- **ISS-026:** `is_preflight: bool` → `purpose: Literal["analysis", "preflight", "schema_repair"]` در `BaseAIProvider`، `GeminiProvider`، `MockAIProvider`. کاملاً حذف شد (نه deprecated). ۶ نقطه فراخوانی به‌روز شد.
+- **ISS-027:** `**kwargs` از `GeminiProvider.__init__` حذف شد. AST scan تأیید کرد هیچ فراخوانی با پارامتر ناشناخته وجود ندارد.
+- **ISS-029:** `DEFAULT_VALID_CANNED` به `MockAIProvider` اضافه شد. `MockAIProvider()` بدون پارامتر، payload معتبر `NewsAnalysis` برمی‌گرداند.
+- **ISS-030:** `PROMPT_VERSION` از `"v2"` به `"v2-{hash8}"` تغییر کرد. هش محاسبه‌شده از `EDITORIAL_SYSTEM_PROMPT` + schema `NewsAnalysis`.
+- **ruff:** `ruff>=0.8,<1` به `requirements-dev.txt` اضافه شد. ruff 0.17.4 نصب و اجرا شد.
+- **ISS-028 بازگشایی:** توضیح F-1 ("state به PostgreSQL منتقل شد") فقط برای state پایدار درست بود. شمارنده‌های in-memory `_total_calls` و `_preflight_calls` هنوز class-level هستند. به ISS-032 منتقل شد.
+- **ISS-033 ثبت:** اجرای ruff ۱۹۵ خطا کشف کرد (۱۴۱ fixable). نیاز به فاز اختصاصی Lint Cleanup.
+
+### نتایج
+- ۱۶۲ تست pass (۱۵۹ + ۳ تست جدید: purpose tracking، default canned، prompt version hash)
+- ISS-026، 027، 029، 030 → 🟢
+- ISS-032 (شمارنده‌های in-memory) و ISS-033 (lint debt) → 🟡 ثبت‌شده برای فازهای آینده
+
+### درس
+ruff باید از ابتدای پروژه در CI فعال باشد. اضافه کردنش در فاز ۹ باعث شد ۱۹۵ خطای انباشته کشف شود. برای پروژه بعدی: از روز اول `ruff check` در pre-commit hook.
+
+### وضعیت نهایی
+**فاز G بسته.** ۴ ISS رفع شد. ruff نصب شد (اجرا در فاز I).
+
