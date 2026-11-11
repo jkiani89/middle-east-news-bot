@@ -1,10 +1,57 @@
 # راهنمای راه‌اندازی محیط محلی توسعه (Local Development Setup)
 
-این سند مراحل کامل راه‌اندازی محیط توسعه محلی ربات اخبار خاورمیانه (`middle-east-news-bot`) را بر روی سیستم‌عامل ویندوز با استفاده از نسخه پرتابل PostgreSQL 16 و محیط مجازی پایتون تشریح می‌کند.
+این سند مراحل کامل راه‌اندازی محیط توسعه محلی ربات اخبار خاورمیانه (`middle-east-news-bot`) را تشریح می‌کند.
 
 ---
 
-## ۱. پیش‌نیازها
+## 1. Running with Docker Compose (Recommended)
+
+This is the fastest way to run the bot locally with a real PostgreSQL database.
+
+### Prerequisites:
+- Docker Desktop (Windows/Mac) or Docker Engine + Docker Compose (Linux)
+- Git
+
+### Steps:
+
+```bash
+# Clone the repo
+git clone https://github.com/YOUR_USERNAME/middle-east-news-bot.git
+cd middle-east-news-bot
+
+# Copy environment template
+cp .env.example .env
+
+# Edit .env with your credentials (GEMINI_API_KEY, TELEGRAM_*, etc.)
+# IMPORTANT: Set POSTGRES_PASSWORD to a strong password.
+nano .env
+
+# Build and start services
+docker compose up -d --build
+
+# Run database migrations
+docker compose exec app alembic upgrade head
+
+# Check status
+docker compose ps
+docker compose logs -f app
+```
+
+Stopping:
+
+```bash
+docker compose down
+```
+
+To completely remove the database volume (destructive):
+
+```bash
+docker compose down -v
+```
+
+---
+
+## ۲. Running with Local Python (Development & Portable PostgreSQL)
 
 - **Python:** نگارش 3.15.2 یا بالاتر
 - **PostgreSQL:** نگارش 16.4 پرتابل (مستقر در `D:\pgsql\pgsql`)

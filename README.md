@@ -56,3 +56,17 @@ DAILY_REPORT_MINUTE=0
 - در نبود شواهد مستقل، خبر تأییدنشده باقی می‌ماند.
 - تطبیق رویدادها در این اسکلت محافظه‌کارانه است؛ ادغام اشتباه خبرها باید در تست‌ها بررسی شود.
 - متن کامل منابع را بدون بررسی مجوز بازنشر نکن؛ لینک و انتساب منبع را نگه دار.
+
+## Deployment
+
+This project is designed to run on **free-tier infrastructure** ($0/month):
+- **Compute:** Oracle Cloud Always Free ARM VM (or Freestyle.sh as fallback)
+- **Database:** Self-hosted PostgreSQL 16 on the VM (or Aiven Free PostgreSQL)
+- **Backup:** Cloudflare R2 (10GB free tier, zero egress)
+- **CI/CD:** GitHub Actions (public repo)
+
+See the full deployment guide: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**
+
+For Oracle Cloud anti-idle strategy: **[docs/ANTI_IDLE.md](docs/ANTI_IDLE.md)**
+
+For backup and restore: **[docs/BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md)**
