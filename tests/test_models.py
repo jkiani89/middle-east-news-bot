@@ -1,8 +1,6 @@
 """Unit tests for database models and schema definitions."""
 
-from app.database.models import (
-    Base, Source, Article, Event, ArticleEvent, Summary, DailyReport, JobLog
-)
+from app.database.models import Base
 
 
 def test_all_seven_tables_registered():

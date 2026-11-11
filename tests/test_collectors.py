@@ -1,17 +1,13 @@
 """Unit tests for collectors, normalizers, retry behavior, and content extraction."""
 
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 import tenacity
 
 from app.collectors.rss_collector import (
-    DEFAULT_HEADERS,
-    DEFAULT_TIMEOUT,
-    DEFAULT_USER_AGENT,
-    CollectorError,
     FeedFetchError,
     _http_get_with_retry,
     canonicalize_url,
@@ -170,13 +166,13 @@ async def test_fetch_feed_successful_mock():
     # Canonical URL should strip utm tracking
     assert item1["canonical_url"] == "https://news.un.org/en/story/2026/11/1150000"
     assert "Security Council convened" in item1["text"]
-    assert item1["published_at"] == datetime(2026, 11, 10, 7, 30, tzinfo=timezone.utc)
+    assert item1["published_at"] == datetime(2026, 11, 10, 7, 30, tzinfo=UTC)
     assert len(item1["content_hash"]) == 64
 
     item2 = items[1]
     assert item2["title"] == "Humanitarian Aid Convoys Enter Relief Corridor"
     assert item2["canonical_url"] == "https://news.un.org/en/story/2026/11/1150001"
-    assert item2["published_at"] == datetime(2026, 11, 10, 6, 15, tzinfo=timezone.utc)
+    assert item2["published_at"] == datetime(2026, 11, 10, 6, 15, tzinfo=UTC)
 
 
 @pytest.mark.asyncio

@@ -1,8 +1,11 @@
 import json
 from pathlib import Path
+
 from sqlalchemy import select
+
 from app.database.connection import SessionLocal
 from app.database.models import Source
+
 
 async def sync_sources():
     sources_file = Path("editorial/sources.json")

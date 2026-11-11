@@ -2,12 +2,13 @@
 
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from dateutil import parser as date_parser
 import feedparser
 import httpx
+import trafilatura
+from dateutil import parser as date_parser
 from tenacity import (
     before_sleep_log,
     retry,
@@ -15,7 +16,7 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
-import trafilatura
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -231,15 +232,15 @@ async def fetch_feed(
             try:
                 published = date_parser.parse(raw_date)
                 if published and not published.tzinfo:
-                    published = published.replace(tzinfo=timezone.utc)
+                    published = published.replace(tzinfo=UTC)
                 elif published and published.tzinfo:
-                    published = published.astimezone(timezone.utc)
+                    published = published.astimezone(UTC)
             except Exception:
                 published = None
 
         if not published and hasattr(entry, "published_parsed") and entry.published_parsed:
             try:
-                published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                published = datetime(*entry.published_parsed[:6], tzinfo=UTC)
             except Exception:
                 published = None
 

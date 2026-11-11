@@ -7,12 +7,11 @@ and persistence to daily_reports table.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
-from zoneinfo import ZoneInfo
+
 import pytest
 
-from app.config import settings
 from app.reports.daily_report import (
     CATEGORY_TITLES,
     VERIFICATION_LABELS,
@@ -38,7 +37,7 @@ def _make_mock_event(
     ev.title = title
     ev.importance = importance
     ev.event_type = event_type
-    ev.first_seen_at = first_seen_at or datetime.now(timezone.utc)
+    ev.first_seen_at = first_seen_at or datetime.now(UTC)
     ev.countries = countries or ["Iran"]
     ev.actors = actors or ["Foreign Ministry"]
     ev.location = location
@@ -72,7 +71,7 @@ def _make_mock_article(
     art.id = article_id
     art.status = status
     art.original_url = original_url
-    art.collected_at = collected_at or datetime.now(timezone.utc)
+    art.collected_at = collected_at or datetime.now(UTC)
     return art
 
 
@@ -198,6 +197,7 @@ def test_format_persian_daily_report_html_tags_and_split():
 def test_article_with_html_special_chars_escaped():
     """Verify that dangerous HTML characters in news titles/summaries/URLs are properly escaped."""
     import re
+
     from app.telegram.publisher import split_text
 
     rep_date = date(2026, 11, 10)
@@ -405,7 +405,7 @@ async def test_build_daily_report_updates_existing_record():
     existing_report = MagicMock()
     existing_report.status = "published"
     existing_report.telegram_message_ids = [999, 1000]
-    existing_report.published_at = datetime.now(timezone.utc)
+    existing_report.published_at = datetime.now(UTC)
     session.scalar.return_value = existing_report
 
     rep_day, items = await build_daily_report(
@@ -495,7 +495,7 @@ async def test_generate_and_save_daily_report_creates_or_updates():
     mock_res_art = MagicMock()
     mock_res_art.all.return_value = []
     mock_session.execute.side_effect = [mock_res_ev, mock_res_art]
-    
+
     existing_rep = MagicMock()
     mock_session.scalar.return_value = existing_rep
 

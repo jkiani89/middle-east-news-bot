@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 def utcnow() -> datetime:
     """Return timezone-aware current UTC datetime."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 async def count_pending_articles(session: AsyncSession) -> int:

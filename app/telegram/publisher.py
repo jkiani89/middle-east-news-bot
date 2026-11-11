@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import date, datetime, timezone
 import logging
 import re
-from typing import Any, Sequence
+from datetime import UTC, date, datetime
+from typing import Any
 
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
@@ -176,7 +176,7 @@ async def send_telegram_message_resilient(
             if attempt == max_retries:
                 raise
             await asyncio.sleep(wait_time)
-        except (TelegramNetworkError, asyncio.TimeoutError) as e:
+        except (TimeoutError, TelegramNetworkError) as e:
             wait_time = base_backoff * (2 ** (attempt - 1))
             logger.warning(
                 "Telegram NetworkError for chat %s: %s. Retrying in %s seconds (attempt %d/%d)...",
@@ -356,7 +356,7 @@ async def publish_report(
         # Step 3: Mark DailyReport as published
         if session is not None and db_report is not None:
             db_report.status = "published"
-            db_report.published_at = datetime.now(timezone.utc)
+            db_report.published_at = datetime.now(UTC)
             db_report.telegram_message_ids = [s["message_id"] for s in sent]
             await session.commit()
 

@@ -9,11 +9,12 @@ Covers the 5 core scenarios required by acceptance criteria:
 Plus Bootstrap guardrails and dynamic weight redistribution.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
-from app.database.models import Article, ArticleEvent, Event, Summary
+from app.database.models import Article, Event, Summary
 from app.processors.event_matcher import (
     EventMatcher,
     calculate_event_similarity,
@@ -109,7 +110,7 @@ def test_bootstrap_guardrail_rejects_category_only_false_merge():
 @pytest.mark.asyncio
 async def test_scenario_1_merge_similar_articles_different_sources():
     """Scenario 1: Two identical/highly similar articles from different sources -> merge (match_type='auto')."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     existing_event = Event(
         id=10,
         title="UN Peacekeeping Force Rotates in South Lebanon",
@@ -172,7 +173,7 @@ async def test_scenario_1_merge_similar_articles_different_sources():
 @pytest.mark.asyncio
 async def test_scenario_2_distinct_articles_create_separate_events():
     """Scenario 2: Two distinct articles -> separate events (match_type='initial')."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     existing_event = Event(
         id=11,
         title="Morocco and Spain Sign Port Cooperation Agreement",
@@ -221,7 +222,7 @@ async def test_scenario_2_distinct_articles_create_separate_events():
 @pytest.mark.asyncio
 async def test_scenario_3_dedup_and_unrelated_candidate():
     """Scenario 3: Same topic with low similarity against irrelevant candidate creates separate event."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     unrelated_event = Event(
         id=12,
         title="Syria Humanitarian Relief Convoy Arrives in Aleppo",
@@ -264,7 +265,7 @@ async def test_scenario_3_dedup_and_unrelated_candidate():
 @pytest.mark.asyncio
 async def test_scenario_4_similar_news_within_24h_merges():
     """Scenario 4: Similar news with event 18 hours prior (within 48h window) -> merge."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     t_minus_18h = now - timedelta(hours=18)
     existing_event = Event(
         id=14,
@@ -310,7 +311,7 @@ async def test_scenario_4_similar_news_within_24h_merges():
 @pytest.mark.asyncio
 async def test_scenario_5_follow_up_event_past_48h_sets_parent_event_id():
     """Scenario 5: Similar news with event 50 hours prior (>48h) -> follow-up (parent_event_id set)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     t_minus_50h = now - timedelta(hours=50)
 
     # The original event happened 50 hours ago (outside 48h window)
@@ -399,9 +400,9 @@ async def test_multiple_articles_merge_into_same_event():
 
     accumulating sources in details_fa and repeatedly updating last_updated_at.
     """
-    t0 = datetime(2026, 11, 10, 10, 0, tzinfo=timezone.utc)
-    t1 = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)
-    t2 = datetime(2026, 11, 10, 14, 0, tzinfo=timezone.utc)
+    t0 = datetime(2026, 11, 10, 10, 0, tzinfo=UTC)
+    t1 = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
+    t2 = datetime(2026, 11, 10, 14, 0, tzinfo=UTC)
 
     event = Event(
         id=77,

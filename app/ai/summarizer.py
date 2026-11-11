@@ -3,10 +3,11 @@
 import hashlib
 import json
 import logging
-from typing import Any, Literal
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.ai.provider import BaseAIProvider, GeminiProvider, get_ai_provider
+from app.ai.provider import BaseAIProvider, get_ai_provider
 
 logger = logging.getLogger(__name__)
 

@@ -1,16 +1,18 @@
 import asyncio
-from datetime import datetime, timezone
 import logging
+from datetime import UTC, datetime
+
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.database.connection import SessionLocal
-from app.database.models import Source, Article, Event, ArticleEvent, Summary, JobLog
-from app.collectors.rss_collector import fetch_feed
+
 from app.ai.provider import BaseAIProvider, get_ai_provider
 from app.ai.summarizer import PROMPT_VERSION, analyze_article
-from app.processors.event_matcher import EventMatcher
+from app.collectors.rss_collector import fetch_feed
 from app.config import settings
+from app.database.connection import SessionLocal
+from app.database.models import Article, ArticleEvent, Event, JobLog, Source, Summary
+from app.processors.event_matcher import EventMatcher
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +168,7 @@ async def process_collected_articles(
                             "source": source_name,
                             "url": article.original_url,
                             "article_id": article.id,
-                            "added_at": (article.collected_at or datetime.now(timezone.utc)).isoformat(),
+                            "added_at": (article.collected_at or datetime.now(UTC)).isoformat(),
                         }],
                     },
                     verification_status=result.verification_status,
@@ -231,12 +233,12 @@ async def collect_and_process(provider: BaseAIProvider | None = None):
             # Process collected articles adhering strictly to status filtering
             count = await process_collected_articles(session, limit=settings.max_articles_per_batch, provider=provider)
             log.status, log.processed_count = "success", count
-            log.finished_at = datetime.now(timezone.utc)
+            log.finished_at = datetime.now(UTC)
             await session.commit()
         except Exception as exc:
             await session.rollback()
             log.status, log.error_message = "failed", str(exc)[:3000]
-            log.finished_at = datetime.now(timezone.utc)
+            log.finished_at = datetime.now(UTC)
             session.add(log)
             await session.commit()
             raise

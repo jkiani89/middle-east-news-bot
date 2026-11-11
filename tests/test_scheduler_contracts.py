@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from app.ai.provider import (
@@ -15,15 +15,12 @@ from app.ai.provider import (
     MockAIProvider,
 )
 from app.config import settings
-from app.database.models import JobLog
 from app.scheduler.jobs import (
     build_scheduler,
     check_any_model_available,
-    count_pending_articles,
     daily_report,
     hourly_collection,
     reconcile_interrupted_jobs,
-    utcnow,
 )
 from app.telegram.publisher import MockPublishRefusedError
 
@@ -317,7 +314,7 @@ async def test_daily_report_skips_when_mock_content_refused(mock_session_local):
     """Verify daily_report job logs 'skipped_mock_content' when MockPublishRefusedError is raised."""
     with patch("app.scheduler.jobs.generate_and_save_daily_report", new_callable=AsyncMock) as mock_gen, \
          patch("app.scheduler.jobs.publish_report", new_callable=AsyncMock) as mock_pub:
-        mock_gen.return_value = (datetime.now(timezone.utc).date(), [], "report text")
+        mock_gen.return_value = (datetime.now(UTC).date(), [], "report text")
         mock_pub.side_effect = MockPublishRefusedError("Cannot publish mock content in development")
 
         job_log = await daily_report()
@@ -332,7 +329,7 @@ async def test_daily_report_happy_path(mock_session_local):
     """Verify daily_report job completes with 'success' and records processed chunks."""
     with patch("app.scheduler.jobs.generate_and_save_daily_report", new_callable=AsyncMock) as mock_gen, \
          patch("app.scheduler.jobs.publish_report", new_callable=AsyncMock) as mock_pub:
-        mock_gen.return_value = (datetime.now(timezone.utc).date(), [{"event_id": 1}], "report text")
+        mock_gen.return_value = (datetime.now(UTC).date(), [{"event_id": 1}], "report text")
         mock_pub.return_value = [{"message_id": 101}, {"message_id": 102}]
 
         job_log = await daily_report(dry_run=True)
@@ -380,7 +377,7 @@ async def test_end_to_end_scheduler_cycle_with_mock_provider(mock_session_local)
          patch("app.scheduler.jobs.generate_and_save_daily_report", new_callable=AsyncMock) as mock_gen, \
          patch("app.scheduler.jobs.publish_report", new_callable=AsyncMock) as mock_pub:
         mock_pipeline.return_value = 3
-        mock_gen.return_value = (datetime.now(timezone.utc).date(), [{"event_id": 1}], "mock daily report")
+        mock_gen.return_value = (datetime.now(UTC).date(), [{"event_id": 1}], "mock daily report")
         mock_pub.return_value = [{"message_id": 1001}]
 
         # 1. Run hourly collection with Mock Provider, 3 pending articles, and mocked health check

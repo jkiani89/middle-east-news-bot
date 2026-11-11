@@ -1,6 +1,7 @@
 """Unit tests for Telegram publishing utilities and security guardrails."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from app.config import settings
@@ -341,6 +342,7 @@ async def test_publish_report_dry_run_mode():
 async def test_resilient_send_permanent_api_error_fails_immediately():
     """Test TelegramAPIError (e.g. 400 Bad Request) fails without retrying."""
     from aiogram.exceptions import TelegramAPIError
+
     from app.telegram.publisher import send_telegram_message_resilient
 
     mock_bot = AsyncMock()

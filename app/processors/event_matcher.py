@@ -10,13 +10,13 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Any, Sequence
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models import Article, ArticleEvent, Event, Summary
+from app.database.models import Article, Event, Summary
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ STOPWORDS = {
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def normalize_text(text: str | None) -> str:
@@ -208,7 +208,7 @@ class EventMatcher:
         """Evaluate incoming article against active and historical events to merge, follow-up, or create new."""
         ref_time = article.collected_at or _utcnow()
         if ref_time.tzinfo is None:
-            ref_time = ref_time.replace(tzinfo=timezone.utc)
+            ref_time = ref_time.replace(tzinfo=UTC)
 
         window_start = ref_time - timedelta(hours=self.time_window_hours)
         window_end = ref_time + timedelta(hours=self.time_window_hours)

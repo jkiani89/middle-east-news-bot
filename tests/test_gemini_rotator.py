@@ -1,12 +1,11 @@
 """Unit tests for Phase 7.5 Gemini API Rotator, SQLite persistence, and model fallback."""
 
-import os
 from pathlib import Path
-import tempfile
 from unittest.mock import AsyncMock, MagicMock
-import pytest
 
+import pytest
 from gemini_rotator import GeminiAPIRotator, MemoryAdapter, SQLiteAdapter
+
 from app.ai.provider import (
     AIProviderError,
     AIRateLimitError,
@@ -275,15 +274,15 @@ async def test_all_keys_suspended_raises_ai_rate_limit_error():
 @pytest.mark.asyncio
 async def test_provider_auxiliary_and_defensive_branches(tmp_path: Path, monkeypatch):
     """Verify auxiliary defensive branches: markdown trimming, null responses, error translations, and mock provider."""
+
     from app.ai.provider import (
-        is_retryable_ai_error,
-        _is_rate_limit_or_quota,
-        _translate_and_raise,
         AIServiceUnavailableError,
         MockAIProvider,
+        _is_rate_limit_or_quota,
+        _translate_and_raise,
         get_ai_provider,
+        is_retryable_ai_error,
     )
-    from gemini_rotator.middleware import ErrorType
 
     # 1. Error translation branches
     assert is_retryable_ai_error(Exception("429 resource_exhausted")) is True

@@ -1,6 +1,7 @@
 """Unit tests for Phase 4 AI provider abstraction, prompt defense, and strict Pydantic validation."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
+
 import pytest
 from pydantic import ValidationError
 
@@ -215,7 +216,8 @@ def test_is_retryable_ai_error():
 @pytest.mark.asyncio
 async def test_gemini_provider_retries_on_429_and_succeeds():
     """Verify GeminiProvider handles 429 via rotator or fallback and succeeds."""
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import MagicMock
+
     from app.ai.provider import GeminiProvider
 
     mock_rotator = MagicMock()
@@ -244,8 +246,9 @@ async def test_gemini_provider_retries_on_429_and_succeeds():
 @pytest.mark.asyncio
 async def test_gemini_provider_exhausts_retries_on_persistent_429():
     """Verify GeminiProvider raises AIRateLimitError on persistent 429 quota exhaustion."""
-    from unittest.mock import AsyncMock, MagicMock
-    from app.ai.provider import GeminiProvider, AIRateLimitError
+    from unittest.mock import MagicMock
+
+    from app.ai.provider import AIRateLimitError, GeminiProvider
 
     mock_rotator = MagicMock()
     mock_rotator.execute = AsyncMock(
@@ -263,8 +266,9 @@ async def test_gemini_provider_exhausts_retries_on_persistent_429():
 @pytest.mark.asyncio
 async def test_gemini_provider_fails_fast_on_non_retryable_400():
     """Verify GeminiProvider does not retry on 400 Bad Request."""
-    from unittest.mock import AsyncMock, MagicMock
-    from app.ai.provider import GeminiProvider, AIProviderError
+    from unittest.mock import MagicMock
+
+    from app.ai.provider import AIProviderError, GeminiProvider
 
     mock_rotator = MagicMock()
     mock_rotator.execute = AsyncMock(
@@ -283,8 +287,8 @@ async def test_gemini_provider_fails_fast_on_non_retryable_400():
 async def test_gemini_provider_sliding_window_throttling():
     """Verify GeminiProvider delegates concurrency, rate limiting, and RPM windowing to gemini-api-rotator."""
     from unittest.mock import MagicMock
+
     from gemini_rotator import GeminiAPIRotator, RotatorConfig
-    from app.ai.provider import GeminiProvider
 
     cfg = RotatorConfig(rpm_per_key=10, max_concurrent_per_key=2)
     mock_rotator = MagicMock(spec=GeminiAPIRotator)
@@ -298,8 +302,7 @@ async def test_gemini_provider_sliding_window_throttling():
 
 def test_get_ai_provider_factory():
     """Verify get_ai_provider factory instantiates correct provider based on settings."""
-    from app.ai.provider import get_ai_provider, GeminiProvider, MockAIProvider
-    from app.config import settings
+    from app.ai.provider import MockAIProvider, get_ai_provider
 
     # In development with real key
     provider = get_ai_provider()
@@ -358,7 +361,6 @@ async def test_mock_ai_provider_default_canned_is_valid_news_analysis():
 
 def test_prompt_version_includes_schema_hash():
     """Verify PROMPT_VERSION includes a deterministic hash suffix (ISS-030)."""
-    from app.ai.summarizer import PROMPT_VERSION
 
     assert PROMPT_VERSION.startswith("v2-")
     # After "v2-" should be 8 hex chars

@@ -1,6 +1,7 @@
 """Unit tests for Phase 3 pipeline processing and deduplication logic."""
 
 from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from app.collectors.rss_collector import canonicalize_url, make_hash
@@ -91,8 +92,8 @@ async def test_process_collected_articles_zero_calls_when_no_collected_articles(
 @pytest.mark.asyncio
 async def test_process_collected_articles_flags_injection_for_review():
     """Verify that articles with is_injection_attempt transition to 'flagged_for_review'."""
-    from app.database.models import Article
     from app.ai.provider import MockAIProvider
+    from app.database.models import Article
 
     article = Article(
         id=101,
@@ -142,8 +143,8 @@ async def test_process_collected_articles_flags_injection_for_review():
 @pytest.mark.asyncio
 async def test_process_collected_articles_rejects_irrelevant_news():
     """Verify that articles deemed irrelevant transition to 'rejected'."""
-    from app.database.models import Article
     from app.ai.provider import MockAIProvider
+    from app.database.models import Article
 
     article = Article(
         id=102,
@@ -193,8 +194,8 @@ async def test_process_collected_articles_rejects_irrelevant_news():
 @pytest.mark.asyncio
 async def test_process_collected_articles_summarizes_valid_news():
     """Verify that valid relevant news transitions to 'summarized' with Event and Summary created."""
-    from app.database.models import Article
     from app.ai.provider import MockAIProvider
+    from app.database.models import Article
 
     article = Article(
         id=103,

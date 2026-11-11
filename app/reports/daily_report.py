@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import html
 import logging
-from datetime import date, datetime, time, timedelta, timezone
-from typing import Any, Sequence
+from datetime import UTC, date, datetime, time, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -45,7 +45,7 @@ VERIFICATION_LABELS: dict[str, str] = {
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def is_summary_mock(summary: Summary | Any) -> bool:

@@ -469,8 +469,8 @@ async def test_rollback_in_integrity_error_loses_joblog_BUG_PROOF():
 
     If this test ever fails again, the savepoint fix was broken.
     """
-    from app.database.models import Article, JobLog, Source
     from app.ai.provider import MockAIProvider
+    from app.database.models import Article, JobLog, Source
     from app.processors.pipeline import collect_and_process
 
     session = RollbackAwareMockSession()

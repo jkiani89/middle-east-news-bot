@@ -1,13 +1,25 @@
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
+
 from sqlalchemy import (
-    BigInteger, Boolean, Date, DateTime, ForeignKey, Integer,
-    Numeric, SmallInteger, String, Text, UniqueConstraint, Index
+    BigInteger,
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    SmallInteger,
+    String,
+    Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 class Base(DeclarativeBase):
     pass
@@ -24,7 +36,7 @@ class Source(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     reliability_note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    articles: Mapped[list["Article"]] = relationship(back_populates="source")
+    articles: Mapped[list[Article]] = relationship(back_populates="source")
 
 class Article(Base):
     __tablename__ = "articles"
@@ -47,8 +59,8 @@ class Article(Base):
     status: Mapped[str] = mapped_column(String(30), default="new")
     text_source: Mapped[str] = mapped_column(String(30), default="rss_summary", server_default="rss_summary", nullable=False)
     ai_payload: Mapped[dict | None] = mapped_column(JSONB)
-    source: Mapped["Source"] = relationship(back_populates="articles")
-    event_links: Mapped[list["ArticleEvent"]] = relationship(back_populates="article")
+    source: Mapped[Source] = relationship(back_populates="articles")
+    event_links: Mapped[list[ArticleEvent]] = relationship(back_populates="article")
 
 class Event(Base):
     __tablename__ = "events"
@@ -66,8 +78,8 @@ class Event(Base):
     parent_event_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("events.id", ondelete="SET NULL"), nullable=True, index=True
     )
-    article_links: Mapped[list["ArticleEvent"]] = relationship(back_populates="event")
-    summaries: Mapped[list["Summary"]] = relationship(back_populates="event")
+    article_links: Mapped[list[ArticleEvent]] = relationship(back_populates="event")
+    summaries: Mapped[list[Summary]] = relationship(back_populates="event")
 
 class ArticleEvent(Base):
     __tablename__ = "article_events"
@@ -78,8 +90,8 @@ class ArticleEvent(Base):
     match_type: Mapped[str] = mapped_column(String(30), default="initial")
     confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    article: Mapped["Article"] = relationship(back_populates="event_links")
-    event: Mapped["Event"] = relationship(back_populates="article_links")
+    article: Mapped[Article] = relationship(back_populates="event_links")
+    event: Mapped[Event] = relationship(back_populates="article_links")
 
 class Summary(Base):
     __tablename__ = "summaries"
@@ -92,7 +104,7 @@ class Summary(Base):
     model_name: Mapped[str] = mapped_column(String(100))
     prompt_version: Mapped[str] = mapped_column(String(30), default="v1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    event: Mapped["Event"] = relationship(back_populates="summaries")
+    event: Mapped[Event] = relationship(back_populates="summaries")
 
 class DailyReport(Base):
     __tablename__ = "daily_reports"

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+
 from app.collectors.source_manager import sync_sources
 from app.processors.pipeline import collect_and_process
 from app.scheduler.jobs import build_scheduler, reconcile_interrupted_jobs

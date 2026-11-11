@@ -9,10 +9,10 @@ from alembic.script import ScriptDirectory
 def test_alembic_config_and_script_directory():
     ini_path = Path(__file__).resolve().parents[1] / "alembic.ini"
     assert ini_path.exists()
-    
+
     cfg = Config(str(ini_path))
     script = ScriptDirectory.from_config(cfg)
-    
+
     # Verify revisions exist in script directory
     revisions = list(script.walk_revisions())
     rev_ids = [r.revision for r in revisions]

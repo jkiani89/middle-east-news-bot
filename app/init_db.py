@@ -1,7 +1,9 @@
 """Database initialization script using Alembic migrations."""
 
 from pathlib import Path
+
 from alembic.config import Config
+
 from alembic import command
 
 
