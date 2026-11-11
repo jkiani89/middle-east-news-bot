@@ -445,3 +445,23 @@ eal تبدیل شود.
 - سند `AGENT_PROTOCOL.md` باید در پرامپت ارشد ایجنت قرار گیرد تا این سناریو تکرار نشود.
 - تغییرات در اسناد مرجع، `requirements.txt`، migrationها، و اجرای اسکریپت‌های API خارجی نیازمند تأیید کتبی صریح است.
 - ایجنت باید پیش از شروع هر فاز، برنامه را ارائه و پس از اتمام، شواهد خام را قبل از رفتن به فاز بعدی تأیید بگیرد.
+
+---
+
+## [2026-11-11] فاز D — رفع باگ ISS-031 (JobLog loss in rollback)
+
+### زمینه
+تست C-10 در فاز C باگ از دست رفتن JobLog در حلقه مقاله‌ها را اثبات کرد (rollback کامل به جای savepoint).
+
+### اقدام
+- جایگزینی await session.rollback() با async with session.begin_nested() در collect_and_process
+- افزودن _Savepoint به mock تست
+- به‌روزرسانی docstring تست C-10 (نام حفظ شد برای ردیابی تاریخی)
+- پاکسازی ۶ import استفاده‌نشده در test_pipeline_integration.py (رفع ruff F401)
+
+### شواهد
+- C-10 از FAIL به PASS
+- همه ۱۴۴ تست سبز
+- پوشش pipeline.py حداقل ۹۴٪ حفظ شد
+- ISS-031 → 🟢
+
