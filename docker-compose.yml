@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: men-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-newsbot}
+      POSTGRES_USER: ${POSTGRES_USER:-newsbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-newsbot} -d ${POSTGRES_DB:-newsbot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "127.0.0.1:5432:5432"  # bind to localhost only (no external access)
+    networks:
+      - men-net
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: men-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-newsbot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-newsbot}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_PRIMARY_MODEL: ${GEMINI_PRIMARY_MODEL:-gemini-3.8-flash}
+      GEMINI_FALLBACK_MODEL: ${GEMINI_FALLBACK_MODEL:-gemini-3.5-flash-lite}
+      GEMINI_ENABLE_FALLBACK: ${GEMINI_ENABLE_FALLBACK:-false}
+      GEMINI_LOG_RETENTION_DAYS: ${GEMINI_LOG_RETENTION_DAYS:-30}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHANNEL_ID: ${TELEGRAM_CHANNEL_ID}
+      TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID}
+      TIMEZONE: ${TIMEZONE:-Asia/Tehran}
+      COLLECTION_INTERVAL_MINUTES: ${COLLECTION_INTERVAL_MINUTES:-60}
+      DAILY_REPORT_HOUR: ${DAILY_REPORT_HOUR:-8}
+      DAILY_REPORT_MINUTE: ${DAILY_REPORT_MINUTE:-0}
+      MAX_ARTICLES_PER_BATCH: ${MAX_ARTICLES_PER_BATCH:-50}
+      MIN_IMPORTANCE: ${MIN_IMPORTANCE:-2}
+    networks:
+      - men-net
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  men-net:
+    driver: bridge

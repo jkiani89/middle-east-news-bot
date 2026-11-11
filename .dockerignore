@@ -1,0 +1,49 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Tests and docs (not needed at runtime)
+tests/
+docs/
+scratch/
+
+# Local data (Postgres volume is separate, not in image)
+data/
+*.db
+*.sqlite
+*.bak
+
+# Local env files (never bake secrets into image)
+.env
+.env.*
+!.env.example
+
+# Development scripts
+scripts/
+ruff.toml
+pytest.ini
+requirements-dev.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project management
+*.md
+!README.md
