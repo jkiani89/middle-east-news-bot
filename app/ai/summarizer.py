@@ -1,5 +1,7 @@
 """Editorial AI summarizer with Prompt Injection defense and strict Pydantic validation."""
 
+import hashlib
+import json
 import logging
 from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -8,7 +10,6 @@ from app.ai.provider import BaseAIProvider, GeminiProvider, get_ai_provider
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "v2"
 MAX_SCHEMA_REPAIR_ATTEMPTS = 1
 
 # 10 Strict Category Codes (EDITORIAL_POLICY.md & System Guidelines)
@@ -115,6 +116,20 @@ EDITORIAL_SYSTEM_PROMPT = """
 ۶. وضعیت‌های مجاز راستی‌آزمایی (verification_status):
    فقط یکی از ۵ مقدار: confirmed, partially_confirmed, unconfirmed, disputed, false.
 """
+
+
+def _compute_prompt_hash() -> str:
+    """Compute short hash of prompt system + schema for version tracking."""
+    schema_json = json.dumps(
+        NewsAnalysis.model_json_schema(),
+        sort_keys=True,
+        ensure_ascii=True,
+    )
+    combined = f"{EDITORIAL_SYSTEM_PROMPT}|{schema_json}"
+    return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:8]
+
+
+PROMPT_VERSION = f"v2-{_compute_prompt_hash()}"
 
 
 def build_analysis_prompt(title: str, body: str, source_name: str) -> str:

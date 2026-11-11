@@ -354,3 +354,14 @@ async def test_mock_ai_provider_default_canned_is_valid_news_analysis():
     analysis = NewsAnalysis.model_validate(result)
     assert analysis.is_relevant is True
     assert analysis.event_title == "Mock Event"
+
+
+def test_prompt_version_includes_schema_hash():
+    """Verify PROMPT_VERSION includes a deterministic hash suffix (ISS-030)."""
+    from app.ai.summarizer import PROMPT_VERSION
+
+    assert PROMPT_VERSION.startswith("v2-")
+    # After "v2-" should be 8 hex chars
+    hash_part = PROMPT_VERSION[3:]
+    assert len(hash_part) == 8
+    assert all(c in "0123456789abcdef" for c in hash_part)
