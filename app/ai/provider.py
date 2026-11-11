@@ -1,15 +1,17 @@
 """AI provider abstraction layer and Gemini implementation using gemini-api-rotator."""
 
-from abc import ABC, abstractmethod
 import json
 import logging
-from pathlib import Path
 import time
+from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
-from gemini_rotator import GeminiAPIRotator, RotatorConfig, SQLiteAdapter
+from gemini_rotator import GeminiAPIRotator, RotatorConfig
+from gemini_rotator.adapters import MemoryAdapter
 from gemini_rotator.middleware import ErrorType, classify_error
 
+from app.ai.postgres_adapter import PostgresAdapter
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -97,10 +99,21 @@ def _translate_and_raise(exc: Exception) -> None:
 
 
 class GeminiProvider(BaseAIProvider):
-    """Google Gemini AI provider implementation using gemini-api-rotator with SQLite persistence."""
+    """Google Gemini AI provider implementation using gemini-api-rotator with PostgreSQL persistence."""
 
     _total_calls: int = 0
     _preflight_calls: int = 0
+
+    @staticmethod
+    def _convert_dsn(dsn: str) -> str:
+        """Convert SQLAlchemy async DSN to psycopg sync DSN.
+
+        psycopg3 does not understand SQLAlchemy's '+asyncpg' driver marker.
+        """
+        return (
+            dsn.replace("postgresql+asyncpg://", "postgresql://")
+            .replace("postgres+asyncpg://", "postgresql://")
+        )
 
     @classmethod
     def get_total_calls(cls) -> int:
@@ -126,7 +139,7 @@ class GeminiProvider(BaseAIProvider):
         primary_model: str | None = None,
         fallback_model: str | None = None,
         enable_fallback: bool | None = None,
-        key_db_path: str | Path | None = None,
+        key_db_path: str | Path | None = None,  # DEPRECATED: ignored; SQLite removed in F-1
         config: RotatorConfig | None = None,
         **kwargs: Any,  # Absorb legacy kwargs (max_rpm, max_concurrency, client, etc.)
     ):
@@ -164,9 +177,15 @@ class GeminiProvider(BaseAIProvider):
                         "See docs/LOCAL_SETUP.md."
                     )
 
-            db_path_str = str(key_db_path or settings.gemini_key_db_path)
-            Path(db_path_str).parent.mkdir(parents=True, exist_ok=True)
-            self._db_adapter = SQLiteAdapter(db_path_str)
+            # Adapter selection: MemoryAdapter in test (no DB dependency),
+            # PostgresAdapter in dev/production (persistent state).
+            # key_db_path parameter is DEPRECATED and ignored (SQLite removed in F-1).
+            if settings.app_env == "test":
+                self._db_adapter = MemoryAdapter()
+            else:
+                self._db_adapter = PostgresAdapter(
+                    self._convert_dsn(settings.database_url)
+                )
 
             rotator_config = config or RotatorConfig()
             self._rotator = GeminiAPIRotator(
@@ -196,7 +215,7 @@ class GeminiProvider(BaseAIProvider):
         return self._rotator
 
     def close(self) -> None:
-        """Close SQLiteAdapter connection if present."""
+        """Close database adapter connection if present."""
         if self._db_adapter and hasattr(self._db_adapter, "close"):
             self._db_adapter.close()
 
