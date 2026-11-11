@@ -359,11 +359,26 @@ class GeminiProvider(BaseAIProvider):
             raise AIProviderError(f"Invalid JSON returned by Gemini: {exc}") from exc
 
 
+DEFAULT_VALID_CANNED: dict[str, Any] = {
+    "is_relevant": True,
+    "is_injection_attempt": False,
+    "categories": ["POL"],
+    "event_title": "Mock Event",
+    "headline_fa": "تیتر موک",
+    "summary_fa": "خلاصه موک",
+    "countries": ["Iran"],
+    "actors": [],
+    "location": None,
+    "importance": 3,
+    "verification_status": "unconfirmed",
+}
+
+
 class MockAIProvider(BaseAIProvider):
     """Deterministic mock provider for unit testing and offline development."""
 
     def __init__(self, canned_response: dict[str, Any] | None = None, model: str = "mock-model-v1"):
-        self._canned_response = canned_response or {}
+        self._canned_response = canned_response if canned_response is not None else dict(DEFAULT_VALID_CANNED)
         self._model = model
         self.calls_by_purpose: dict[str, int] = {
             "analysis": 0,

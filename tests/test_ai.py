@@ -340,3 +340,17 @@ async def test_mock_ai_provider_purpose_tracking():
     assert res4 == {"ok": True}
     assert provider.call_count == 2
     assert provider.calls_by_purpose["analysis"] == 2
+
+
+@pytest.mark.asyncio
+async def test_mock_ai_provider_default_canned_is_valid_news_analysis():
+    """Verify MockAIProvider() default canned_response passes NewsAnalysis validation (ISS-029)."""
+    from app.ai.summarizer import NewsAnalysis
+
+    provider = MockAIProvider()
+    result = await provider.generate_json("any prompt")
+
+    # Should not raise ValidationError
+    analysis = NewsAnalysis.model_validate(result)
+    assert analysis.is_relevant is True
+    assert analysis.event_title == "Mock Event"
