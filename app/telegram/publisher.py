@@ -231,7 +231,6 @@ async def publish_report(
     # Resolve report text
     final_text = report_text
     db_report: DailyReport | None = None
-    managed_session = False
 
     if session is not None:
         db_report = await session.scalar(

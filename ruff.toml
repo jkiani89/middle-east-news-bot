@@ -1,5 +1,6 @@
 line-length = 120
 target-version = "py315"
+force-exclude = true
 
 exclude = [
     ".venv",

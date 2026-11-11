@@ -291,9 +291,6 @@ async def test_fetch_report_items_excludes_flagged_articles():
     """Strict security test: events with any article 'flagged_for_review' must be excluded."""
     session = AsyncMock()
 
-    ev1 = _make_mock_event(1, importance=4)
-    sm1 = _make_mock_summary(1)
-
     # When query executes, simulate session returning empty rows because subquery excluded it
     mock_result_events = MagicMock()
     mock_result_events.all.return_value = []

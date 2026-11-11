@@ -428,7 +428,7 @@ async def test_publish_all_chunks_already_sent_skips_channel():
     mock_bot = AsyncMock()
     mock_bot.send_message.return_value = MagicMock(message_id=104)
 
-    sent = await publish_report(
+    await publish_report(
         report_date="2026-11-10",
         content_quality="real",
         report_text=report_text,
@@ -505,7 +505,7 @@ async def test_publish_report_successful_db_status_update():
     mock_bot = AsyncMock()
     mock_bot.send_message.return_value = MagicMock(message_id=555)
 
-    sent = await publish_report(
+    await publish_report(
         report_date="2026-11-10",
         content_quality="real",
         report_text="<b>Report text</b>",
