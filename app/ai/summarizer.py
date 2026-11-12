@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.ai.provider import BaseAIProvider, get_ai_provider
+from app.ai.provider import AIProviderError, BaseAIProvider, get_ai_provider
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +170,11 @@ def build_analysis_prompt(title: str, body: str, source_name: str) -> str:
     return prompt
 
 
+def _is_malformed_json_error(exc: BaseException) -> bool:
+    """Whether the provider failed because the model returned truncated/invalid JSON."""
+    return "invalid json" in str(exc).lower()
+
+
 async def analyze_article(
     title: str,
     body: str,
@@ -180,11 +185,24 @@ async def analyze_article(
     ai_provider = provider or get_ai_provider()
     prompt = build_analysis_prompt(title, body, source_name)
 
-    data = await ai_provider.generate_json(
-        prompt,
-        system_instruction=EDITORIAL_SYSTEM_PROMPT,
-        purpose="analysis",
-    )
+    try:
+        data = await ai_provider.generate_json(
+            prompt,
+            system_instruction=EDITORIAL_SYSTEM_PROMPT,
+            purpose="analysis",
+        )
+    except AIProviderError as exc:
+        if not _is_malformed_json_error(exc):
+            raise
+        logger.warning(
+            "Model returned truncated or malformed JSON (%s). Retrying once with schema repair...", exc
+        )
+        data = await ai_provider.generate_json(
+            f"{prompt}\n\nپاسخ قبلی JSON نامعتبر یا ناقص بود. این بار فقط یک شیء JSON کامل و معتبر "
+            "بازگردان و مقادیر متنی را کوتاه نگه دار تا پاسخ بریده نشود.",
+            system_instruction=EDITORIAL_SYSTEM_PROMPT,
+            purpose="schema_repair",
+        )
 
     try:
         analysis = NewsAnalysis.model_validate(data)

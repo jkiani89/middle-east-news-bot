@@ -57,6 +57,8 @@ class Article(Base):
     collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="new")
+    attempt_count: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0", nullable=False)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     text_source: Mapped[str] = mapped_column(String(30), default="rss_summary", server_default="rss_summary", nullable=False)
     ai_payload: Mapped[dict | None] = mapped_column(JSONB)
     source: Mapped[Source] = relationship(back_populates="articles")

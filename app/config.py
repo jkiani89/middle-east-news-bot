@@ -79,6 +79,8 @@ class Settings(BaseSettings):
     daily_report_hour: int = 8
     daily_report_minute: int = 0
     max_articles_per_batch: int = 50
+    ai_max_attempts: int = 3  # attempts per article before a transient failure is final
+    ai_max_consecutive_failures: int = 5  # stop a batch after this many transient AI errors in a row
     min_importance: int = 2
     min_summary_len_for_full_text: int = 800
     require_full_text_for_ai: bool = True
