@@ -1,282 +1,195 @@
 # Deployment Guide (Zero-Cost Architecture)
 
-This guide covers deploying the Middle East News Bot on **free-tier infrastructure only** ($0/month). The architecture is designed to be **provider-agnostic**: all configuration is via `.env`, and switching providers requires no code changes.
+This guide covers deploying the Middle East News Bot on **free-tier infrastructure with zero credit card required** ($0/month). The architecture is designed to be **provider-agnostic**: all configuration is managed via `.env`, and switching components requires no application code changes.
 
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  Compute (Docker)                                   │
-│  Primary:  Oracle Cloud Always Free ARM VM          │
-│  Fallback: Freestyle.sh (0.20 vCPU)                 │
-└──────────────────────┬──────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────┐
-│  Database (PostgreSQL 16)                           │
-│  Primary:  Self-hosted on Oracle VM (Docker)        │
-│  Fallback: Aiven Free PostgreSQL                    │
-└──────────────────────┬──────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────┐
-│  Backup (S3-compatible)                             │
-│  Primary:  Cloudflare R2 (10GB, zero egress)        │
-└─────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│  Compute (Docker on Freestyle.sh VM)                   │
+│  Freestyle.sh: 0.20 vCPU / 512MB RAM (Always-On)       │
+└──────────────────────────┬─────────────────────────────┘
+                           │
+┌──────────────────────────▼─────────────────────────────┐
+│  Database (Managed PostgreSQL 16 on Aiven)             │
+│  Aiven Free: 1 CPU / 1GB RAM / 1GB Disk                │
+└──────────────────────────┬─────────────────────────────┘
+                           │
+┌──────────────────────────▼─────────────────────────────┐
+│  Backup & Disaster Recovery (Cloudflare R2 via rclone) │
+│  Cloudflare R2: 10GB Free Storage, Zero Egress Fees   │
+└────────────────────────────────────────────────────────┘
 ```
 
-**Portability:** Only `DATABASE_URL`, `GEMINI_API_KEY`, `TELEGRAM_*`, and `R2_*` change between providers. All application code and Dockerfiles remain identical.
+**Portability:** Only `DATABASE_URL`, `GEMINI_API_KEY`, `TELEGRAM_*`, and `R2_*` are configured in `.env`. Application code and Dockerfile remain identical across environments.
 
 ---
 
-## Free-Tier Provider Matrix (as of 2026-11)
+## Free-Tier Provider Stack (No Credit Card Required)
 
-| Provider | Free Tier | Always-On | Card Required | Recommended |
+| Component | Provider | Free Tier Specification | Card Required | Monthly Cost |
 |---|---|---|---|---|
-| **Oracle Cloud Always Free (ARM)** | 2 OCPU / 12GB RAM / 200GB disk / 10TB egress | ✅ (not idle) | ✅ (verify only) | ⭐ **Primary** |
-| **Freestyle.sh** | 200 vCPU-hour/month (0.20 vCPU = ~146 hours) | ⚠️ paused after quota | ❌ | ⭐ Fallback |
-| Railway | $1 credit/month (≈3-5 days always-on) | ❌ | ✅ | ❌ |
-| Render Free | 512MB, sleeps after 15min inactivity | ❌ | ✅ | ❌ |
-| Fly.io | No free tier for new accounts (Oct 2024) | — | — | ❌ |
-| Cloudflare Workers | Python async + asyncpg unsupported | — | — | ❌ |
+| **Compute** | **Freestyle.sh** | 200 vCPU-hours/month (0.20 vCPU = 146 vCPU-hours/month) | ❌ No | **$0** |
+| **Database** | **Aiven** | PostgreSQL 16 Free (1 CPU, 1GB RAM, 1GB storage) | ❌ No | **$0** |
+| **Backup** | **Cloudflare R2** | 10GB storage, 1M writes, 10M reads, zero egress fee | ❌ No | **$0** |
+| **CI/CD** | **GitHub Actions** | 2,000 minutes/month (public repository) | ❌ No | **$0** |
+| **AI Processing** | **Google Gemini** | Free Tier multi-project API pool (ISS-020) | ❌ No | **$0** |
 
-**Why not serverless?** This bot requires:
-- **aiogram polling** — a persistent process (not request-response)
-- **APScheduler** — persistent cron (not serverless schedules)
-- **asyncpg + PostgreSQL** — not available on Cloudflare Workers
-
-Therefore a **long-running VM or container** is required.
+> [!NOTE]
+> The previous Oracle Cloud ARM deployment and anti-idle strategy have been archived to `docs/archive/ANTI_IDLE.md`. The Freestyle.sh + Aiven architecture removes any credit card requirement and eliminates the need for anti-idle CPU/RAM load scripts.
 
 ---
 
-## Step 1: Provision Oracle Cloud ARM VM (Primary)
+## 1. Database Setup: Aiven PostgreSQL 16 Free
 
-### 1.1 Sign up
-1. Go to https://cloud.oracle.com/free
-2. Sign up with email + phone (credit card required for identity verification, **never charged on Always Free**)
-3. Choose home region (pick one close to your users — e.g., `eu-frankfurt-1` or `me-jeddah-1`)
+### 1.1 Sign Up & Provisioning
+1. Register at [aiven.io](https://aiven.io) (no credit card required).
+2. Create a new service:
+   - **Service:** PostgreSQL 16
+   - **Plan:** Free Plan (1 CPU, 1GB RAM, 1GB disk storage)
+   - **Cloud / Region:** Choose a region close to your target (e.g. `europe-west3` or `aws-eu-central-1`).
+3. Once the service is running, find the **Connection Information** tab.
 
-### 1.2 Create ARM VM
-1. Navigate: **Compute → Instances → Create Instance**
-2. **Name:** `newsbot-prod`
-3. **Image:** Ubuntu 24.04 LTS (ARM)
-4. **Shape:** `VM.Standard.A1.Flex` — **2 OCPU, 12GB RAM** (maximum Always Free)
-5. **Boot volume:** 100GB (out of 200GB total free)
-6. **SSH key:** Upload your public key (or generate new — save private key)
-7. **Networking:** Assign public IPv4 (default)
-8. Click **Create**
+### 1.2 Connection String & Database URL
+Copy the **Service URI** provided by Aiven, which looks like:
+```text
+postgres://avnadmin:PASSWORD@HOST:PORT/defaultdb?sslmode=require
+```
+Convert the scheme prefix from `postgres://` to `postgresql+asyncpg://` for SQLAlchemy async compatibility:
+```text
+postgresql+asyncpg://avnadmin:PASSWORD@HOST:PORT/defaultdb?sslmode=require
+```
+Set this value as `DATABASE_URL` in your `.env`.
 
-Wait ~1 minute. Copy the **Public IP address**.
+### 1.3 Connection Pooling Guardrail (`max_connections = 20`)
+Aiven Free enforces a strict limit of `max_connections = 20`.
+- In `app/database/connection.py`, connection limits are configured to:
+  ```python
+  pool_size=5,
+  max_overflow=5,
+  ```
+- This guarantees the application connection pool stays well under 20 connections.
+- Do **not** use PgBouncer on Aiven Free (pooling add-on is disabled on the free tier). Keep bot worker concurrency within standard defaults.
 
-### 1.3 Connect via SSH
+### 1.4 Inactivity Power Off
+Aiven may power down free database services during prolonged periods of zero queries. Because the bot performs hourly RSS collection and polling cycles, normal operation keeps the connection active. If the service is manually stopped or enters sleep:
+- Simply click **Power On** in the Aiven web console to resume within ~60 seconds.
 
+---
+
+## 2. Compute Setup: Freestyle.sh VM
+
+### 2.1 Sign Up & VM Creation
+1. Sign up at [freestyle.sh](https://freestyle.sh) (no credit card required).
+2. Create a new VM with:
+   - **CPU:** `0.20 vCPU`
+   - **RAM:** `512MB`
+   - **Monthly quota calculation:** `0.20 vCPU × 730 hours = 146 vCPU-hours/month`, leaving a **27% safety margin** below the 200 vCPU-hour free ceiling.
+3. **Crucial Configuration (Disable Sleep):**
+   - Ensure the VM sleep setting is disabled in the Freestyle dashboard (or configure `sleep_after_ms` to a maximum value). Freestyle does not stop VMs by default unless sleep on idle is toggled on. Keep the VM continuously running so scheduled jobs fire on time.
+
+### 2.2 Install Docker on Freestyle VM
+Connect to your Freestyle shell or SSH and install Docker:
 ```bash
-ssh -i /path/to/private_key ubuntu@<PUBLIC_IP>
+curl -fsSL https://get.docker.com | sh
 ```
 
-### 1.4 Install Docker + Docker Compose
-
+Verify the installation:
 ```bash
-# Install Docker
-curl -fsSL https://get.docker.com | sudo sh
-
-# Add ubuntu user to docker group
-sudo usermod -aG docker ubuntu
-
-# Logout and login for group change to take effect
-exit
-# SSH back in
-
-# Verify
 docker --version
 docker compose version
 ```
 
-### 1.5 Install rclone (for backup)
-
+### 2.3 Clone & Configure Environment
 ```bash
-sudo apt-get update
-sudo apt-get install -y rclone
-rclone --version
-```
-
-Configure rclone for Cloudflare R2 — see `docs/BACKUP_RESTORE.md`.
-
-### 1.6 Open PostgreSQL port for backups (optional)
-
-PostgreSQL is bound to `127.0.0.1:5432` (internal only). For remote backups from local, you can use SSH tunnel. **Not required** if backups run on the VM itself via cron.
-
-### 1.7 Clone and deploy
-
-```bash
-# Clone
-cd ~
-git clone https://github.com/YOUR_USERNAME/middle-east-news-bot.git
+git clone https://github.com/jkiani89/middle-east-news-bot.git
 cd middle-east-news-bot
 
-# Configure
+# Prepare environment file
 cp .env.example .env
 nano .env
-# Fill in: DATABASE_URL, POSTGRES_PASSWORD, GEMINI_API_KEY, TELEGRAM_*,
-# R2_BUCKET_NAME (and set rclone per BACKUP_RESTORE.md)
-
-# Deploy
-bash scripts/deploy.sh
 ```
 
-Verify:
+Ensure the following variables are set in `.env`:
+- `DATABASE_URL`: Your Aiven PostgreSQL connection URI (`postgresql+asyncpg://...`)
+- `GEMINI_API_KEY`: One or more Google Gemini API keys
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHANNEL_ID`, `TELEGRAM_ADMIN_CHAT_ID`: Telegram credentials
+- `R2_BUCKET_NAME`: Cloudflare R2 bucket name
+
+### 2.4 Run Migrations & Deploy
+Run deployment using the deployment script or Docker Compose:
 ```bash
-docker compose ps    # Both containers should be "Up"
-docker compose logs -f app    # Tail logs
+# Apply Alembic schema migrations to Aiven
+docker compose run --rm app alembic upgrade head
+
+# Start application service in detached mode
+docker compose up -d
+
+# Verify container status
+docker compose ps
+docker compose logs -f app
 ```
 
 ---
 
-## Step 2: Configure Backup Cron
+## 3. Backup & Disaster Recovery: Cloudflare R2
 
-Edit crontab:
+Automated backups upload compressed binary dumps directly to Cloudflare R2 via `rclone`.
+
+### 3.1 Setup rclone on the VM
+Install `rclone`:
+```bash
+sudo apt-get update && sudo apt-get install -y rclone
+```
+Follow the configuration guide in [docs/BACKUP_RESTORE.md](file:///d:/Joud%20Files/middle-east-news-bot/docs/BACKUP_RESTORE.md) to set up remote `r2`.
+
+### 3.2 Automated Daily Backup Cron
+Open crontab:
 ```bash
 crontab -e
 ```
-
-Add:
+Add daily backup at 02:00 AM server time:
 ```cron
-# Daily backup at 02:00 UTC
-0 2 * * * cd /home/ubuntu/middle-east-news-bot && bash scripts/backup.sh >> /var/log/newsbot-backup.log 2>&1
+0 2 * * * cd /root/middle-east-news-bot && bash scripts/backup.sh >> /var/log/newsbot-backup.log 2>&1
 ```
 
-See `docs/BACKUP_RESTORE.md` for restore procedure.
+`scripts/backup.sh` automatically reads `DATABASE_URL`, runs a transient `postgres:16-alpine` container to execute `pg_dump -Fc` directly against Aiven, uploads to Cloudflare R2, and retains dumps for 7 days.
 
 ---
 
-## Step 3: Anti-Idle Strategy (Critical for Oracle)
+## 4. Operational Monitoring
 
-Oracle reclaims Always Free VMs if **ALL three** conditions are met for **7 consecutive days**:
-- CPU (95th percentile) < 20%
-- Network < 20%
-- Memory < 20%
+The bot runs as a background worker (Telegram polling + APScheduler):
 
-**⚠️ A cron job alone is not enough.** A cron that runs 5 seconds/hour does not raise the 95th percentile CPU.
-
-See **`docs/ANTI_IDLE.md`** for the anti-idle strategy and script.
-
----
-
-## Step 4: Freestyle.sh (Fallback Compute)
-
-If Oracle VM is unavailable (network, hardware, or accidental reclaim), deploy to Freestyle.sh.
-
-### 4.1 Free tier limits
-- 200 vCPU-hour/month
-- At 0.20 vCPU always-on: **146 vCPU-hours/month** (27% safety margin)
-- VM **pauses** when quota exhausted (until next month)
-
-### 4.2 Setup
-1. Sign up at https://freestyle.sh
-2. Create new project → connect GitHub repo `YOUR_USERNAME/middle-east-news-bot`
-3. **Resources:** 0.20 vCPU, 512MB RAM (do not exceed — will use more quota)
-4. **Command:** `bash scripts/deploy.sh` (or `docker compose up -d`)
-5. **Environment variables:** Copy from `.env` (all required vars)
-
-### 4.3 Database for Freestyle
-
-Use **Aiven Free PostgreSQL** (Freestyle's ephemeral storage is not suitable):
-1. Sign up at https://aiven.io (no credit card)
-2. Create PostgreSQL 16 service (free tier: 1 CPU, 1GB RAM, 1GB disk)
-3. Copy **Service URI** → set as `DATABASE_URL` in Freestyle (convert `postgres://` to `postgresql+asyncpg://`)
-4. Run `alembic upgrade head` once (Freestyle → Shell)
-5. Note: Aiven free tier **powers off after inactivity** — with active polling it stays up
-
-### 4.4 Backup with Aiven
-Cloudflare R2 backup still works. `scripts/backup.sh` needs `POSTGRES_USER`, `POSTGRES_DB` from Aiven connection string.
-
----
-
-## Step 5: Aiven PostgreSQL (Fallback DB)
-
-If Oracle VM is down but you need the DB online immediately:
-
-1. **Backup current DB** (from VM): `bash scripts/backup.sh`
-2. **Create Aiven service** (see 4.3)
-3. **Restore to Aiven:**
+1. **Process Status:**
    ```bash
-   # Point DATABASE_URL to Aiven, then:
-   alembic upgrade head
-   pg_restore --dbname="<AIVEN_URI>" --clean --if-exists /tmp/newsbot-backup-*.dump
+   docker compose ps
    ```
-4. Update `DATABASE_URL` in `.env` (Oracle) or Freestyle env (if using Freestyle)
-
-**Migration takes ~10 minutes. Plan downtime accordingly.**
-
----
-
-## Step 6: Cloudflare R2 (Backups)
-
-See `docs/BACKUP_RESTORE.md`. Setup is independent of compute provider.
-
----
-
-## Monitoring
-
-The bot does not expose an HTTP endpoint (worker model). Health monitoring options:
-
-1. **Process check** (Oracle VM):
+2. **Recent Logs:**
    ```bash
-   docker compose ps | grep -q "Up.*men-app" && echo OK || echo FAIL
+   docker compose logs --tail=100 -f app
    ```
-2. **Log check** (daily):
-   ```bash
-   docker compose logs --since 24h app | grep -c "ERROR"
-   ```
-3. **Telegram heartbeat** (recommended): Add a scheduled job that sends a "still alive" message to `TELEGRAM_ADMIN_CHAT_ID` once per day. See `app/scheduler/jobs.py`.
+3. **Freestyle Quota Monitoring:**
+   - Periodically check the Freestyle dashboard to verify your vCPU-hour consumption remains under 200 hours.
+4. **Heartbeat:**
+   - In production, monitor errors by tailing the logs or checking notifications sent to `TELEGRAM_ADMIN_CHAT_ID`.
 
 ---
 
-## Migration Between Providers
+## 5. Troubleshooting Matrix
 
-The architecture is provider-agnostic. To move from one provider to another:
-
-1. **Stop current deployment:** `docker compose down`
-2. **Backup DB:** `bash scripts/backup.sh`
-3. **Restore on new provider:** follow Step 5 above
-4. **Update `.env`:**
-   - If compute changed: clone repo, copy `.env`, `bash scripts/deploy.sh`
-   - If DB changed: update `DATABASE_URL` (host only — schema is portable)
-5. **Verify:** `docker compose logs app` — no errors within 5 minutes
-6. **DNS/domain:** N/A (bot has no incoming webhook — outbound polling only)
-
-**Zero code changes required** for any provider switch.
-
----
-
-## Troubleshooting
-
-| Symptom | Cause | Fix |
+| Symptom | Cause | Solution |
 |---|---|---|
-| `docker compose up` hangs on postgres | Volume permissions | `sudo chown -R 999:999 ./data/pgdata` |
-| `alembic upgrade head` fails | DATABASE_URL points to old DB | Check `.env` → recreate stack |
-| Bot exits immediately | Missing GEMINI_API_KEY or TELEGRAM_* | Check `docker compose logs app` |
-| Backup uploads fail | rclone not configured or R2 credentials wrong | Test `rclone lsd r2:` |
-| Oracle VM slow / OOM | Memory leak or 12GB exhausted | Check `docker stats` |
+| `too many clients already` | PostgreSQL connections exceeded | Check `app/database/connection.py`; ensure `pool_size=5, max_overflow=5`. |
+| `connection refused` or timeout on DB | Aiven service powered off | Open Aiven console and click **Power On**. |
+| `SSL connection has been closed unexpectedly` | Missing SSL parameter | Ensure `?sslmode=require` is present at the end of `DATABASE_URL`. |
+| Container exits immediately | Invalid environment variable | Run `docker compose logs app` to inspect missing keys or validation errors. |
+| Backup fails | R2 credentials or rclone remote missing | Run `rclone lsd r2:` to test connectivity. |
 
 ---
 
-## Cost Summary
+## 6. See Also
 
-| Component | Monthly Cost |
-|---|---|
-| Oracle Cloud ARM VM (Always Free) | **$0** |
-| Self-hosted PostgreSQL (in same VM) | **$0** |
-| Cloudflare R2 (10GB free tier) | **$0** |
-| GitHub Actions (public repo) | **$0** |
-| Gemini API (free tier quotas) | **$0** (with rate limit awareness) |
-| **Total** | **$0/month** |
-
-**Only risk:** Gemini free tier quota exhaustion (see `docs/MODEL_QUOTAS.md`). If free tier is exhausted, bot skips processing until quota resets (hourly or daily). No unexpected charges.
-
----
-
-## See Also
-
-- `docs/BACKUP_RESTORE.md` — Backup configuration
-- `docs/ANTI_IDLE.md` — Oracle anti-idle strategy
-- `docs/LOCAL_SETUP.md` — Local development setup
-- `docs/MODEL_QUOTAS.md` — Gemini quota management
+- [docs/BACKUP_RESTORE.md](file:///d:/Joud%20Files/middle-east-news-bot/docs/BACKUP_RESTORE.md) — Backup and restore workflows
+- [docs/LOCAL_SETUP.md](file:///d:/Joud%20Files/middle-east-news-bot/docs/LOCAL_SETUP.md) — Local development guidelines
+- [docs/archive/ANTI_IDLE.md](file:///d:/Joud%20Files/middle-east-news-bot/docs/archive/ANTI_IDLE.md) — Archived Oracle Cloud anti-idle guide

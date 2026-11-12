@@ -22,15 +22,15 @@ cd middle-east-news-bot
 # Copy environment template
 cp .env.example .env
 
-# Edit .env with your credentials (GEMINI_API_KEY, TELEGRAM_*, etc.)
-# IMPORTANT: Set POSTGRES_PASSWORD to a strong password.
+# Edit .env with your credentials (DATABASE_URL, GEMINI_API_KEY, TELEGRAM_*, etc.)
+# DATABASE_URL points to your PostgreSQL database (e.g. Aiven Free or local Postgres).
 nano .env
 
 # Build and start services
 docker compose up -d --build
 
 # Run database migrations
-docker compose exec app alembic upgrade head
+docker compose run --rm app alembic upgrade head
 
 # Check status
 docker compose ps

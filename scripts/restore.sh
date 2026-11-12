@@ -59,7 +59,12 @@ fi
 
 # 3. Restore
 echo "--- Restoring database ${DB_NAME} ---"
-docker compose exec -T postgres pg_restore -U "$DB_USER" -d "$DB_NAME" --clean --if-exists < "$TMP_PATH"
+if [ -n "${DATABASE_URL:-}" ]; then
+    SYNC_DB_URL="${DATABASE_URL//+asyncpg/}"
+    docker run --rm -i postgres:16-alpine pg_restore -d "$SYNC_DB_URL" --clean --if-exists < "$TMP_PATH"
+else
+    docker compose exec -T postgres pg_restore -U "$DB_USER" -d "$DB_NAME" --clean --if-exists < "$TMP_PATH"
+fi
 
 # 4. Cleanup
 rm -f "$TMP_PATH"

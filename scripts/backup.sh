@@ -39,11 +39,15 @@ FILENAME="newsbot-backup-${TIMESTAMP}.dump"
 TMP_PATH="/tmp/${FILENAME}"
 
 echo "=== Starting backup: ${FILENAME} ==="
-echo "--- Dumping database ${DB_NAME} ---"
 
-# Using -T for docker compose exec to avoid TTY issues in scripts.
-# Redirecting stdout to the local file to avoid permission issues inside container.
-docker compose exec -T postgres pg_dump -U "$DB_USER" -Fc "$DB_NAME" > "$TMP_PATH"
+if [ -n "${DATABASE_URL:-}" ]; then
+    echo "--- Dumping database from DATABASE_URL via postgres:16-alpine container ---"
+    SYNC_DB_URL="${DATABASE_URL//+asyncpg/}"
+    docker run --rm -i postgres:16-alpine pg_dump -d "$SYNC_DB_URL" -Fc > "$TMP_PATH"
+else
+    echo "--- Dumping database ${DB_NAME} via local postgres container ---"
+    docker compose exec -T postgres pg_dump -U "$DB_USER" -Fc "$DB_NAME" > "$TMP_PATH"
+fi
 
 echo "--- Uploading to R2: r2:${R2_BUCKET}/db/${FILENAME} ---"
 rclone copy "$TMP_PATH" "r2:${R2_BUCKET}/db/"
