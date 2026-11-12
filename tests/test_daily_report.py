@@ -7,11 +7,13 @@ and persistence to daily_reports table.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
+from app.config import settings
 from app.reports.daily_report import (
     CATEGORY_TITLES,
     VERIFICATION_LABELS,
@@ -19,6 +21,7 @@ from app.reports.daily_report import (
     fetch_report_items,
     format_persian_daily_report,
     generate_and_save_daily_report,
+    report_window,
 )
 
 
@@ -285,6 +288,29 @@ def test_format_persian_daily_report_empty_items():
 # ==============================================================================
 # 2. Database Filter & Exclusion Unit Tests
 # ==============================================================================
+
+def test_report_window_is_24h_ending_at_configured_report_time():
+    """The window must span a full 24h and end at the configured report time."""
+    rep_date, start, end = report_window(date(2026, 11, 10))
+    tz = ZoneInfo(settings.timezone)
+
+    assert rep_date == date(2026, 11, 10)
+    assert end == datetime(
+        2026, 11, 10, settings.daily_report_hour, settings.daily_report_minute, tzinfo=tz
+    )
+    assert start == end - timedelta(days=1)
+    assert end - start == timedelta(hours=24)
+
+
+def test_report_window_defaults_to_today_with_full_coverage():
+    """Without an explicit date the window still covers the previous 24 hours."""
+    rep_date, start, end = report_window()
+    tz = ZoneInfo(settings.timezone)
+
+    assert rep_date == datetime.now(tz).date()
+    assert end - start == timedelta(hours=24)
+    assert end.hour == settings.daily_report_hour
+
 
 @pytest.mark.asyncio
 async def test_fetch_report_items_excludes_flagged_articles():

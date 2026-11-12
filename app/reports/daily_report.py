@@ -66,6 +66,27 @@ def is_summary_mock(summary: Summary | Any) -> bool:
     return False
 
 
+def report_window(report_date: date | None = None) -> tuple[date, datetime, datetime]:
+    """Return (report_date, window_start, window_end) for a true 24-hour window.
+
+    The window ends at the configured daily-report time (in ``settings.timezone``)
+    on ``report_date`` and starts exactly 24 hours earlier. Anchoring to the
+    configured time instead of ``datetime.now()`` keeps repeated or delayed runs
+    idempotent, and guarantees no hour of the day is ever left uncovered.
+    """
+    tz = ZoneInfo(settings.timezone)
+    if report_date is None:
+        report_date = datetime.now(tz).date()
+
+    window_end = datetime.combine(
+        report_date,
+        time(hour=settings.daily_report_hour, minute=settings.daily_report_minute),
+        tzinfo=tz,
+    )
+    window_start = window_end - timedelta(days=1)
+    return report_date, window_start, window_end
+
+
 async def fetch_report_items(
     session: AsyncSession,
     report_date: date | None = None,
@@ -76,15 +97,10 @@ async def fetch_report_items(
     Strictly excludes any events containing articles with status 'flagged_for_review' or 'rejected'.
     Collects primary and supplementary source citations (Staleness Policy Option C).
     """
-    tz = ZoneInfo(settings.timezone)
-    if report_date is None:
-        report_date = datetime.now(tz).date()
-
     if min_importance is None:
         min_importance = settings.min_importance
 
-    window_start = datetime.combine(report_date, time.min, tzinfo=tz)
-    window_end = window_start + timedelta(days=1)
+    report_date, window_start, window_end = report_window(report_date)
 
     # Subquery: identify events that have ANY article with flagged_for_review or rejected status
     flagged_subquery = (
