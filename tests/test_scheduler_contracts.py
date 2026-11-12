@@ -367,6 +367,46 @@ def test_scheduler_configuration_and_overlap_prevention():
 
 
 @pytest.mark.asyncio
+async def test_check_any_model_available_closes_transient_providers(monkeypatch):
+    """Providers created inside the pre-flight must be closed when the call returns."""
+    monkeypatch.setattr(settings, "gemini_enable_fallback", True)
+    monkeypatch.setattr(settings, "gemini_fallback_model", "gemini-3.5-flash-lite")
+
+    created = []
+
+    class FakeProvider:
+        def __init__(self, **kwargs):
+            self.closed = False
+            self.generate_json = AsyncMock(return_value={"ok": True})
+            created.append(self)
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr("app.scheduler.jobs.GeminiProvider", FakeProvider)
+
+    assert await check_any_model_available() is True
+    assert len(created) == 1
+    assert created[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_check_any_model_available_never_closes_injected_providers():
+    """Providers owned by the caller must not be closed by the pre-flight."""
+    primary = MagicMock()
+    primary.generate_json = AsyncMock(return_value={"ok": True})
+    fallback = MagicMock()
+    fallback.generate_json = AsyncMock(return_value={"ok": True})
+
+    assert (
+        await check_any_model_available(primary_provider=primary, fallback_provider=fallback)
+        is True
+    )
+    primary.close.assert_not_called()
+    fallback.close.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_end_to_end_scheduler_cycle_with_mock_provider(mock_session_local):
     """End-to-end dry run: Full cycle of hourly_collection + daily_report with MockAIProvider."""
     mock_provider = MockAIProvider(

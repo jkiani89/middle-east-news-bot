@@ -44,7 +44,8 @@ async def count_pending_articles(session: AsyncSession) -> int:
     return res or 0
 
 
-async def check_any_model_available(
+async def _check_any_model_available_impl(
+    make_provider: Callable[..., BaseAIProvider],
     primary_provider: BaseAIProvider | None = None,
     fallback_provider: BaseAIProvider | None = None,
     prefer_fallback: bool = True,
@@ -65,7 +66,7 @@ async def check_any_model_available(
     if prefer_fallback and has_fallback:
         # 1. Test fallback model first to save primary 20 RPD quota
         if fallback_provider is None:
-            fallback_provider = GeminiProvider(
+            fallback_provider = make_provider(
                 primary_model=settings.gemini_fallback_model,
                 enable_fallback=False,  # Test fallback directly
             )
@@ -89,7 +90,7 @@ async def check_any_model_available(
 
         # 2. Fallback failed, test primary model as second chance
         if primary_provider is None:
-            primary_provider = GeminiProvider(
+            primary_provider = make_provider(
                 primary_model=settings.gemini_primary_model,
                 enable_fallback=False,  # Test only primary
             )
@@ -108,7 +109,7 @@ async def check_any_model_available(
     else:
         # Fallback disabled or prefer_fallback=False: Test primary first
         if primary_provider is None:
-            primary_provider = GeminiProvider(
+            primary_provider = make_provider(
                 primary_model=settings.gemini_primary_model,
                 enable_fallback=False,  # Test only primary
             )
@@ -125,7 +126,7 @@ async def check_any_model_available(
             return False
 
         if fallback_provider is None:
-            fallback_provider = GeminiProvider(
+            fallback_provider = make_provider(
                 primary_model=settings.gemini_fallback_model,
                 enable_fallback=False,  # Test fallback directly
             )
@@ -140,6 +141,41 @@ async def check_any_model_available(
             logger.warning("Fallback model pre-flight check error: %s", exc)
 
         return False
+
+
+async def check_any_model_available(
+    primary_provider: BaseAIProvider | None = None,
+    fallback_provider: BaseAIProvider | None = None,
+    prefer_fallback: bool = True,
+) -> bool:
+    """Run the pre-flight check and close any provider created inside this call.
+
+    Providers passed in by the caller are never closed here: their lifecycle
+    belongs to the caller (pipeline, scheduler, tests).
+    """
+    transient_providers: list[BaseAIProvider] = []
+
+    def make_provider(**kwargs: Any) -> BaseAIProvider:
+        provider = GeminiProvider(**kwargs)
+        transient_providers.append(provider)
+        return provider
+
+    try:
+        return await _check_any_model_available_impl(
+            make_provider,
+            primary_provider=primary_provider,
+            fallback_provider=fallback_provider,
+            prefer_fallback=prefer_fallback,
+        )
+    finally:
+        for provider in transient_providers:
+            close = getattr(provider, "close", None)
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception:
+                logger.warning("Failed to close a transient pre-flight provider", exc_info=True)
 
 
 # Backward-compatible alias
