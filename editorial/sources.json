@@ -18,5 +18,75 @@
     "language": "en",
     "is_active": true,
     "reliability_note": "رسانه منطقه‌ای؛ ادعاهای حساس با منابع دیگر تطبیق داده شوند"
+  },
+  {
+    "name": "Al Jazeera Arabic",
+    "base_url": "https://www.aljazeera.net",
+    "feed_url": "https://www.aljazeera.net/aljazeerarss/a7c186be-1baa-4bd4-9d80-a84db769f779/73d0e1b4-532f-45ef-b135-bfdff8b8cab9",
+    "source_type": "regional",
+    "country": "Qatar",
+    "language": "ar",
+    "is_active": true,
+    "reliability_note": "نسخه عربی الجزیره؛ ادعاهای حساس با منابع دیگر تطبیق داده شوند"
+  },
+  {
+    "name": "Foreign Affairs",
+    "base_url": "https://www.foreignaffairs.com",
+    "feed_url": "https://www.foreignaffairs.com/rss.xml",
+    "source_type": "international",
+    "country": "United States",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "نشریه تحلیلی؛ متن تحلیل است نه خبر خام، برای زمینه‌سازی استفاده شود"
+  },
+  {
+    "name": "Reuters",
+    "base_url": "https://www.reuters.com",
+    "feed_url": "https://news.google.com/rss/search?q=when:7d+site:reuters.com/world/middle-east&ceid=US:en&hl=en-US&gl=US",
+    "source_type": "wire",
+    "country": "International",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "آژانس خبری؛ فید از Google News و لینک نهایی به reuters.com هدایت می‌شود"
+  },
+  {
+    "name": "Associated Press",
+    "base_url": "https://apnews.com",
+    "feed_url": "https://news.google.com/rss/search?q=when:7d+site:apnews.com+(middle+east+OR+gaza+OR+iran+OR+israel)&hl=en-US&gl=US&ceid=US:en",
+    "source_type": "wire",
+    "country": "United States",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "آژانس خبری بین‌المللی؛ فید رسمی apnews.com پاسخ 403 داد، بنابراین از جستجوی Google News روی دامنه apnews.com استفاده می‌شود"
+  },
+  {
+    "name": "New York Times",
+    "base_url": "https://www.nytimes.com",
+    "feed_url": "https://rss.nytimes.com/services/xml/rss/nyt/MiddleEast.xml",
+    "source_type": "international",
+    "country": "United States",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "رسانه بین‌المللی؛ بخش خاورمیانه، برخی گزارش‌ها پشت paywall هستند"
+  },
+  {
+    "name": "Washington Post",
+    "base_url": "https://www.washingtonpost.com",
+    "feed_url": "https://feeds.washingtonpost.com/rss/world/middle-east",
+    "source_type": "international",
+    "country": "United States",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "رسانه بین‌المللی؛ بخش خاورمیانه، برخی گزارش‌ها پشت paywall هستند"
+  },
+  {
+    "name": "Euronews",
+    "base_url": "https://www.euronews.com",
+    "feed_url": "https://feeds.feedburner.com/euronews/en/home",
+    "source_type": "international",
+    "country": "International",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "رسانه اروپایی؛ فید رسمی euronews.com پاسخ 406 داد، بنابراین از فید FeedBurner رسمی یورونیوز استفاده می‌شود"
   }
 ]
