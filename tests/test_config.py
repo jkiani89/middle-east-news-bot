@@ -1,5 +1,9 @@
 """Unit tests for app.config Settings."""
 
+import ssl
+
+import certifi
+
 from app.config import Settings
 
 
@@ -69,11 +73,45 @@ def test_database_url_for_asyncpg_strips_sslmode_only():
     assert "sslmode=require" in settings.database_url
 
 
-def test_asyncpg_connect_args_enables_ssl_for_verifying_modes():
-    """Every libpq mode that demands TLS maps to asyncpg's ssl=True."""
-    for mode in ("require", "verify-ca", "verify-full"):
-        settings = Settings(database_url=f"postgresql+asyncpg://u:p@h:5432/db?sslmode={mode}")
-        assert settings.asyncpg_connect_args == {"ssl": True}
+def test_asyncpg_require_encrypts_without_certificate_validation():
+    """libpq require only encrypts; it must not fail on Aiven's private CA."""
+    settings = Settings(database_url="postgresql+asyncpg://u:p@h:5432/db?sslmode=require")
+    context = settings.asyncpg_connect_args["ssl"]
+
+    assert isinstance(context, ssl.SSLContext)
+    assert context.verify_mode == ssl.CERT_NONE
+    assert context.check_hostname is False
+
+
+def test_asyncpg_verify_ca_validates_chain_without_hostname():
+    """verify-ca checks the certificate chain but not the hostname."""
+    settings = Settings(database_url="postgresql+asyncpg://u:p@h:5432/db?sslmode=verify-ca")
+    context = settings.asyncpg_connect_args["ssl"]
+
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is False
+
+
+def test_asyncpg_verify_full_also_checks_hostname():
+    """verify-full validates both the chain and the hostname."""
+    settings = Settings(database_url="postgresql+asyncpg://u:p@h:5432/db?sslmode=verify-full")
+    context = settings.asyncpg_connect_args["ssl"]
+
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+
+
+def test_asyncpg_root_cert_upgrades_require_to_real_validation():
+    """A CA file turns require into verified TLS without any code change."""
+    settings = Settings(
+        database_url="postgresql+asyncpg://u:p@h:5432/db?sslmode=require",
+        postgres_sslrootcert=certifi.where(),
+    )
+    context = settings.asyncpg_connect_args["ssl"]
+
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is False
+    assert context.get_ca_certs()
 
 
 def test_asyncpg_connect_args_ignores_absent_or_disabled_ssl():

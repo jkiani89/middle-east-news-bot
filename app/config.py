@@ -1,11 +1,12 @@
 import os
 import re
+import ssl
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ASYNC_PG_VERIFY_SSL_MODES = {"require", "verify-ca", "verify-full"}
+ASYNC_PG_SSL_MODES = frozenset({"require", "verify-ca", "verify-full"})
 
 
 def _query_param(url: str, name: str) -> str | None:
@@ -27,9 +28,42 @@ def _without_query_param(url: str, name: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
+def build_asyncpg_ssl_context(
+    sslmode: str | None,
+    cafile: str | None = None,
+) -> ssl.SSLContext | None:
+    """Build the asyncpg ``ssl`` argument with libpq-compatible semantics.
+
+    - ``require``: encrypt only, no certificate validation (libpq behaviour).
+    - ``verify-ca``: validate the chain against ``cafile`` or the system roots,
+      without checking the hostname.
+    - ``verify-full``: validate chain and hostname.
+
+    Supplying a CA file upgrades ``require`` to real validation, so moving to a
+    verified connection later only needs ``POSTGRES_SSLROOTCERT``; no code change.
+    """
+    if sslmode not in ASYNC_PG_SSL_MODES:
+        return None
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = sslmode == "verify-full"
+
+    if cafile:
+        context.load_verify_locations(cafile=cafile)
+        context.verify_mode = ssl.CERT_REQUIRED
+    elif sslmode == "require":
+        context.verify_mode = ssl.CERT_NONE
+    else:
+        context.load_default_certs()
+        context.verify_mode = ssl.CERT_REQUIRED
+
+    return context
+
+
 class Settings(BaseSettings):
     app_env: str = "development"
     database_url: str = "postgresql+asyncpg://newsbot:CHANGE_THIS_PASSWORD@localhost:5432/newsbot"
+    postgres_sslrootcert: str = ""  # optional CA bundle path (e.g. Aiven ca.pem) to verify the DB certificate
     gemini_api_key: str = ""
     gemini_primary_model: str = "gemini-3.8-flash"
     gemini_fallback_model: str = "gemini-3.5-flash-lite"
@@ -79,14 +113,16 @@ class Settings(BaseSettings):
         ``asyncpg_connect_args`` instead, while the original ``database_url``
         stays intact for psycopg (the gemini-api-rotator adapter).
         """
-        return _without_query_param(self.database_url, "sslmode")
+        url = _without_query_param(self.database_url, "sslmode")
+        return _without_query_param(url, "sslrootcert")
 
     @property
     def asyncpg_connect_args(self) -> dict[str, object]:
-        """Translate libpq ``sslmode`` into asyncpg connection options."""
-        if _query_param(self.database_url, "sslmode") in ASYNC_PG_VERIFY_SSL_MODES:
-            return {"ssl": True}
-        return {}
+        """Translate libpq ``sslmode``/``sslrootcert`` into asyncpg options."""
+        sslmode = _query_param(self.database_url, "sslmode")
+        cafile = self.postgres_sslrootcert or _query_param(self.database_url, "sslrootcert")
+        context = build_asyncpg_ssl_context(sslmode, cafile)
+        return {"ssl": context} if context is not None else {}
 
     def get_gemini_keys(self) -> list[str]:
         """Extract all configured Gemini API keys from environment and settings."""
