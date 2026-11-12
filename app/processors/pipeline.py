@@ -185,6 +185,56 @@ async def process_collected_articles(
     return processed_count
 
 
+async def collect_new_articles(session: AsyncSession) -> int:
+    """Fetch every active feed and insert new, non-duplicate articles.
+
+    Performs no AI work and leaves the transaction to the caller, so ingestion
+    keeps running even when the AI models are unavailable or the queue is empty.
+    Returns the number of newly inserted articles.
+    """
+    inserted_count = 0
+    sources = (
+        await session.scalars(select(Source).where(Source.is_active.is_(True), Source.feed_url.is_not(None)))
+    ).all()
+    for source in sources:
+        try:
+            entries = await fetch_feed(source.feed_url)
+        except Exception as exc:
+            logger.warning("Failed to collect feed for source %s: %s", source.name, exc)
+            continue
+
+        for item in entries[: settings.max_articles_per_batch]:
+            if await is_duplicate_article(session, item["canonical_url"], item["content_hash"]):
+                logger.debug("Skipping duplicate article: %s (%s)", item["title"], item["canonical_url"])
+                continue
+
+            article = Article(
+                source_id=source.id,
+                title=item["title"],
+                original_url=item["url"],
+                canonical_url=item["canonical_url"],
+                original_language=source.language,
+                original_text=item["text"],
+                published_at=item["published_at"],
+                content_hash=item["content_hash"],
+                text_source=item.get("text_source", "rss_summary"),
+                status="collected",
+            )
+            try:
+                async with session.begin_nested():
+                    session.add(article)
+                    await session.flush()
+            except IntegrityError:
+                logger.debug(
+                    "Duplicate article skipped via DB constraint: %s",
+                    item["canonical_url"],
+                )
+                continue
+            inserted_count += 1
+
+    return inserted_count
+
+
 async def collect_and_process(provider: BaseAIProvider | None = None):
     count = 0
     async with SessionLocal() as session:
@@ -192,43 +242,7 @@ async def collect_and_process(provider: BaseAIProvider | None = None):
         session.add(log)
         await session.flush()
         try:
-            sources = (
-                await session.scalars(select(Source).where(Source.is_active.is_(True), Source.feed_url.is_not(None)))
-            ).all()
-            for source in sources:
-                try:
-                    entries = await fetch_feed(source.feed_url)
-                except Exception as exc:
-                    logger.warning("Failed to collect feed for source %s: %s", source.name, exc)
-                    continue
-
-                for item in entries[: settings.max_articles_per_batch]:
-                    if await is_duplicate_article(session, item["canonical_url"], item["content_hash"]):
-                        logger.debug("Skipping duplicate article: %s (%s)", item["title"], item["canonical_url"])
-                        continue
-
-                    article = Article(
-                        source_id=source.id,
-                        title=item["title"],
-                        original_url=item["url"],
-                        canonical_url=item["canonical_url"],
-                        original_language=source.language,
-                        original_text=item["text"],
-                        published_at=item["published_at"],
-                        content_hash=item["content_hash"],
-                        text_source=item.get("text_source", "rss_summary"),
-                        status="collected",
-                    )
-                    try:
-                        async with session.begin_nested():
-                            session.add(article)
-                            await session.flush()
-                    except IntegrityError:
-                        logger.debug(
-                            "Duplicate article skipped via DB constraint: %s",
-                            item["canonical_url"],
-                        )
-                        continue
+            await collect_new_articles(session)
 
             # Process collected articles adhering strictly to status filtering
             count = await process_collected_articles(session, limit=settings.max_articles_per_batch, provider=provider)

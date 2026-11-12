@@ -25,7 +25,7 @@ from app.ai.provider import (
 from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, DailyReport, JobLog
-from app.processors.pipeline import collect_and_process
+from app.processors.pipeline import collect_new_articles, process_collected_articles
 from app.reports.daily_report import generate_and_save_daily_report
 from app.telegram.publisher import MockPublishRefusedError, publish_report
 
@@ -151,7 +151,12 @@ async def hourly_collection(
     health_checker: Callable[[], Coroutine[Any, Any, bool]] | None = None,
     pending_checker: Callable[[], Coroutine[Any, Any, int]] | None = None,
 ) -> JobLog:
-    """Hourly: collect -> process -> event match. Does NOT publish."""
+    """Hourly: collect -> process -> event match. Does NOT publish.
+
+    Ingestion always runs. The AI pre-flight and processing steps only run when
+    articles are actually waiting, so an empty queue or a dead model never
+    blocks the collection of new news.
+    """
     async with SessionLocal() as session:
         job_log = JobLog(
             job_name="hourly_collection",
@@ -164,7 +169,11 @@ async def hourly_collection(
         await session.refresh(job_log)
 
         try:
-            # Step 1: Quota-awareness (Bug 2 fix) - Check pending articles BEFORE making any Gemini pre-flight call
+            # Step 1: Ingestion must never depend on AI availability or queue state
+            inserted_count = await collect_new_articles(session)
+            logger.info("Ingested %d new articles from active feeds.", inserted_count)
+
+            # Step 2: Quota-awareness - Check pending articles BEFORE making any Gemini pre-flight call
             pending_count: int
             if pending_checker is not None:
                 pending_count = await pending_checker()
@@ -176,7 +185,7 @@ async def hourly_collection(
                 job_log.status = "skipped_no_pending"
                 return job_log
 
-            # Step 2: Pre-flight check across all available models (Bug 1 fix)
+            # Step 3: Pre-flight check across all available models (Bug 1 fix)
             is_healthy: bool = False
             if health_checker is not None:
                 is_healthy = await health_checker()
@@ -188,8 +197,10 @@ async def hourly_collection(
                 job_log.status = "skipped_all_models_unavailable"
                 return job_log
 
-            # Step 3: Ingestion & processing
-            processed_count = await collect_and_process(provider=provider)
+            # Step 4: AI processing of the queued articles
+            processed_count = await process_collected_articles(
+                session, limit=settings.max_articles_per_batch, provider=provider
+            )
             job_log.processed_count = processed_count
             job_log.status = "success"
 

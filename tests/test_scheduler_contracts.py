@@ -79,7 +79,8 @@ def mock_session_local():
 @pytest.mark.asyncio
 async def test_hourly_job_records_failed_quota_on_AIRateLimitError(mock_session_local):
     """Contract Test 1: Hourly collection records 'failed_quota' on AIRateLimitError."""
-    with patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
+    with patch("app.scheduler.jobs.collect_new_articles", new_callable=AsyncMock), \
+         patch("app.scheduler.jobs.process_collected_articles", new_callable=AsyncMock) as mock_pipeline:
         mock_pipeline.side_effect = AIRateLimitError("429 Resource Exhausted")
 
         job_log = await hourly_collection(
@@ -96,7 +97,8 @@ async def test_hourly_job_records_failed_quota_on_AIRateLimitError(mock_session_
 @pytest.mark.asyncio
 async def test_hourly_job_records_failed_unavailable_on_AIServiceUnavailableError(mock_session_local):
     """Contract Test 2: Hourly collection records 'failed_unavailable' on AIServiceUnavailableError."""
-    with patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
+    with patch("app.scheduler.jobs.collect_new_articles", new_callable=AsyncMock), \
+         patch("app.scheduler.jobs.process_collected_articles", new_callable=AsyncMock) as mock_pipeline:
         mock_pipeline.side_effect = AIServiceUnavailableError("503 Service Unavailable: High Demand")
 
         job_log = await hourly_collection(
@@ -113,7 +115,8 @@ async def test_hourly_job_records_failed_unavailable_on_AIServiceUnavailableErro
 @pytest.mark.asyncio
 async def test_hourly_job_records_failed_ai_on_AIProviderError(mock_session_local):
     """Contract Test 3: Hourly collection records 'failed_ai' on unrecoverable AIProviderError."""
-    with patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
+    with patch("app.scheduler.jobs.collect_new_articles", new_callable=AsyncMock), \
+         patch("app.scheduler.jobs.process_collected_articles", new_callable=AsyncMock) as mock_pipeline:
         mock_pipeline.side_effect = AIProviderError("Invalid JSON structure returned by Gemini")
 
         job_log = await hourly_collection(
@@ -130,7 +133,8 @@ async def test_hourly_job_records_failed_ai_on_AIProviderError(mock_session_loca
 @pytest.mark.asyncio
 async def test_hourly_job_completes_successfully_on_happy_path(mock_session_local):
     """Contract Test 4: Hourly collection successfully processes batch and records 'success'."""
-    with patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
+    with patch("app.scheduler.jobs.collect_new_articles", new_callable=AsyncMock), \
+         patch("app.scheduler.jobs.process_collected_articles", new_callable=AsyncMock) as mock_pipeline:
         mock_pipeline.return_value = 7
 
         job_log = await hourly_collection(
@@ -148,7 +152,8 @@ async def test_hourly_job_completes_successfully_on_happy_path(mock_session_loca
 @pytest.mark.asyncio
 async def test_hourly_proceeds_when_primary_down_but_fallback_available(mock_session_local):
     """Regression (Bug 1): Primary 429/503 must NOT skip the hour if fallback model is healthy."""
-    with patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
+    with patch("app.scheduler.jobs.collect_new_articles", new_callable=AsyncMock), \
+         patch("app.scheduler.jobs.process_collected_articles", new_callable=AsyncMock) as mock_pipeline:
         mock_pipeline.return_value = 4
 
         # Primary fails with 429, fallback succeeds with 200 OK
@@ -190,7 +195,8 @@ async def test_hourly_skips_only_when_both_models_unavailable(mock_session_local
     )
     assert is_alive is False
 
-    with patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
+    with patch("app.scheduler.jobs.collect_new_articles", new_callable=AsyncMock) as mock_collect, \
+         patch("app.scheduler.jobs.process_collected_articles", new_callable=AsyncMock) as mock_pipeline:
         job_log = await hourly_collection(
             health_checker=AsyncMock(return_value=is_alive),
             pending_checker=AsyncMock(return_value=5),
@@ -198,15 +204,17 @@ async def test_hourly_skips_only_when_both_models_unavailable(mock_session_local
 
         assert job_log.status == "skipped_all_models_unavailable"
         assert job_log.processed_count == 0
+        mock_collect.assert_called_once()
         mock_pipeline.assert_not_called()
         assert mock_session_local.committed is True
 
 
 @pytest.mark.asyncio
-async def test_hourly_skips_without_preflight_when_no_pending_articles(mock_session_local):
-    """Quota-Awareness (Bug 2): Pre-flight check is skipped entirely when 0 pending articles exist, saving quota."""
+async def test_hourly_collects_but_skips_preflight_when_no_pending_articles(mock_session_local):
+    """Ingestion always runs; pre-flight and AI processing are skipped when the queue is empty."""
     mock_health = AsyncMock()
-    with patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline:
+    with patch("app.scheduler.jobs.collect_new_articles", new_callable=AsyncMock) as mock_collect, \
+         patch("app.scheduler.jobs.process_collected_articles", new_callable=AsyncMock) as mock_pipeline:
         job_log = await hourly_collection(
             health_checker=mock_health,
             pending_checker=AsyncMock(return_value=0),
@@ -214,6 +222,7 @@ async def test_hourly_skips_without_preflight_when_no_pending_articles(mock_sess
 
         assert job_log.status == "skipped_no_pending"
         assert job_log.processed_count == 0
+        mock_collect.assert_called_once()
         mock_health.assert_not_called()
         mock_pipeline.assert_not_called()
         assert mock_session_local.committed is True
@@ -373,7 +382,8 @@ async def test_end_to_end_scheduler_cycle_with_mock_provider(mock_session_local)
         }
     )
 
-    with patch("app.scheduler.jobs.collect_and_process", new_callable=AsyncMock) as mock_pipeline, \
+    with patch("app.scheduler.jobs.collect_new_articles", new_callable=AsyncMock), \
+         patch("app.scheduler.jobs.process_collected_articles", new_callable=AsyncMock) as mock_pipeline, \
          patch("app.scheduler.jobs.generate_and_save_daily_report", new_callable=AsyncMock) as mock_gen, \
          patch("app.scheduler.jobs.publish_report", new_callable=AsyncMock) as mock_pub:
         mock_pipeline.return_value = 3
