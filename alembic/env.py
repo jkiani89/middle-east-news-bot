@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -23,8 +24,14 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Set database URL dynamically from app settings
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# Set database URL dynamically.
+# In CI (GitHub Actions), we use the environment variable directly.
+# Locally, it falls back to the settings (which reads from .env).
+database_url = os.getenv("DATABASE_URL")
+if not database_url:
+    database_url = settings.database_url
+
+config.set_main_option("sqlalchemy.url", database_url)
 
 # Model metadata for autogenerate support
 target_metadata = Base.metadata
