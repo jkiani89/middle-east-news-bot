@@ -1,5 +1,4 @@
 import asyncio
-import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path

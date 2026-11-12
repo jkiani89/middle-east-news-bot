@@ -1,5 +1,6 @@
 import os
 import re
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -42,7 +43,7 @@ class Settings(BaseSettings):
             v = v.replace("postgres://", "postgresql+asyncpg://", 1)
         elif v.startswith("postgresql://"):
             v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
-        
+
         # تغییر sslmode حذف شد تا psycopg و asyncpg هر دو بتوانند از آن استفاده کنند
         return v
 
