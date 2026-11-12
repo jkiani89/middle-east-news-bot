@@ -60,7 +60,7 @@ DAILY_REPORT_MINUTE=0
 ## Deployment
 
 This project is designed to run on **zero-cost infrastructure with no credit card required** ($0/month):
-- **Compute:** Freestyle.sh (0.20 vCPU / 512MB RAM always-on VM)
+- **Compute & Scheduler:** GitHub Actions Scheduled Cron Runner (Serverless batch processing)
 - **Database:** Aiven PostgreSQL 16 Free (1 CPU / 1GB RAM)
 - **Backup:** Cloudflare R2 (10GB free tier, zero egress)
 - **CI/CD:** GitHub Actions (public repo)

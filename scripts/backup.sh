@@ -9,17 +9,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-# Check if .env exists
-if [ ! -f .env ]; then
-    echo "ERROR: .env not found in $PROJECT_ROOT" >&2
-    exit 1
+# Load environment variables from .env if present
+if [ -f .env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
 fi
 
-# Load environment variables safely
-set -a
-# shellcheck disable=SC1091
-source .env
-set +a
+if [ -z "${DATABASE_URL:-}" ] && [ -z "${POSTGRES_DB:-}" ]; then
+    echo "ERROR: Neither .env file nor DATABASE_URL / POSTGRES_DB environment variable is set." >&2
+    exit 1
+fi
 
 # Defaults
 DB_USER="${POSTGRES_USER:-newsbot}"

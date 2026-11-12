@@ -18,17 +18,13 @@ fi
 FILENAME="$1"
 TMP_PATH="/tmp/${FILENAME}"
 
-# Check if .env exists
-if [ ! -f .env ]; then
-    echo "ERROR: .env not found in $PROJECT_ROOT" >&2
-    exit 1
+# Load environment variables from .env if present
+if [ -f .env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
 fi
-
-# Load environment variables
-set -a
-# shellcheck disable=SC1091
-source .env
-set +a
 
 DB_USER="${POSTGRES_USER:-newsbot}"
 DB_NAME="${POSTGRES_DB:-newsbot}"

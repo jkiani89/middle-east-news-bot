@@ -1,0 +1,65 @@
+name: Scheduled Batch Runner
+
+on:
+  schedule:
+    # Run every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)
+    - cron: '0 */6 * * *'
+    # Run at 04:30 UTC (08:00 AM Tehran time) for morning daily report
+    - cron: '30 4 * * *'
+  workflow_dispatch:
+    inputs:
+      force_daily_report:
+        description: 'Force daily report publishing regardless of current time'
+        required: false
+        default: false
+        type: boolean
+      dry_run_daily_report:
+        description: 'Generate report in dry-run mode (skip Telegram sending)'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: scheduled-batch-runner
+  cancel-in-progress: false
+
+jobs:
+  run-batch:
+    name: Batch Ingestion & Daily Report
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      APP_ENV: production
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_PRIMARY_MODEL: ${{ vars.GEMINI_PRIMARY_MODEL || 'gemini-3.8-flash' }}
+      GEMINI_FALLBACK_MODEL: ${{ vars.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash-lite' }}
+      GEMINI_ENABLE_FALLBACK: ${{ vars.GEMINI_ENABLE_FALLBACK || 'true' }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+      TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
+      TIMEZONE: 'Asia/Tehran'
+      DAILY_REPORT_HOUR: '8'
+      FORCE_DAILY_REPORT: ${{ inputs.force_daily_report || 'false' }}
+      DRY_RUN_DAILY_REPORT: ${{ inputs.dry_run_daily_report || 'false' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.15.2
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.15.2'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-deps 'aiogram==3.22.0'
+          pip install -r requirements-dev.txt
+
+      - name: Apply database schema migrations
+        run: alembic upgrade head
+
+      - name: Execute single-run batch pipeline
+        run: python scripts/run_once.py

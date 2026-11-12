@@ -1,13 +1,21 @@
-# Deployment Guide (Zero-Cost Architecture)
+# Deployment Guide (Serverless Zero-Cost Batch Architecture)
 
-This guide covers deploying the Middle East News Bot on **free-tier infrastructure with zero credit card required** ($0/month). The architecture is designed to be **provider-agnostic**: all configuration is managed via `.env`, and switching components requires no application code changes.
+This guide covers deploying the Middle East News Bot using **GitHub Actions Cron workflows** and **free-tier managed services** ($0/month).
+
+By switching from an always-on VM (Oracle/Freestyle) to scheduled batch execution in GitHub Actions, the deployment achieves:
+- **Zero server management:** No VMs to provision, maintain, or keep alive.
+- **Zero credit card requirement:** Neither GitHub Actions, Aiven, nor Cloudflare R2 require a credit card.
+- **100% cost-free:** Runs within the generous free-tier limits of GitHub Actions (2,000 public minutes/month) and managed free tiers.
+
+---
 
 ## Architecture Overview
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│  Compute (Docker on Freestyle.sh VM)                   │
-│  Freestyle.sh: 0.20 vCPU / 512MB RAM (Always-On)       │
+│  GitHub Actions Scheduled Cron Runner                  │
+│  .github/workflows/cron.yml (Runs Every 6h + 8:00 IRST) │
+│  .github/workflows/backup.yml (Daily R2 Backup)        │
 └──────────────────────────┬─────────────────────────────┘
                            │
 ┌──────────────────────────▼─────────────────────────────┐
@@ -21,158 +29,111 @@ This guide covers deploying the Middle East News Bot on **free-tier infrastructu
 └────────────────────────────────────────────────────────┘
 ```
 
-**Portability:** Only `DATABASE_URL`, `GEMINI_API_KEY`, `TELEGRAM_*`, and `R2_*` are configured in `.env`. Application code and Dockerfile remain identical across environments.
-
 ---
 
-## Free-Tier Provider Stack (No Credit Card Required)
+## Free-Tier Provider Stack ($0/Month, No Credit Card)
 
 | Component | Provider | Free Tier Specification | Card Required | Monthly Cost |
 |---|---|---|---|---|
-| **Compute** | **Freestyle.sh** | 200 vCPU-hours/month (0.20 vCPU = 146 vCPU-hours/month) | ❌ No | **$0** |
-| **Database** | **Aiven** | PostgreSQL 16 Free (1 CPU, 1GB RAM, 1GB storage) | ❌ No | **$0** |
-| **Backup** | **Cloudflare R2** | 10GB storage, 1M writes, 10M reads, zero egress fee | ❌ No | **$0** |
-| **CI/CD** | **GitHub Actions** | 2,000 minutes/month (public repository) | ❌ No | **$0** |
+| **Compute & Scheduler** | **GitHub Actions** | 2,000 Linux runner minutes/month | ❌ No | **$0** |
+| **Database** | **Aiven** | PostgreSQL 16 Free (1 CPU, 1GB RAM, 1GB disk) | ❌ No | **$0** |
+| **Backup** | **Cloudflare R2** | 10GB storage, 1M writes, 10M reads, zero egress | ❌ No | **$0** |
 | **AI Processing** | **Google Gemini** | Free Tier multi-project API pool (ISS-020) | ❌ No | **$0** |
-
-> [!NOTE]
-> The previous Oracle Cloud ARM deployment and anti-idle strategy have been archived to `docs/archive/ANTI_IDLE.md`. The Freestyle.sh + Aiven architecture removes any credit card requirement and eliminates the need for anti-idle CPU/RAM load scripts.
+| **Delivery** | **Telegram Bot API** | Bot and Channel broadcast | ❌ No | **$0** |
 
 ---
 
-## 1. Database Setup: Aiven PostgreSQL 16 Free
+## 1. Step-by-Step GitHub Actions Secrets Setup
 
-### 1.1 Sign Up & Provisioning
-1. Register at [aiven.io](https://aiven.io) (no credit card required).
-2. Create a new service:
-   - **Service:** PostgreSQL 16
-   - **Plan:** Free Plan (1 CPU, 1GB RAM, 1GB disk storage)
-   - **Cloud / Region:** Choose a region close to your target (e.g. `europe-west3` or `aws-eu-central-1`).
-3. Once the service is running, find the **Connection Information** tab.
+To run the workflows securely, add your credentials as **Repository Secrets**:
 
-### 1.2 Connection String & Database URL
-Copy the **Service URI** provided by Aiven, which looks like:
-```text
-postgres://avnadmin:PASSWORD@HOST:PORT/defaultdb?sslmode=require
-```
-Convert the scheme prefix from `postgres://` to `postgresql+asyncpg://` for SQLAlchemy async compatibility:
-```text
-postgresql+asyncpg://avnadmin:PASSWORD@HOST:PORT/defaultdb?sslmode=require
-```
-Set this value as `DATABASE_URL` in your `.env`.
+1. On your GitHub repository page, navigate to:
+   **Settings** → **Secrets and variables** → **Actions**
+2. Click **New repository secret** for each variable below:
 
-### 1.3 Connection Pooling Guardrail (`max_connections = 20`)
-Aiven Free enforces a strict limit of `max_connections = 20`.
-- In `app/database/connection.py`, connection limits are configured to:
-  ```python
-  pool_size=5,
-  max_overflow=5,
-  ```
-- This guarantees the application connection pool stays well under 20 connections.
-- Do **not** use PgBouncer on Aiven Free (pooling add-on is disabled on the free tier). Keep bot worker concurrency within standard defaults.
+### Required Application Secrets
 
-### 1.4 Inactivity Power Off
-Aiven may power down free database services during prolonged periods of zero queries. Because the bot performs hourly RSS collection and polling cycles, normal operation keeps the connection active. If the service is manually stopped or enters sleep:
-- Simply click **Power On** in the Aiven web console to resume within ~60 seconds.
+| Secret Name | Description | Example Value |
+|---|---|---|
+| `DATABASE_URL` | Aiven PostgreSQL connection URI with `postgresql+asyncpg://` | `postgresql+asyncpg://avnadmin:pass@host:port/defaultdb?sslmode=require` |
+| `GEMINI_API_KEY` | One or more Google Gemini API keys (comma-separated) | `AIzaSyA..., AIzaSyB...` |
+| `TELEGRAM_BOT_TOKEN` | Bot API token from @BotFather | `123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ` |
+| `TELEGRAM_CHANNEL_ID` | Telegram Channel ID (must start with `-100`) | `-1001234567890` |
+| `TELEGRAM_ADMIN_CHAT_ID` | Your numeric Telegram user ID for admin alerts | `987654321` |
+
+### Required Backup Secrets (for `backup.yml`)
+
+| Secret Name | Description | Example Value |
+|---|---|---|
+| `R2_ACCESS_KEY_ID` | Cloudflare R2 Access Key ID | `a1b2c3d4e5...` |
+| `R2_SECRET_ACCESS_KEY` | Cloudflare R2 Secret Access Key | `f6g7h8i9j0...` |
+| `R2_ENDPOINT` | Cloudflare R2 S3 API Endpoint | `https://<account_id>.r2.cloudflarestorage.com` |
+| `R2_BUCKET_NAME` | R2 Bucket Name (optional, defaults to `newsbot-backups`) | `newsbot-backups` |
 
 ---
 
-## 2. Compute Setup: Freestyle.sh VM
+## 2. Workflows Explained
 
-### 2.1 Sign Up & VM Creation
-1. Sign up at [freestyle.sh](https://freestyle.sh) (no credit card required).
-2. Create a new VM with:
-   - **CPU:** `0.20 vCPU`
-   - **RAM:** `512MB`
-   - **Monthly quota calculation:** `0.20 vCPU × 730 hours = 146 vCPU-hours/month`, leaving a **27% safety margin** below the 200 vCPU-hour free ceiling.
-3. **Crucial Configuration (Disable Sleep):**
-   - Ensure the VM sleep setting is disabled in the Freestyle dashboard (or configure `sleep_after_ms` to a maximum value). Freestyle does not stop VMs by default unless sleep on idle is toggled on. Keep the VM continuously running so scheduled jobs fire on time.
+### 2.1 Batch Collection & Reporting (`.github/workflows/cron.yml`)
+- **Triggers:**
+  - `0 */6 * * *`: Every 6 hours (00:00, 06:00, 12:00, 18:00 UTC) for news collection and processing.
+  - `30 4 * * *`: Daily at 04:30 UTC (= **08:00 AM Tehran Time**) to trigger the morning intelligence report.
+  - `workflow_dispatch`: Manual trigger from the GitHub Actions UI.
+- **Actions performed:**
+  1. Sets up Python 3.15.2 and installs pre-compiled wheels.
+  2. Runs `alembic upgrade head` on Aiven to keep schema updated.
+  3. Executes `scripts/run_once.py`:
+     - Synchronizes active feeds from `editorial/sources.json`.
+     - Collects and analyzes new articles.
+     - Checks if current time is between 8:00 - 9:00 AM Tehran; if so, generates and publishes the daily report (with built-in deduplication so it never sends twice on the same day).
+     - Cleans up old request logs.
 
-### 2.2 Install Docker on Freestyle VM
-Connect to your Freestyle shell or SSH and install Docker:
-```bash
-curl -fsSL https://get.docker.com | sh
-```
-
-Verify the installation:
-```bash
-docker --version
-docker compose version
-```
-
-### 2.3 Clone & Configure Environment
-```bash
-git clone https://github.com/jkiani89/middle-east-news-bot.git
-cd middle-east-news-bot
-
-# Prepare environment file
-cp .env.example .env
-nano .env
-```
-
-Ensure the following variables are set in `.env`:
-- `DATABASE_URL`: Your Aiven PostgreSQL connection URI (`postgresql+asyncpg://...`)
-- `GEMINI_API_KEY`: One or more Google Gemini API keys
-- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHANNEL_ID`, `TELEGRAM_ADMIN_CHAT_ID`: Telegram credentials
-- `R2_BUCKET_NAME`: Cloudflare R2 bucket name
-
-### 2.4 Run Migrations & Deploy
-Run deployment using the deployment script or Docker Compose:
-```bash
-# Apply Alembic schema migrations to Aiven
-docker compose run --rm app alembic upgrade head
-
-# Start application service in detached mode
-docker compose up -d
-
-# Verify container status
-docker compose ps
-docker compose logs -f app
-```
+### 2.2 Automated Database Backup (`.github/workflows/backup.yml`)
+- **Triggers:**
+  - `0 2 * * *`: Daily at 02:00 UTC.
+  - `workflow_dispatch`: Manual trigger from GitHub Actions UI.
+- **Actions performed:**
+  1. Installs `rclone`.
+  2. Uses transient `postgres:16-alpine` Docker container to run `pg_dump -Fc` against Aiven `DATABASE_URL`.
+  3. Uploads the compressed binary dump to Cloudflare R2 and deletes backups older than 7 days.
 
 ---
 
-## 3. Backup & Disaster Recovery: Cloudflare R2
+## 3. Database Setup: Aiven PostgreSQL 16 Free
 
-Automated backups upload compressed binary dumps directly to Cloudflare R2 via `rclone`.
-
-### 3.1 Setup rclone on the VM
-Install `rclone`:
-```bash
-sudo apt-get update && sudo apt-get install -y rclone
-```
-Follow the configuration guide in [docs/BACKUP_RESTORE.md](file:///d:/Joud%20Files/middle-east-news-bot/docs/BACKUP_RESTORE.md) to set up remote `r2`.
-
-### 3.2 Automated Daily Backup Cron
-Open crontab:
-```bash
-crontab -e
-```
-Add daily backup at 02:00 AM server time:
-```cron
-0 2 * * * cd /root/middle-east-news-bot && bash scripts/backup.sh >> /var/log/newsbot-backup.log 2>&1
-```
-
-`scripts/backup.sh` automatically reads `DATABASE_URL`, runs a transient `postgres:16-alpine` container to execute `pg_dump -Fc` directly against Aiven, uploads to Cloudflare R2, and retains dumps for 7 days.
-
----
-
-## 4. Operational Monitoring
-
-The bot runs as a background worker (Telegram polling + APScheduler):
-
-1. **Process Status:**
-   ```bash
-   docker compose ps
+1. Sign up at [aiven.io](https://aiven.io) (no credit card required).
+2. Create a service: **PostgreSQL 16**, plan: **Free Plan** (1 CPU, 1GB RAM, 1GB storage).
+3. From the service overview, copy the **Service URI**:
+   ```text
+   postgres://avnadmin:PASSWORD@HOST:PORT/defaultdb?sslmode=require
    ```
-2. **Recent Logs:**
-   ```bash
-   docker compose logs --tail=100 -f app
+4. Convert the prefix to `postgresql+asyncpg://`:
+   ```text
+   postgresql+asyncpg://avnadmin:PASSWORD@HOST:PORT/defaultdb?sslmode=require
    ```
-3. **Freestyle Quota Monitoring:**
-   - Periodically check the Freestyle dashboard to verify your vCPU-hour consumption remains under 200 hours.
-4. **Heartbeat:**
-   - In production, monitor errors by tailing the logs or checking notifications sent to `TELEGRAM_ADMIN_CHAT_ID`.
+5. Save this URI as `DATABASE_URL` in your GitHub Repository Secrets.
+
+> [!TIP]
+> **Inactivity Keepalive:** Aiven may sleep free databases after long inactivity. Because GitHub Actions runs every 6 hours and queries the database, the connection is kept active automatically.
+
+---
+
+## 4. Manual Testing & Verification
+
+You can test the entire pipeline on demand without waiting for the cron timer:
+
+1. In GitHub, click the **Actions** tab.
+2. Select **Scheduled Batch Runner** in the left sidebar.
+3. Click **Run workflow**:
+   - Check `dry_run_daily_report` if you want to test report generation without messaging Telegram.
+   - Check `force_daily_report` to generate and send a report regardless of the time window.
+4. Inspect the workflow run logs to confirm successful execution.
+
+### Local Testing with Python
+To run the batch script locally with your `.env`:
+```powershell
+.\.venv\Scripts\python scripts/run_once.py --dry-run-daily-report
+```
 
 ---
 
@@ -180,16 +141,16 @@ The bot runs as a background worker (Telegram polling + APScheduler):
 
 | Symptom | Cause | Solution |
 |---|---|---|
-| `too many clients already` | PostgreSQL connections exceeded | Check `app/database/connection.py`; ensure `pool_size=5, max_overflow=5`. |
-| `connection refused` or timeout on DB | Aiven service powered off | Open Aiven console and click **Power On**. |
-| `SSL connection has been closed unexpectedly` | Missing SSL parameter | Ensure `?sslmode=require` is present at the end of `DATABASE_URL`. |
-| Container exits immediately | Invalid environment variable | Run `docker compose logs app` to inspect missing keys or validation errors. |
-| Backup fails | R2 credentials or rclone remote missing | Run `rclone lsd r2:` to test connectivity. |
+| `FATAL: password authentication failed` | Incorrect Aiven credentials | Verify `DATABASE_URL` in GitHub Secrets. |
+| Workflow fails on `alembic upgrade` | Missing SSL flag in connection string | Ensure `?sslmode=require` is at the end of `DATABASE_URL`. |
+| Daily report not sent in morning | Iran timezone mismatch | Iran time is UTC+3:30; `cron: '30 4 * * *'` matches 08:00 AM Tehran. |
+| Telegram message rejected | Bot not admin in channel | Add bot to your channel and grant "Post Messages" permission. |
+| Backup fails with `rclone error` | Invalid R2 keys | Check `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` in GitHub Secrets. |
 
 ---
 
 ## 6. See Also
 
-- [docs/BACKUP_RESTORE.md](file:///d:/Joud%20Files/middle-east-news-bot/docs/BACKUP_RESTORE.md) — Backup and restore workflows
-- [docs/LOCAL_SETUP.md](file:///d:/Joud%20Files/middle-east-news-bot/docs/LOCAL_SETUP.md) — Local development guidelines
-- [docs/archive/ANTI_IDLE.md](file:///d:/Joud%20Files/middle-east-news-bot/docs/archive/ANTI_IDLE.md) — Archived Oracle Cloud anti-idle guide
+- [docs/BACKUP_RESTORE.md](file:///d:/Joud%20Files/middle-east-news-bot/docs/BACKUP_RESTORE.md) — Backup and disaster recovery procedures
+- [docs/LOCAL_SETUP.md](file:///d:/Joud%20Files/middle-east-news-bot/docs/LOCAL_SETUP.md) — Local development guide
+- [docs/archive/ANTI_IDLE.md](file:///d:/Joud%20Files/middle-east-news-bot/docs/archive/ANTI_IDLE.md) — Archived Oracle VM anti-idle guide
