@@ -591,4 +591,40 @@ ruff باید از ابتدای پروژه در CI فعال باشد. اضافه
 ### وضعیت نهایی
 **فاز I بسته.** کدبیس آماده برای CI سخت‌گیرانه در فاز H (Deployment).
 
+---
+
+## [2026-11-12] فاز H — استقرار، کانتینرسازی و CI/CD (Deployment & CI)
+
+### زمینه
+پس از تکمیل منطق اصلی و رفع بدهی‌های لینت در فاز I، فاز H برای فراهم‌سازی زیرساخت استقرار واقعی، کانتینرسازی کامل با Docker، ایجاد خط لوله خودکار CI/CD در GitHub Actions، و تدوین سناریوی پشتیبان‌گیری و بازیابی بر مبنای معماری با هزینه صفر ($0/month) طراحی و پیاده‌سازی گردید.
+
+### اقدامات و دستاوردها به تفکیک زیرفازها:
+- **H-1 (Containerization & Docker):**
+  * ایجاد `Dockerfile` چندمرحله‌ای (Multi-stage) سبک مبتنی بر `python:3.15.2-slim` با استفاده از کاربر غیر روت (`appuser:1000`) و بسته‌های پیش‌کامپایل‌شده باینری.
+  * ایجاد `.dockerignore` ایمن برای مهار سکرت‌ها، کدهای تستی و دیتای محلی.
+  * ایجاد `docker-compose.yml` با دو سرویس `app` و `postgres:16-alpine` به همراه مکانیزم `healthcheck` بر روی دیتابیس با `pg_isready` و اتصال ایزوله به `127.0.0.1:5432`.
+  * نگارش اسکریپت استقرار لینوکسی `scripts/deploy.sh` با خطوط LF و `set -euo pipefail`.
+- **H-2 (GitHub Actions CI & حل تعارض وابستگی‌های Python 3.15):**
+  * پیکربندی `.github/workflows/ci.yml` با دو جاب موازی: `lint` (Ruff) و `test` (Pytest با دیتابیس واقعی PostgreSQL 16).
+  * ریشه‌یابی و حل قطعی تعارض متادیتای `aiogram 3.22.0` (ISS-009) و ارتقای `aiohttp` به نسخه `3.14.5` (دارای چرخ‌های رسمی cp315).
+  * به‌کارگیری الگوی `--no-deps` برای نصب `aiogram 3.22.0` در Dockerfile و CI بدون هیچ‌گونه کامپایل از سورس و با سرعت اجرای زیر ۲ دقیقه.
+  * پاس شدن کامل آزمون‌ها در GitHub Actions و سبز شدن CI.
+- **H-3 (Backup & Disaster Recovery to Cloudflare R2):**
+  * ایجاد اسکریپت `scripts/backup.sh` برای دامپ فشرده باینری (`pg_dump -Fc`) از کانتینر و آپلود به Cloudflare R2 از طریق `rclone` به همراه سیاست نگهداری ۷ روزه.
+  * ایجاد اسکریپت بازیابی `scripts/restore.sh` مجهز به گاردریل امنیتی تأیید کاربر (`y/N`) پیش از اعمال `pg_restore`.
+  * تدوین مستند جامع `docs/BACKUP_RESTORE.md` و به‌روزرسانی `.env.example`.
+- **H-4 (Zero-Cost Deployment Docs & Anti-Idle):**
+  * نگارش سند جامع `docs/DEPLOYMENT.md` برای استقرار بر روی ماشین‌های Always Free معماری ARM A1 در Oracle Cloud و فال‌بک به Freestyle.sh و Aiven.
+  * تدوین راهکار ضد بیکاری `docs/ANTI_IDLE.md` و اسکریپت `scripts/keepalive.sh` جهت جلوگیری از Reclaim ماشین در اوراکل.
+  * به‌روزرسانی `README.md` و افزودن بخش داکر به `docs/LOCAL_SETUP.md`.
+
+### نتایج
+- ۱۶۲ تست سبز محلی و در GitHub Actions runner
+- `ruff check .` کاملاً Clean
+- وضعیت مخزن: Push شده به گیت‌هاب روی شاخه `main`
+
+### وضعیت نهایی
+**فاز H رسماً بسته شد.** پروژه آماده بهره‌برداری و استقرار نهایی است.
+
+
 

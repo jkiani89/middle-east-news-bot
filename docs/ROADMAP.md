@@ -146,3 +146,18 @@ flowchart LR
   - کد پیاده‌سازی: ✅ (کامیت‌های ea5d68a تا e517ffd)
   - تست: ✅ پوشش در `tests/test_pipeline_integration.py`، `tests/test_scheduler_contracts.py` و `tests/test_gemini_rotator.py`
   - تأیید مستقل در ممیزی: ✅ (2026-11-11)
+
+---
+
+### فاز H — استقرار و CI/CD (Phase H — Deployment & CI) 🟢 [تکمیل‌شده]
+
+- **اهداف محقق‌شده:**
+  - **H-1:** Dockerfile چندمرحله‌ای (python:3.15.2-slim) + docker-compose + اسکریپت deploy
+  - **H-2:** GitHub Actions (pytest + ruff) کاملاً سبز
+  - **H-3:** اسکریپت‌های Backup/Restore به Cloudflare R2 + مستندات
+  - **H-4:** مستندات DEPLOYMENT.md، ANTI_IDLE.md، keepalive.sh، README و LOCAL_SETUP
+- **معیار پذیرش (محقق‌شده):**
+  - CI در GitHub Actions برای هر push اجرا و پاس می‌شود.
+  - معماری Zero-Cost (هزینه ماهانه صفر) مستند شده است.
+  - بکاپ خودکار و سناریوی بازیابی مستند شده است.
+
