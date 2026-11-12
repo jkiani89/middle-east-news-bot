@@ -593,38 +593,28 @@ ruff باید از ابتدای پروژه در CI فعال باشد. اضافه
 
 ---
 
-## [2026-11-12] فاز H — استقرار، کانتینرسازی و CI/CD (Deployment & CI)
+## [2026-11-11] فاز H — Deployment & CI (Zero-Cost Architecture)
 
 ### زمینه
-پس از تکمیل منطق اصلی و رفع بدهی‌های لینت در فاز I، فاز H برای فراهم‌سازی زیرساخت استقرار واقعی، کانتینرسازی کامل با Docker، ایجاد خط لوله خودکار CI/CD در GitHub Actions، و تدوین سناریوی پشتیبان‌گیری و بازیابی بر مبنای معماری با هزینه صفر ($0/month) طراحی و پیاده‌سازی گردید.
+پس از اتمام فازهای کد، پروژه نیاز به زیرساخت استقرار، CI/CD و بکاپ داشت. هدف: استقرار روی منابع کاملاً رایگان.
 
-### اقدامات و دستاوردها به تفکیک زیرفازها:
-- **H-1 (Containerization & Docker):**
-  * ایجاد `Dockerfile` چندمرحله‌ای (Multi-stage) سبک مبتنی بر `python:3.15.2-slim` با استفاده از کاربر غیر روت (`appuser:1000`) و بسته‌های پیش‌کامپایل‌شده باینری.
-  * ایجاد `.dockerignore` ایمن برای مهار سکرت‌ها، کدهای تستی و دیتای محلی.
-  * ایجاد `docker-compose.yml` با دو سرویس `app` و `postgres:16-alpine` به همراه مکانیزم `healthcheck` بر روی دیتابیس با `pg_isready` و اتصال ایزوله به `127.0.0.1:5432`.
-  * نگارش اسکریپت استقرار لینوکسی `scripts/deploy.sh` با خطوط LF و `set -euo pipefail`.
-- **H-2 (GitHub Actions CI & حل تعارض وابستگی‌های Python 3.15):**
-  * پیکربندی `.github/workflows/ci.yml` با دو جاب موازی: `lint` (Ruff) و `test` (Pytest با دیتابیس واقعی PostgreSQL 16).
-  * ریشه‌یابی و حل قطعی تعارض متادیتای `aiogram 3.22.0` (ISS-009) و ارتقای `aiohttp` به نسخه `3.14.5` (دارای چرخ‌های رسمی cp315).
-  * به‌کارگیری الگوی `--no-deps` برای نصب `aiogram 3.22.0` در Dockerfile و CI بدون هیچ‌گونه کامپایل از سورس و با سرعت اجرای زیر ۲ دقیقه.
-  * پاس شدن کامل آزمون‌ها در GitHub Actions و سبز شدن CI.
-- **H-3 (Backup & Disaster Recovery to Cloudflare R2):**
-  * ایجاد اسکریپت `scripts/backup.sh` برای دامپ فشرده باینری (`pg_dump -Fc`) از کانتینر و آپلود به Cloudflare R2 از طریق `rclone` به همراه سیاست نگهداری ۷ روزه.
-  * ایجاد اسکریپت بازیابی `scripts/restore.sh` مجهز به گاردریل امنیتی تأیید کاربر (`y/N`) پیش از اعمال `pg_restore`.
-  * تدوین مستند جامع `docs/BACKUP_RESTORE.md` و به‌روزرسانی `.env.example`.
-- **H-4 (Zero-Cost Deployment Docs & Anti-Idle):**
-  * نگارش سند جامع `docs/DEPLOYMENT.md` برای استقرار بر روی ماشین‌های Always Free معماری ARM A1 در Oracle Cloud و فال‌بک به Freestyle.sh و Aiven.
-  * تدوین راهکار ضد بیکاری `docs/ANTI_IDLE.md` و اسکریپت `scripts/keepalive.sh` جهت جلوگیری از Reclaim ماشین در اوراکل.
-  * به‌روزرسانی `README.md` و افزودن بخش داکر به `docs/LOCAL_SETUP.md`.
+### اقدامات
+- **H-1 (Docker):** Dockerfile چندمرحله‌ای، docker-compose (Postgres 16-alpine)، اسکریپت deploy.
+- **H-2 (CI):** GitHub Actions (ruff + pytest). برای حل تعارض metadata در Python 3.15، aiogram با `--no-deps` نصب شد و aiohttp به `3.14.5` ارتقا یافت. CI سبز شد.
+- **H-3 (Backup):** اسکریپت‌های `backup.sh` و `restore.sh` + rclone + Cloudflare R2.
+- **H-4 (Docs & Anti-Idle):** `DEPLOYMENT.md` (راهنمای Oracle/Freestyle/Aiven)، `ANTI_IDLE.md` و `keepalive.sh` (برای جلوگیری از reclaim شدن VM اوراکل).
 
 ### نتایج
-- ۱۶۲ تست سبز محلی و در GitHub Actions runner
-- `ruff check .` کاملاً Clean
-- وضعیت مخزن: Push شده به گیت‌هاب روی شاخه `main`
+- CI/CD روی GitHub Actions فعال و سبز است.
+- پروژه آماده استقرار روی Oracle Cloud Always Free است.
+- بکاپ خودکار روزانه به R2 با retention ۷ روزه تنظیم شده است.
+- ۱۶۲ تست همچنان پاس می‌شوند.
+
+### درس
+استقرار روی منابع رایگان نیازمند درک دقیق محدودیت‌ها (Idle Reclaim اوراکل، vCPU-Hour فری‌استایل) است. اسکریپت keepalive برای بقای VM اوراکل حیاتی است.
 
 ### وضعیت نهایی
-**فاز H رسماً بسته شد.** پروژه آماده بهره‌برداری و استقرار نهایی است.
+**فاز H بسته شد.** پروژه از نظر کد، تست و زیرساخت آماده استقرار (Production-Ready) است.
 
 
 
