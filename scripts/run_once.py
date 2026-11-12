@@ -165,6 +165,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Immediate per-article publishing must follow the same dry-run switch, otherwise a
+    # test run would post real messages to the Telegram channel.
+    settings.immediate_publish_dry_run = args.dry_run_daily_report
+
     exit_code = asyncio.run(
         run_batch_pipeline(
             force_daily_report=args.force_daily_report,

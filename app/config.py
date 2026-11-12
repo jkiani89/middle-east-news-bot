@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     max_articles_per_batch: int = 50
     ai_max_attempts: int = 3  # attempts per article before a transient failure is final
     ai_max_consecutive_failures: int = 5  # stop a batch after this many transient AI errors in a row
+    immediate_publish_enabled: bool = True
+    immediate_publish_only_new_events: bool = True
+    immediate_publish_max_per_run: int = 10
+    immediate_publish_delay_seconds: float = 2.0
+    immediate_publish_dry_run: bool = False
     min_importance: int = 2
     min_summary_len_for_full_text: int = 800
     require_full_text_for_ai: bool = True

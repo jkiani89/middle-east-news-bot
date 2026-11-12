@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime
 
 from sqlalchemy import and_, or_, select
@@ -13,11 +14,49 @@ from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, ArticleEvent, Event, JobLog, Source, Summary
 from app.processors.event_matcher import EventMatcher
+from app.telegram.publisher import ImmediateAnalysis, publish_immediate_analysis
 
 logger = logging.getLogger(__name__)
 
 # Set when a batch stopped early because every AI call was failing transiently.
 _circuit_breaker_tripped = False
+
+# Monotonic timestamp of the last immediate Telegram message, used to pace sends.
+_last_immediate_publish_at = 0.0
+
+
+async def _publish_immediate_safely(analysis: ImmediateAnalysis) -> bool:
+    """Send one analysis to Telegram without ever breaking the processing batch.
+
+    Honors the enable flag, the test environment, and the inter-message delay, and
+    swallows delivery errors: a Telegram outage must never roll back stored work.
+    """
+    global _last_immediate_publish_at
+
+    if not settings.immediate_publish_enabled or settings.app_env == "test":
+        return False
+
+    pause = max(0.0, settings.immediate_publish_delay_seconds)
+    elapsed = time.monotonic() - _last_immediate_publish_at
+    if 0 < elapsed < pause:
+        await asyncio.sleep(pause - elapsed)
+
+    try:
+        sent = await publish_immediate_analysis(analysis)
+        _last_immediate_publish_at = time.monotonic()
+        logger.info(
+            "Immediate Telegram publish for '%s' completed (%d message(s)).",
+            analysis.headline_fa,
+            len(sent),
+        )
+        return True
+    except Exception:
+        _last_immediate_publish_at = time.monotonic()
+        logger.exception(
+            "Immediate Telegram publish failed for '%s'; the article stays summarized.",
+            analysis.headline_fa,
+        )
+        return False
 
 
 def build_processing_query(limit: int):
@@ -112,6 +151,7 @@ async def process_collected_articles(
     ai_provider = provider or get_ai_provider()
     processed_count = 0
     consecutive_failures = 0
+    immediate_published = 0
 
     # Cache source names to minimize DB roundtrips
     sources_stmt = select(Source.id, Source.name)
@@ -125,6 +165,7 @@ async def process_collected_articles(
         source_name = sources_map.get(article.source_id, "Unknown Source")
         article.attempt_count = (article.attempt_count or 0) + 1
         article.last_attempt_at = datetime.now(UTC)
+        immediate_analysis: ImmediateAnalysis | None = None
 
         try:
             result = await analyze_article(
@@ -245,8 +286,24 @@ async def process_collected_articles(
 
             article.status = "summarized"
 
+            if match_res.is_new_event or not settings.immediate_publish_only_new_events:
+                immediate_analysis = ImmediateAnalysis.from_analysis_result(
+                    result, source_name, article.original_url
+                )
+
         processed_count += 1
         await session.commit()
+
+        if immediate_analysis is not None:
+            if immediate_published < settings.immediate_publish_max_per_run:
+                await _publish_immediate_safely(immediate_analysis)
+                immediate_published += 1
+            else:
+                logger.info(
+                    "Immediate publish cap (%d) reached; article ID %d stays for the daily report only.",
+                    settings.immediate_publish_max_per_run,
+                    article.id,
+                )
 
     logger.info("Successfully processed %d articles via %s.", processed_count, ai_provider.model_name)
     return processed_count

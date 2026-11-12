@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -26,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import DailyReport
-from app.reports.daily_report import format_persian_daily_report
+from app.reports.daily_report import CATEGORY_TITLES, VERIFICATION_LABELS, format_persian_daily_report
 
 logger = logging.getLogger(__name__)
 
@@ -368,6 +369,129 @@ async def publish_report(
             db_report.telegram_message_ids = [s["message_id"] for s in sent]
             await session.commit()
         raise
+    finally:
+        if own_bot:
+            await bot.session.close()
+
+
+@dataclass(slots=True)
+class ImmediateAnalysis:
+    """A single freshly analyzed article, ready for immediate Telegram delivery."""
+
+    event_title: str
+    headline_fa: str
+    summary_fa: str
+    source_name: str
+    source_url: str
+    verification_status: str = "unconfirmed"
+    importance: int = 3
+    category: str | None = None
+    countries: list[str] = field(default_factory=list)
+    actors: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_analysis_result(cls, result: Any, source_name: str, source_url: str) -> ImmediateAnalysis:
+        """Build the payload from a validated ``NewsAnalysis`` result."""
+        categories = list(getattr(result, "categories", []) or [])
+        return cls(
+            event_title=getattr(result, "event_title", "") or "",
+            headline_fa=getattr(result, "headline_fa", "") or "",
+            summary_fa=getattr(result, "summary_fa", "") or "",
+            source_name=source_name,
+            source_url=source_url,
+            verification_status=getattr(result, "verification_status", "unconfirmed") or "unconfirmed",
+            importance=int(getattr(result, "importance", 3) or 3),
+            category=categories[0] if categories else None,
+            countries=list(getattr(result, "countries", []) or []),
+            actors=list(getattr(result, "actors", []) or []),
+        )
+
+
+def format_immediate_analysis(analysis: ImmediateAnalysis) -> str:
+    """Render the Persian headline/summary block sent right after analysis."""
+    stars = "⭐" * max(1, min(5, analysis.importance))
+    category_fa = CATEGORY_TITLES.get(analysis.category or "", "سایر تحولات")
+    verification_fa = VERIFICATION_LABELS.get(analysis.verification_status, "نامشخص")
+    geography = "، ".join(analysis.countries) or "منطقه"
+    actors = "، ".join(analysis.actors)
+
+    lines: list[str] = [
+        "⚡️ <b>تحلیل فوری | پایش تحولات خاورمیانه</b>",
+        "",
+        f"📌 <b>{esc(analysis.headline_fa)}</b>",
+        f"🗂 حوزه: <b>{esc(category_fa)}</b>"
+        + (f" [{esc(analysis.category)}]" if analysis.category else "")
+        + f" | اهمیت: {stars} ({max(1, min(5, analysis.importance))}/5)",
+        f"🌍 {esc(geography)}" + (f" | {esc(actors)}" if actors else ""),
+        "",
+        esc(analysis.summary_fa),
+        "",
+        f"✅ راستی‌آزمایی: {esc(verification_fa)}",
+    ]
+    if analysis.source_url:
+        lines.append(f"🔗 منبع: <a href=\"{esc(analysis.source_url)}\">{esc(analysis.source_name)}</a>")
+    else:
+        lines.append(f"🔗 منبع: {esc(analysis.source_name)}")
+    return "\n".join(lines)
+
+
+async def publish_immediate_analysis(
+    analysis: ImmediateAnalysis,
+    bot: Bot | None = None,
+    dry_run: bool | None = None,
+    channel_id: str | None = None,
+    delay_seconds: float | None = None,
+    base_backoff: float = 1.0,
+) -> list[dict[str, Any]]:
+    """Publish one analyzed article to the channel immediately after it is stored.
+
+    Only the Persian headline and summary are sent (never the raw article), and
+    FloodWait/network errors are handled by ``send_telegram_message_resilient``.
+    In dry-run mode nothing is sent and a ``[DRY RUN]`` block is printed instead.
+    """
+    effective_dry_run = settings.immediate_publish_dry_run if dry_run is None else dry_run
+    target_channel = channel_id or settings.telegram_channel_id
+    text = format_immediate_analysis(analysis)
+    chunks = split_text(text, limit=3900)
+    pause = settings.immediate_publish_delay_seconds if delay_seconds is None else delay_seconds
+
+    if effective_dry_run:
+        print("=" * 80)
+        print(" TELEGRAM IMMEDIATE PUBLISHER [DRY RUN]")
+        print("=" * 80)
+        print(f"Headline: {analysis.headline_fa}")
+        print(f"Target Channel: {target_channel}")
+        print(f"Total Text Length: {len(text)} characters")
+        print(f"Total Chunks: {len(chunks)}")
+        print("-" * 80)
+        simulated: list[dict[str, Any]] = []
+        for idx, chunk in enumerate(chunks, 1):
+            print(f"Chunk #{idx} ({len(chunk)} chars) -> Would send to channel {target_channel}")
+            simulated.append({"chat_id": target_channel, "message_id": 2000 + idx, "type": "immediate"})
+        print("=" * 80)
+        return simulated
+
+    own_bot = False
+    if bot is None:
+        bot = Bot(
+            settings.telegram_bot_token,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
+        own_bot = True
+
+    sent: list[dict[str, Any]] = []
+    try:
+        for idx, chunk in enumerate(chunks):
+            msg = await send_telegram_message_resilient(
+                bot=bot,
+                chat_id=target_channel,
+                text=chunk,
+                base_backoff=base_backoff,
+            )
+            sent.append({"chat_id": target_channel, "message_id": msg.message_id, "type": "immediate"})
+            if pause > 0 and idx < len(chunks) - 1:
+                await asyncio.sleep(pause)
+        return sent
     finally:
         if own_bot:
             await bot.session.close()
