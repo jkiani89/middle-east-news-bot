@@ -1,6 +1,6 @@
 import os
 import re
-
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,6 +31,22 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore"
     )
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def fix_database_url(cls, v: str) -> str:
+        if not isinstance(v, str):
+            return v
+        # 1. Fix the prefix to match asyncpg requirement
+        if v.startswith("postgres://"):
+            v = v.replace("postgres://", "postgresql+asyncpg://", 1)
+        elif v.startswith("postgresql://"):
+            v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        
+        # 2. Fix sslmode for asyncpg
+        if "sslmode=require" in v:
+            v = v.replace("sslmode=require", "ssl=require")
+        return v
 
     def get_gemini_keys(self) -> list[str]:
         """Extract all configured Gemini API keys from environment and settings."""
