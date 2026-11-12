@@ -27,7 +27,7 @@ jobs:
   run-batch:
     name: Batch Ingestion & Daily Report
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
       APP_ENV: production
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -38,6 +38,7 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
       TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
+      MAX_ARTICLES_PER_BATCH: '15'
       TIMEZONE: 'Asia/Tehran'
       DAILY_REPORT_HOUR: '8'
       FORCE_DAILY_REPORT: ${{ inputs.force_daily_report || 'false' }}
