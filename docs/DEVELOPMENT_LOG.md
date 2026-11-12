@@ -630,9 +630,11 @@ ruff باید از ابتدای پروژه در CI فعال باشد. اضافه
 - **J-4 (Report Window):** اصلاح پنجره گزارش روزانه از `[امروز ۰۰:۰۰ تا ۲۴:۰۰)` به یک پنجره لغزان ۲۴ ساعته با لنگر ساعت گزارش. اکنون رویدادهای بین ۸ صبح تا ۱۲ شب از قلم نمی‌افتند.
 - **J-5 (Docker):** کپی پوشه `editorial/` به Dockerfile (رفع خطای FileNotFound در زمان اجرا).
 - **J-6 (Provider Leak):** بستن Providerهای موقتی که در `check_any_model_available` ساخته می‌شوند (رفع نشت اتصال).
+- **J-7 (DB Connection):** جداسازی کامل DSN برای `asyncpg` و `psycopg`. پارامتر `sslmode` (که Aiven ارائه می‌دهد) برای `asyncpg` به پارامتر `ssl=True` ترجمه می‌شود، اما DSN اصلی برای ابزارهای `psycopg` (مثل بکاپ) بدون تغییر می‌ماند. این کار خطای `TypeError: connect() got an unexpected keyword argument 'sslmode'` را برای همیشه رفع کرد.
+- نتیجه J-7: ۱۷۴ تست Pass (۳ تست جدید برای config اضافه شد) و lint سبز.
 
 ### نتایج
-- ۱۷۱ تست Pass (۴ تست جدید اضافه شد).
+- ۱۷۴ تست Pass (۷ تست جدید اضافه شد).
 - پوشش کد کلی: ۸۸٪.
 - `ruff check .`: All checks passed.
 - اثر جانبی مثبت: باگ ۳ (لاگ تکراری در Scheduler) نیز به طور خودکار رفع شد.
