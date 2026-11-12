@@ -37,15 +37,13 @@ class Settings(BaseSettings):
     def fix_database_url(cls, v: str) -> str:
         if not isinstance(v, str):
             return v
-        # 1. Fix the prefix to match asyncpg requirement
+        # فقط پیشوند postgres:// را اصلاح می‌کنیم
         if v.startswith("postgres://"):
             v = v.replace("postgres://", "postgresql+asyncpg://", 1)
         elif v.startswith("postgresql://"):
             v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
         
-        # 2. Fix sslmode for asyncpg
-        if "sslmode=require" in v:
-            v = v.replace("sslmode=require", "ssl=require")
+        # تغییر sslmode حذف شد تا psycopg و asyncpg هر دو بتوانند از آن استفاده کنند
         return v
 
     def get_gemini_keys(self) -> list[str]:
