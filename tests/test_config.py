@@ -54,3 +54,32 @@ def test_settings_comma_separated_gemini_keys():
     )
     keys = settings.get_gemini_keys()
     assert keys == ["AIzaKeyOne", "AIzaKeyTwo", "AIzaKeyThree"]
+
+
+def test_database_url_for_asyncpg_strips_sslmode_only():
+    """asyncpg must not receive sslmode, while psycopg keeps the untouched DSN."""
+    settings = Settings(
+        database_url="postgresql+asyncpg://u:p@h:5432/db?sslmode=require&application_name=newsbot"
+    )
+
+    asyncpg_url = settings.database_url_for_asyncpg
+
+    assert "sslmode" not in asyncpg_url
+    assert "application_name=newsbot" in asyncpg_url
+    assert "sslmode=require" in settings.database_url
+
+
+def test_asyncpg_connect_args_enables_ssl_for_verifying_modes():
+    """Every libpq mode that demands TLS maps to asyncpg's ssl=True."""
+    for mode in ("require", "verify-ca", "verify-full"):
+        settings = Settings(database_url=f"postgresql+asyncpg://u:p@h:5432/db?sslmode={mode}")
+        assert settings.asyncpg_connect_args == {"ssl": True}
+
+
+def test_asyncpg_connect_args_ignores_absent_or_disabled_ssl():
+    """No TLS requirement means no connect args are passed."""
+    assert Settings(database_url="postgresql+asyncpg://u:p@h:5432/db").asyncpg_connect_args == {}
+    assert (
+        Settings(database_url="postgresql+asyncpg://u:p@h:5432/db?sslmode=disable").asyncpg_connect_args
+        == {}
+    )

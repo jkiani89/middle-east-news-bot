@@ -1,8 +1,30 @@
 import os
 import re
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ASYNC_PG_VERIFY_SSL_MODES = {"require", "verify-ca", "verify-full"}
+
+
+def _query_param(url: str, name: str) -> str | None:
+    """Return the lowercase value of a query parameter, or None."""
+    for key, value in parse_qsl(urlsplit(url).query, keep_blank_values=True):
+        if key.lower() == name:
+            return value.lower()
+    return None
+
+
+def _without_query_param(url: str, name: str) -> str:
+    """Return the URL with every occurrence of the given query parameter removed."""
+    parts = urlsplit(url)
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if key.lower() != name
+    ]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 class Settings(BaseSettings):
@@ -46,6 +68,25 @@ class Settings(BaseSettings):
 
         # تغییر sslmode حذف شد تا psycopg و asyncpg هر دو بتوانند از آن استفاده کنند
         return v
+
+    @property
+    def database_url_for_asyncpg(self) -> str:
+        """DSN for SQLAlchemy's asyncpg driver.
+
+        asyncpg does not understand the libpq-style ``sslmode`` query argument
+        and raises ``TypeError: connect() got an unexpected keyword argument
+        'sslmode'``. It is stripped here and translated into
+        ``asyncpg_connect_args`` instead, while the original ``database_url``
+        stays intact for psycopg (the gemini-api-rotator adapter).
+        """
+        return _without_query_param(self.database_url, "sslmode")
+
+    @property
+    def asyncpg_connect_args(self) -> dict[str, object]:
+        """Translate libpq ``sslmode`` into asyncpg connection options."""
+        if _query_param(self.database_url, "sslmode") in ASYNC_PG_VERIFY_SSL_MODES:
+            return {"ssl": True}
+        return {}
 
     def get_gemini_keys(self) -> list[str]:
         """Extract all configured Gemini API keys from environment and settings."""
