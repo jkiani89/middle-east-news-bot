@@ -772,8 +772,16 @@ Hydration و گارد زبان هنوز در اجرای زنده تحریک نش
 - `pytest -q`: `222 passed, 14 skipped`؛ `ruff check app tests scripts`: All checks passed.
 - CI سبز روی `4b629c1` (run `43409659150`).
 
+### نتایج — اجرای زنده `43410943276` (sha `fbc3dee`، `force_daily_report=true`، `dry_run_daily_report=true`)
+- زمان کل: `10:40:54` → `10:46:31` یعنی **۵ دقیقه و ۳۷ ثانیه** (اجرای قبل از فاز Q: ۳۵:۴۶؛ اولین اجرای فاز M: لغو روی ۴۵ دقیقه). موتور خط لوله به‌تنهایی `10:41:26` → `10:43:49` = ۲:۲۳.
+- خطاها: `503` = ۲ (قبلاً ۳۲ و ۲۵)، `429` = **۰** (قبلاً ۱۰ و ۲۲).
+- مدل‌ها: `GEMINI_PRIMARY_MODEL=gemini-3.5-flash-lite` و `GEMINI_FALLBACK_MODEL=gemini-3.1-flash-lite`؛ ۹ فراخوانی روی مدل اول و ۶ روی دومی؛ هیچ درخواستی به `gemini-3.8-flash` نرفت.
+- Circuit breaker خودش فعال شد: `10:43:25 Model circuit breaker open: gemini-3.5-flash-lite failed 2 times in a row; using gemini-3.1-flash-lite for the rest of this run.` شکست دوم `TimeoutError` بود (پیام خالی) که ثابت می‌کند سقف ۳۰ ثانیه‌ای کار می‌کند.
+- لیتنس فراخوانی‌های موفق لایت: ۲.۴ تا ۳.۲ ثانیه (بدترین ۳۱.۶۶ ثانیه، همان موردی که به timeout خورد).
+- ۵ پیام لحظه‌ای در حالت dry-run (۳ عمومی + ۲ ادمین)، گزارش روزانه `success` با ۲۳ آیتم و ۲۲ چانک، صفر ارسال واقعی.
+
 ### بدهی باقی‌مانده
-اثر عددی فاز Q هنوز در اجرای زنده اندازه‌گیری نشده است؛ اجرای بعدی با `GEMINI_PRIMARY_MODEL=gemini-3.5-flash-lite` و `GEMINI_FALLBACK_MODEL=gemini-3.1-flash-lite` زمان واقعی را مشخص می‌کند. همچنین thread داخلی SDK با `wait_for` لغو نمی‌شود و در پس‌زمینه تمام می‌شود (نتیجه‌اش دور ریخته می‌شود).
+thread داخلی SDK با `wait_for` لغو نمی‌شود و در پس‌زمینه تمام می‌شود (نتیجه‌اش دور ریخته می‌شود). مسیر Hydration و گارد زبان هنوز در اجرای زنده تحریک نشده‌اند (`Extracted full body` = 0، `Pydantic validation failed` = 0).
 
 ### درس
 «Fallback» بدون «circuit breaker» فقط یک تلاش دوباره‌ی گران است: وقتی مدلی ساعت‌ها 503 می‌دهد، هر مقاله هزینه‌ی کامل شکست را می‌پردازد. سقف زمانی و قطع‌کننده در سطح مدل، همان‌قدر مهم‌اند که خودِ fallback.
