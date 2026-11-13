@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     max_articles_per_batch: int = 50
     ai_max_attempts: int = 3  # attempts per article before a transient failure is final
     ai_max_consecutive_failures: int = 5  # stop a batch after this many transient AI errors in a row
+    ai_request_timeout_seconds: int = 30  # hard ceiling for a single model call (SDK retries can hang for minutes)
     immediate_publish_enabled: bool = True
     immediate_publish_only_new_events: bool = True
     immediate_publish_max_per_run: int = 5

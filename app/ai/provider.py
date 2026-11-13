@@ -1,5 +1,6 @@
 """AI provider abstraction layer and Gemini implementation using gemini-api-rotator."""
 
+import asyncio
 import json
 import logging
 import time
@@ -64,7 +65,7 @@ class BaseAIProvider(ABC):
 
 def is_retryable_ai_error(exc: BaseException) -> bool:
     """Determine whether an API error is transient and should be retried."""
-    if isinstance(exc, (AIRateLimitError, AIServiceUnavailableError)):
+    if isinstance(exc, (AIRateLimitError, AIServiceUnavailableError, TimeoutError)):
         return True
     if isinstance(exc, Exception):
         etype = classify_error(exc)
@@ -112,6 +113,11 @@ class GeminiProvider(BaseAIProvider):
 
     _total_calls: int = 0
     _preflight_calls: int = 0
+
+    # After this many consecutive primary-model failures the provider stops trying it
+    # for the rest of the process (one process == one batch run). A free-tier Flash
+    # model answers 503 for hours and burns ~2 minutes per article before falling back.
+    PRIMARY_FAILURE_THRESHOLD: int = 2
 
     @staticmethod
     def _convert_dsn(dsn: str) -> str:
@@ -166,6 +172,11 @@ class GeminiProvider(BaseAIProvider):
         self._last_used_model = self._primary_model
         self._model = self._primary_model
 
+        # Model-level circuit breaker state (reset with every new provider instance).
+        self._primary_failures: int = 0
+        self._primary_disabled: bool = False
+        self._request_timeout: float = float(settings.ai_request_timeout_seconds)
+
         if rotator is not None:
             self._rotator = rotator
             self._db_adapter = getattr(rotator, "_db", None)
@@ -195,7 +206,9 @@ class GeminiProvider(BaseAIProvider):
                     self._convert_dsn(settings.database_url)
                 )
 
-            rotator_config = config or RotatorConfig()
+            # One retry: a second attempt against an unavailable model only adds latency,
+            # the model-level circuit breaker and fallback cover recovery instead.
+            rotator_config = config or RotatorConfig(max_retries=1)
             self._rotator = GeminiAPIRotator(
                 keys=keys,
                 config=rotator_config,
@@ -227,6 +240,53 @@ class GeminiProvider(BaseAIProvider):
         if self._db_adapter and hasattr(self._db_adapter, "close"):
             self._db_adapter.close()
 
+    @property
+    def primary_disabled(self) -> bool:
+        """Whether the primary model has been skipped for the rest of this process."""
+        return self._primary_disabled
+
+    async def _execute_model(
+        self,
+        model: str,
+        prompt: str,
+        system_instruction: str | None,
+        extra_config: dict[str, Any],
+    ) -> Any:
+        """Run one model call under a hard timeout.
+
+        The google-genai SDK retries 5xx internally with its own backoff, which in
+        production produced single calls that blocked for 700+ seconds. ``wait_for``
+        bounds the wait; the worker thread that is still running cannot be cancelled,
+        so it finishes in the background and its result is discarded.
+        """
+        return await asyncio.wait_for(
+            self._rotator.execute(
+                prompt,
+                model=model,
+                system=system_instruction,
+                extra_config=extra_config,
+            ),
+            timeout=self._request_timeout,
+        )
+
+    def _record_primary_failure(self) -> None:
+        """Trip the model-level circuit breaker after repeated primary failures."""
+        self._primary_failures += 1
+        if (
+            not self._primary_disabled
+            and self._enable_fallback
+            and self._fallback_model
+            and self._primary_failures >= self.PRIMARY_FAILURE_THRESHOLD
+        ):
+            self._primary_disabled = True
+            logger.warning(
+                "Model circuit breaker open: %s failed %d times in a row; "
+                "using %s for the rest of this run.",
+                self._primary_model,
+                self._primary_failures,
+                self._fallback_model,
+            )
+
     async def generate_json(
         self,
         prompt: str,
@@ -249,17 +309,16 @@ class GeminiProvider(BaseAIProvider):
             "temperature": 0.1,
         }
 
-        target_model = self._primary_model
+        target_model = (
+            self._fallback_model
+            if self._primary_disabled and self._enable_fallback and self._fallback_model
+            else self._primary_model
+        )
         start_time = time.monotonic()
         raw_text: str | None = None
 
         try:
-            response = await self._rotator.execute(
-                prompt,
-                model=target_model,
-                system=system_instruction,
-                extra_config=extra_config,
-            )
+            response = await self._execute_model(target_model, prompt, system_instruction, extra_config)
             raw_text = getattr(response, "text", "") or ""
             self._last_used_model = target_model
             self._model = target_model
@@ -285,6 +344,8 @@ class GeminiProvider(BaseAIProvider):
                     latency,
                 )
         except Exception as exc:
+            if target_model == self._primary_model:
+                self._record_primary_failure()
             # Fallback logic if primary model encounters retryable/transient/quota error
             if (
                 is_retryable_ai_error(exc)
@@ -300,11 +361,8 @@ class GeminiProvider(BaseAIProvider):
                 )
                 try:
                     target_model = self._fallback_model
-                    response = await self._rotator.execute(
-                        prompt,
-                        model=target_model,
-                        system=system_instruction,
-                        extra_config=extra_config,
+                    response = await self._execute_model(
+                        target_model, prompt, system_instruction, extra_config
                     )
                     raw_text = getattr(response, "text", "") or ""
                     self._last_used_model = target_model
