@@ -27,7 +27,7 @@ jobs:
   run-batch:
     name: Batch Ingestion & Daily Report
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
       APP_ENV: production
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
