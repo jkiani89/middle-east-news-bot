@@ -223,7 +223,7 @@ async def test_happy_path_two_sources_four_articles():
         ],
     }
 
-    async def fake_feed(url: str) -> list[dict[str, Any]]:
+    async def fake_feed(url: str, **kwargs: Any) -> list[dict[str, Any]]:
         return feed_map.get(url, [])
 
     provider = MockAIProvider(canned_response=VALID_CANNED_PAYLOAD)
@@ -250,7 +250,7 @@ async def test_one_source_fails_others_succeed():
     source_ok = Source(id=2, name="Working Source", base_url="https://ok.com", feed_url="https://ok.com/rss", is_active=True, language="en")
     session = RollbackAwareMockSession(objects=[source_fail, source_ok])
 
-    async def fake_feed(url: str) -> list[dict[str, Any]]:
+    async def fake_feed(url: str, **kwargs: Any) -> list[dict[str, Any]]:
         if "fail.com" in url:
             raise ConnectionError("Network timeout on faulty feed")
         return [
@@ -280,7 +280,7 @@ async def test_all_sources_fail_logs_success_currently():
     source2 = Source(id=2, name="Fail 2", base_url="https://f2.com", feed_url="https://f2.com/rss", is_active=True, language="en")
     session = RollbackAwareMockSession(objects=[source1, source2])
 
-    async def fake_feed(url: str) -> list[dict[str, Any]]:
+    async def fake_feed(url: str, **kwargs: Any) -> list[dict[str, Any]]:
         raise TimeoutError("All feeds down")
 
     provider = MockAIProvider(canned_response=VALID_CANNED_PAYLOAD)
@@ -314,7 +314,7 @@ async def test_duplicate_canonical_url_skipped():
     )
     session = RollbackAwareMockSession(objects=[source, existing_article])
 
-    async def fake_feed(url: str) -> list[dict[str, Any]]:
+    async def fake_feed(url: str, **kwargs: Any) -> list[dict[str, Any]]:
         return [
             {"title": "Existing News", "url": "https://a.com/existing?utm=1", "canonical_url": "https://a.com/existing", "text": "Old Text", "published_at": None, "content_hash": "OLD_HASH_111", "text_source": "rss_summary"},
             {"title": "Brand New News", "url": "https://a.com/new", "canonical_url": "https://a.com/new", "text": "New Text", "published_at": None, "content_hash": "NEW_HASH_222", "text_source": "rss_summary"},
@@ -350,7 +350,7 @@ async def test_duplicate_content_hash_different_url_skipped():
     )
     session = RollbackAwareMockSession(objects=[source, existing_article])
 
-    async def fake_feed(url: str) -> list[dict[str, Any]]:
+    async def fake_feed(url: str, **kwargs: Any) -> list[dict[str, Any]]:
         return [
             {"title": "Syndicated News Alternate URL", "url": "https://a.com/another-url", "canonical_url": "https://a.com/another-url", "text": "Same Content Text", "published_at": None, "content_hash": "SHARED_HASH_999", "text_source": "rss_summary"},
             {"title": "Unique News", "url": "https://a.com/unique", "canonical_url": "https://a.com/unique", "text": "Different Text", "published_at": None, "content_hash": "UNIQUE_HASH_888", "text_source": "rss_summary"},
@@ -489,7 +489,7 @@ async def test_rollback_in_integrity_error_loses_joblog_BUG_PROOF():
              "importance": 3, "verification_status": "unconfirmed"}
     provider = MockAIProvider(canned_response=valid)
 
-    def fake_feed(url):
+    def fake_feed(url, **kwargs):
         return [
             {"url": "https://t.com/X", "canonical_url": "https://t.com/X",
              "title": "Dup", "text": "dup",

@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.provider import BaseAIProvider, get_ai_provider, is_retryable_ai_error
 from app.ai.summarizer import PROMPT_VERSION, analyze_article
-from app.collectors.rss_collector import fetch_feed
+from app.collectors.rss_collector import fetch_article_full_text, fetch_feed
 from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, ArticleEvent, Event, JobLog, Source, Summary
@@ -145,6 +145,25 @@ async def is_duplicate_article(
     return existing_id is not None
 
 
+async def _hydrate_article_body(article: Article) -> None:
+    """Extract the full article body for an article that is about to be analyzed.
+
+    Ingestion stores RSS metadata only, so full-text extraction happens here, once
+    per article that actually reaches the AI queue instead of once per feed entry.
+    A failed extraction is not fatal: the stored RSS summary is analyzed instead.
+    """
+    if article.text_source == "full_body" or not settings.require_full_text_for_ai:
+        return
+    target_url = article.canonical_url or article.original_url
+    if not target_url:
+        return
+    full_text = await fetch_article_full_text(target_url)
+    if full_text and len(full_text) > len(article.original_text or ""):
+        article.original_text = full_text
+        article.text_source = "full_body"
+        logger.info("Extracted full body for article ID %s (%d chars).", article.id, len(full_text))
+
+
 async def process_collected_articles(
     session: AsyncSession,
     limit: int = 50,
@@ -197,6 +216,8 @@ async def process_collected_articles(
         article.last_attempt_at = datetime.now(UTC)
         immediate_analysis: ImmediateAnalysis | None = None
         immediate_admin_only = False
+
+        await _hydrate_article_body(article)
 
         try:
             result = await analyze_article(
@@ -369,6 +390,9 @@ async def collect_new_articles(session: AsyncSession) -> int:
 
     Performs no AI work and leaves the transaction to the caller, so ingestion
     keeps running even when the AI models are unavailable or the queue is empty.
+    Feed parsing is metadata-only: extracting full bodies during collection meant
+    hundreds of page fetches per run for entries that never reached the AI queue,
+    so bodies are now extracted lazily by ``_hydrate_article_body``.
     Returns the number of newly inserted articles.
     """
     inserted_count = 0
@@ -377,7 +401,11 @@ async def collect_new_articles(session: AsyncSession) -> int:
     ).all()
     for source in sources:
         try:
-            entries = await fetch_feed(source.feed_url)
+            entries = await fetch_feed(
+                source.feed_url,
+                extract_full_text=False,
+                min_summary_length=0,
+            )
         except Exception as exc:
             logger.warning("Failed to collect feed for source %s: %s", source.name, exc)
             continue

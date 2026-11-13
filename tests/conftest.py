@@ -17,6 +17,19 @@ os.environ.setdefault("TELEGRAM_CHANNEL_ID", "-1009876543210")
 os.environ.setdefault("TELEGRAM_ADMIN_CHAT_ID", "987654321")
 
 
+@pytest.fixture(autouse=True)
+def _disable_live_article_extraction(monkeypatch):
+    """Keep the suite offline: article bodies are extracted lazily in the pipeline now.
+
+    Individual tests that exercise hydration patch this function themselves.
+    """
+
+    async def _no_body(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.processors.pipeline.fetch_article_full_text", _no_body)
+
+
 @pytest.fixture(scope="session")
 def sync_test_dsn() -> str:
     """Sync DSN for test database (psycopg format, no +asyncpg)."""
