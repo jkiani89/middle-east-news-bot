@@ -197,7 +197,7 @@ async def test_publish_cap_limits_messages_per_run(monkeypatch):
         "headline_fa": "تیتر فارسی",
         "summary_fa": "خلاصه فارسی",
         "countries": ["Iran"],
-        "actors": [],
+        "actors": ["وزارت امور خارجه ایران"],
         "location": None,
         "importance": 3,
         "verification_status": "unconfirmed",

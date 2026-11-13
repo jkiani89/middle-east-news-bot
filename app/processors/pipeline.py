@@ -13,7 +13,7 @@ from app.collectors.rss_collector import fetch_article_full_text, fetch_feed
 from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, ArticleEvent, Event, JobLog, Source, Summary
-from app.editorial.regions import has_middle_east_nexus
+from app.editorial.regions import has_middle_east_nexus, is_primary_actor
 from app.processors.event_matcher import EventMatcher
 from app.telegram.publisher import ImmediateAnalysis, publish_immediate_analysis
 
@@ -302,6 +302,16 @@ async def process_collected_articles(
                 )
             else:
                 logger.info("Article ID %d deemed irrelevant to Middle East intelligence. Marked 'rejected'.", article.id)
+            article.status = "rejected"
+        elif not is_primary_actor(result.countries, result.actors, result.location):
+            logger.info(
+                "Article ID %d rejected by the editorial gate: Middle East is only a passing mention "
+                "(countries=%s actors=%s location=%r).",
+                article.id,
+                result.countries,
+                result.actors,
+                result.location,
+            )
             article.status = "rejected"
         else:
             # Phase 5: Event Matching & Clustering

@@ -10,7 +10,12 @@ import pytest
 from app.ai.provider import MockAIProvider
 from app.config import settings
 from app.database.models import Article
-from app.editorial.regions import has_middle_east_nexus, is_middle_east_country, normalize_place
+from app.editorial.regions import (
+    has_middle_east_nexus,
+    is_middle_east_country,
+    is_primary_actor,
+    normalize_place,
+)
 from app.processors import pipeline
 from app.processors.pipeline import resolve_verification_status
 from app.telegram.publisher import ImmediateAnalysis, publish_immediate_analysis
@@ -25,7 +30,7 @@ def _payload(**overrides: Any) -> dict[str, Any]:
         "headline_fa": "تیتر فارسی",
         "summary_fa": "خلاصه فارسی",
         "countries": ["ایران"],
-        "actors": ["وزارت امور خارجه"],
+        "actors": ["وزارت امور خارجه ایران"],
         "location": None,
         "importance": 3,
         "verification_status": "confirmed",
@@ -301,3 +306,42 @@ async def test_admin_only_delivery_targets_admin_chat(monkeypatch):
     assert bot.calls[0]["chat_id"] == "123456"
     assert "پیش‌نمایش ادمین" in bot.calls[0]["text"]
     assert sent[0]["type"] == "admin"
+
+
+# --- Phase P: a regional country must be a party, not a passing mention ---
+
+
+def test_primary_actor_rejects_incidental_country_mention():
+    # An Africa-wide analysis that lists Egypt among many countries.
+    assert not is_primary_actor(
+        ["مصر", "نیجریه", "کنیا"],
+        ["اتحادیه آفریقا", "کمیسیون اقتصادی سازمان ملل"],
+        "نایروبی",
+    )
+
+
+def test_primary_actor_accepts_country_named_among_actors():
+    assert is_primary_actor(["مصر"], ["وزارت خارجه مصر", "اتحادیه آفریقا"], None)
+    assert is_primary_actor(["Iran"], ["Iranian Revolutionary Guard Corps"], None)
+
+
+def test_primary_actor_accepts_regional_location():
+    # The analysis names a city rather than a country; Tehran/Cairo are in scope.
+    assert is_primary_actor([], ["حزب‌الله"], "تهران")
+    assert is_primary_actor(["مصر"], [], "قاهره")
+
+
+def test_primary_actor_rejects_when_no_actor_or_location_matches():
+    assert not is_primary_actor(["مصر"], [], None)
+    assert not is_primary_actor([], ["ناتو"], "بروکسل")
+
+
+def test_africa_story_with_incidental_egypt_is_rejected_by_pipeline():
+    payload = _payload(
+        countries=["مصر", "نیجریه"],
+        actors=["اتحادیه آفریقا"],
+        location="نایروبی",
+        headline_fa="گزارش فارن افرز: قاره آفریقا به کانون اصلی فعالیت‌ها تبدیل شد",
+    )
+    assert has_middle_east_nexus(payload["countries"], payload["location"])
+    assert not is_primary_actor(payload["countries"], payload["actors"], payload["location"])

@@ -8,6 +8,7 @@ against this list before it can reach the channel.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 
 # Normalized (casefolded, Persian letters unified) country and territory names.
@@ -90,6 +91,63 @@ MIDDLE_EAST_WATERWAYS: frozenset[str] = frozenset(
     }
 )
 
+# Major cities of the region. Analyses usually name a city rather than a country,
+# so a strict gate that only knew country names would reject Tehran- or Cairo-datelined
+# stories that are entirely in scope.
+MIDDLE_EAST_CITIES: frozenset[str] = frozenset(
+    {
+        "tehran",
+        "jerusalem",
+        "tel aviv",
+        "gaza city",
+        "ramallah",
+        "cairo",
+        "riyadh",
+        "jeddah",
+        "abu dhabi",
+        "dubai",
+        "doha",
+        "ankara",
+        "istanbul",
+        "baghdad",
+        "basra",
+        "mosul",
+        "damascus",
+        "aleppo",
+        "beirut",
+        "sanaa",
+        "aden",
+        "amman",
+        "kuwait city",
+        "muscat",
+        "manama",
+        "تهران",
+        "قدس",
+        "اورشلیم",
+        "تل‌آویو",
+        "رام‌الله",
+        "قاهره",
+        "ریاض",
+        "جده",
+        "ابوظبی",
+        "دبی",
+        "دوحه",
+        "آنکارا",
+        "استانبول",
+        "بغداد",
+        "بصره",
+        "موصل",
+        "دمشق",
+        "حلب",
+        "بیروت",
+        "صنعا",
+        "عدن",
+        "امان",
+        "مسقط",
+        "منامه",
+    }
+)
+
 _PERSIAN_LETTER_MAP = str.maketrans({"ي": "ی", "ك": "ک", "ۀ": "ه", "ة": "ه"})
 
 
@@ -113,6 +171,90 @@ def mentions_middle_east_waterway(value: str | None) -> bool:
     return normalized in MIDDLE_EAST_WATERWAYS or any(
         waterway in normalized for waterway in MIDDLE_EAST_WATERWAYS
     )
+
+
+# Persian name for each English form, so an English `countries` entry can still be
+# matched against Persian `actors` text (and the other way round).
+MIDDLE_EAST_COUNTRY_ALIASES: dict[str, str] = {
+    "iran": "ایران",
+    "israel": "اسرائیل",
+    "palestine": "فلسطین",
+    "palestinian territories": "فلسطین",
+    "palestinian authority": "فلسطین",
+    "gaza": "غزه",
+    "gaza strip": "غزه",
+    "west bank": "کرانه باختری",
+    "egypt": "مصر",
+    "saudi arabia": "عربستان",
+    "united arab emirates": "امارات",
+    "uae": "امارات",
+    "qatar": "قطر",
+    "turkey": "ترکیه",
+    "turkiye": "ترکیه",
+    "türkiye": "ترکیه",
+    "iraq": "عراق",
+    "syria": "سوریه",
+    "lebanon": "لبنان",
+    "yemen": "یمن",
+    "jordan": "اردن",
+    "kuwait": "کویت",
+    "oman": "عمان",
+    "bahrain": "بحرین",
+}
+
+
+def _name_appears(name: str, haystack_normalized: str) -> bool:
+    """Whether a normalized place name occurs in a normalized text.
+
+    Latin names need word boundaries ("iran" must not match "Tirana"); Persian
+    names are matched as substrings because Persian attaches suffixes with ZWNJ,
+    which normalization turns into a space.
+    """
+    if name.isascii():
+        # Word-start match so "iran" finds "Iranian" but not "Tirana".
+        return re.search(rf"\b{re.escape(name)}", haystack_normalized) is not None
+    return name in haystack_normalized
+
+
+def mentions_middle_east_place(value: str | None) -> bool:
+    """Whether a free-text value names a Middle East country, city or waterway."""
+    if not value:
+        return False
+    normalized = normalize_place(value)
+    if not normalized:
+        return False
+    for name in (*MIDDLE_EAST_COUNTRIES, *MIDDLE_EAST_CITIES, *MIDDLE_EAST_WATERWAYS):
+        if _name_appears(name, normalized):
+            return True
+    return False
+
+
+def is_primary_actor(
+    countries: list[str] | None,
+    actors: list[str] | None,
+    location: str | None = None,
+) -> bool:
+    """Whether a Middle East state is a *party* to the story, not a passing mention.
+
+    A story that merely lists a regional country among many is out of scope (e.g. an
+    Africa-wide analysis that mentions Egypt once). It qualifies only when one of the
+    analysed countries is regional and that same country is named among the primary
+    actors, or when the event location itself is a regional place.
+    """
+    if mentions_middle_east_place(location):
+        return True
+
+    actor_text = normalize_place(" | ".join(actors or []))
+    if not actor_text:
+        return False
+    for country in countries or []:
+        if not is_middle_east_country(country):
+            continue
+        normalized = normalize_place(country)
+        candidates = {normalized, normalize_place(MIDDLE_EAST_COUNTRY_ALIASES.get(normalized, ""))}
+        if any(candidate and _name_appears(candidate, actor_text) for candidate in candidates):
+            return True
+    return False
 
 
 def has_middle_east_nexus(countries: list[str] | None, location: str | None = None) -> bool:
