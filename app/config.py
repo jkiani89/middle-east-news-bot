@@ -83,7 +83,8 @@ class Settings(BaseSettings):
     ai_max_consecutive_failures: int = 5  # stop a batch after this many transient AI errors in a row
     immediate_publish_enabled: bool = True
     immediate_publish_only_new_events: bool = True
-    immediate_publish_max_per_run: int = 10
+    immediate_publish_max_per_run: int = 5
+    immediate_publish_min_importance: int = 3
     immediate_publish_delay_seconds: float = 2.0
     immediate_publish_dry_run: bool = False
     min_importance: int = 2

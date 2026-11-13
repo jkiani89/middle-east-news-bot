@@ -63,6 +63,9 @@ class FakeSession:
     async def scalars(self, stmt: Any) -> _Result:
         return _Result(self.articles)
 
+    async def scalar(self, stmt: Any) -> Any:
+        return 2
+
     async def execute(self, stmt: Any) -> _Result:
         return _Result([(1, "UN News")])
 
