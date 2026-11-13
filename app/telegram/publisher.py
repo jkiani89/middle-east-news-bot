@@ -259,24 +259,26 @@ async def publish_report(
 
     # Dry-run execution
     if dry_run:
-        print("=" * 80)
-        print(" TELEGRAM PUBLISHER [DRY RUN]")
-        print("=" * 80)
-        print(f"Report Date: {report_date}")
-        print(f"Content Quality: {content_quality or 'real'}")
-        print(f"Target Channel: {target_channel}")
-        print(f"Target Admin Chat: {target_admin}")
-        print(f"Total Text Length: {len(final_text)} characters")
-        print(f"Total Chunks: {len(chunks)}")
-        print("-" * 80)
+        # Logged (not printed) so the dry-run evidence survives a cancelled/timed-out job,
+        # where block-buffered stdout is never flushed.
+        logger.info("%s", "=" * 80)
+        logger.info(" TELEGRAM PUBLISHER [DRY RUN]")
+        logger.info("%s", "=" * 80)
+        logger.info("Report Date: %s", report_date)
+        logger.info("Content Quality: %s", content_quality or "real")
+        logger.info("Target Channel: %s", target_channel)
+        logger.info("Target Admin Chat: %s", target_admin)
+        logger.info("Total Text Length: %d characters", len(final_text))
+        logger.info("Total Chunks: %d", len(chunks))
+        logger.info("%s", "-" * 80)
         simulated_sent: list[dict[str, Any]] = []
         for idx, ch in enumerate(chunks, 1):
-            print(f"Chunk #{idx} ({len(ch)} chars) -> Would send to channel {target_channel}")
+            logger.info("Chunk #%d (%d chars) -> Would send to channel %s", idx, len(ch), target_channel)
             simulated_sent.append({"chat_id": target_channel, "message_id": 1000 + idx, "type": "channel"})
         if target_admin:
-            print(f"Admin Summary -> Would send to admin {target_admin}")
+            logger.info("Admin Summary -> Would send to admin %s", target_admin)
             simulated_sent.append({"chat_id": str(target_admin), "message_id": 9999, "type": "admin"})
-        print("=" * 80)
+        logger.info("%s", "=" * 80)
         return simulated_sent
 
     own_bot = False
@@ -469,20 +471,27 @@ async def publish_immediate_analysis(
     pause = settings.immediate_publish_delay_seconds if delay_seconds is None else delay_seconds
 
     if effective_dry_run:
-        print("=" * 80)
-        print(" TELEGRAM IMMEDIATE PUBLISHER [DRY RUN]")
-        print("=" * 80)
-        print(f"Headline: {analysis.headline_fa}")
-        print(f"Delivery: {delivery_type}")
-        print(f"Target: {target_channel}")
-        print(f"Total Text Length: {len(text)} characters")
-        print(f"Total Chunks: {len(chunks)}")
-        print("-" * 80)
+        # Structured logging (not print) keeps the dry-run preview readable in CI logs
+        # even when the job is cancelled before stdout is flushed.
+        logger.info("%s", "=" * 80)
+        logger.info(" TELEGRAM IMMEDIATE PUBLISHER [DRY RUN]")
+        logger.info("%s", "=" * 80)
+        logger.info("Headline: %s", analysis.headline_fa)
+        logger.info("Summary: %s", analysis.summary_fa)
+        logger.info("Verification: %s", analysis.verification_status)
+        logger.info("Importance: %s", analysis.importance)
+        logger.info("Delivery: %s", delivery_type)
+        logger.info("Target: %s", target_channel)
+        logger.info("Total Text Length: %d characters", len(text))
+        logger.info("Total Chunks: %d", len(chunks))
+        logger.info("%s", "-" * 80)
         simulated: list[dict[str, Any]] = []
         for idx, chunk in enumerate(chunks, 1):
-            print(f"Chunk #{idx} ({len(chunk)} chars) -> Would send to {delivery_type} {target_channel}")
+            logger.info(
+                "Chunk #%d (%d chars) -> Would send to %s %s", idx, len(chunk), delivery_type, target_channel
+            )
             simulated.append({"chat_id": target_channel, "message_id": 2000 + idx, "type": delivery_type})
-        print("=" * 80)
+        logger.info("%s", "=" * 80)
         return simulated
 
     own_bot = False

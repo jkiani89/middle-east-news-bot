@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -101,14 +102,18 @@ def test_formatted_message_contains_headline_summary_and_escaped_source():
 
 
 @pytest.mark.asyncio
-async def test_dry_run_sends_nothing_and_prints_block(capsys):
+async def test_dry_run_sends_nothing_and_logs_block(caplog):
     bot = _FakeBot()
 
-    sent = await publish_immediate_analysis(ANALYSIS, bot=bot, dry_run=True)
+    with caplog.at_level(logging.INFO, logger="app.telegram.publisher"):
+        sent = await publish_immediate_analysis(ANALYSIS, bot=bot, dry_run=True)
 
     bot.send_message.assert_not_called()
-    out = capsys.readouterr().out
+    out = caplog.text
     assert "[DRY RUN]" in out
+    # The preview must carry the editorial evidence, so a cancelled CI job still shows it.
+    assert f"Headline: {ANALYSIS.headline_fa}" in out
+    assert f"Verification: {ANALYSIS.verification_status}" in out
     assert sent and sent[0]["type"] == "immediate"
 
 
