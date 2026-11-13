@@ -3,7 +3,7 @@ import logging
 import time
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, distinct, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,7 @@ from app.collectors.rss_collector import fetch_feed
 from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, ArticleEvent, Event, JobLog, Source, Summary
+from app.editorial.regions import has_middle_east_nexus
 from app.processors.event_matcher import EventMatcher
 from app.telegram.publisher import ImmediateAnalysis, publish_immediate_analysis
 
@@ -25,7 +26,35 @@ _circuit_breaker_tripped = False
 _last_immediate_publish_at = 0.0
 
 
-async def _publish_immediate_safely(analysis: ImmediateAnalysis) -> bool:
+async def _count_event_sources(session: AsyncSession, event_id: int) -> int:
+    """Count the distinct sources backing an event (two independent sources = confirmed)."""
+    stmt = (
+        select(func.count(distinct(Article.source_id)))
+        .select_from(ArticleEvent)
+        .join(Article, Article.id == ArticleEvent.article_id)
+        .where(ArticleEvent.event_id == event_id)
+    )
+    count = await session.scalar(stmt)
+    return count if isinstance(count, int) else 1
+
+
+def resolve_verification_status(model_status: str, source_count: int) -> str:
+    """Derive the published verification label from real corroboration.
+
+    A single source can never be presented as confirmed, regardless of how
+    confident the model was; two or more independent sources allow the model's
+    own ``confirmed``/``partially_confirmed`` verdict to stand.
+    """
+    if model_status in {"disputed", "false"}:
+        return model_status
+    if source_count >= 2:
+        if model_status in {"confirmed", "partially_confirmed"}:
+            return model_status
+        return "partially_confirmed"
+    return "unconfirmed"
+
+
+async def _publish_immediate_safely(analysis: ImmediateAnalysis, admin_only: bool = False) -> bool:
     """Send one analysis to Telegram without ever breaking the processing batch.
 
     Honors the enable flag, the test environment, and the inter-message delay, and
@@ -42,12 +71,13 @@ async def _publish_immediate_safely(analysis: ImmediateAnalysis) -> bool:
         await asyncio.sleep(pause - elapsed)
 
     try:
-        sent = await publish_immediate_analysis(analysis)
+        sent = await publish_immediate_analysis(analysis, admin_only=admin_only)
         _last_immediate_publish_at = time.monotonic()
         logger.info(
-            "Immediate Telegram publish for '%s' completed (%d message(s)).",
+            "Immediate Telegram publish for '%s' completed (%d message(s)%s).",
             analysis.headline_fa,
             len(sent),
+            ", admin-only" if admin_only else "",
         )
         return True
     except Exception:
@@ -166,6 +196,7 @@ async def process_collected_articles(
         article.attempt_count = (article.attempt_count or 0) + 1
         article.last_attempt_at = datetime.now(UTC)
         immediate_analysis: ImmediateAnalysis | None = None
+        immediate_admin_only = False
 
         try:
             result = await analyze_article(
@@ -240,8 +271,16 @@ async def process_collected_articles(
                     prompt_version=PROMPT_VERSION,
                 )
             )
-        elif not result.is_relevant:
-            logger.info("Article ID %d deemed irrelevant to Middle East intelligence. Marked 'rejected'.", article.id)
+        elif not result.is_relevant or not has_middle_east_nexus(result.countries, result.location):
+            if result.is_relevant:
+                logger.info(
+                    "Article ID %d rejected by the editorial gate: no Middle East country or waterway in countries=%s location=%r.",
+                    article.id,
+                    result.countries,
+                    result.location,
+                )
+            else:
+                logger.info("Article ID %d deemed irrelevant to Middle East intelligence. Marked 'rejected'.", article.id)
             article.status = "rejected"
         else:
             # Phase 5: Event Matching & Clustering
@@ -261,6 +300,11 @@ async def process_collected_articles(
                     confidence=match_res.confidence,
                 )
             )
+            await session.flush()
+
+            source_count = await _count_event_sources(session, match_res.event_id)
+            verification_status = resolve_verification_status(result.verification_status, source_count)
+            payload_dict["verification_status_resolved"] = verification_status
 
             if match_res.is_new_event:
                 session.add(
@@ -278,25 +322,36 @@ async def process_collected_articles(
                                 "added_at": (article.collected_at or datetime.now(UTC)).isoformat(),
                             }],
                         },
-                        verification_status=result.verification_status,
-                        model_name=ai_provider.model_name,
-                        prompt_version=PROMPT_VERSION,
-                    )
+                                            verification_status=verification_status,
+                    model_name=ai_provider.model_name,
+                    prompt_version=PROMPT_VERSION,
+                )
+            )
+            else:
+                # A second source corroborates an existing event: refresh its label.
+                await session.execute(
+                    update(Summary)
+                    .where(Summary.event_id == match_res.event_id)
+                    .values(verification_status=verification_status)
                 )
 
             article.status = "summarized"
 
-            if match_res.is_new_event or not settings.immediate_publish_only_new_events:
+            should_publish = match_res.is_new_event or not settings.immediate_publish_only_new_events
+            if should_publish and result.importance >= settings.immediate_publish_min_importance:
                 immediate_analysis = ImmediateAnalysis.from_analysis_result(
                     result, source_name, article.original_url
                 )
+                immediate_analysis.verification_status = verification_status
+                # High-impact single-source stories go to the admin chat only (fake-news guard).
+                immediate_admin_only = result.importance >= 4 and source_count < 2
 
         processed_count += 1
         await session.commit()
 
         if immediate_analysis is not None:
             if immediate_published < settings.immediate_publish_max_per_run:
-                await _publish_immediate_safely(immediate_analysis)
+                await _publish_immediate_safely(immediate_analysis, admin_only=immediate_admin_only)
                 immediate_published += 1
             else:
                 logger.info(

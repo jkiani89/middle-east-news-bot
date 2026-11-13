@@ -442,16 +442,29 @@ async def publish_immediate_analysis(
     channel_id: str | None = None,
     delay_seconds: float | None = None,
     base_backoff: float = 1.0,
+    admin_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Publish one analyzed article to the channel immediately after it is stored.
 
     Only the Persian headline and summary are sent (never the raw article), and
     FloodWait/network errors are handled by ``send_telegram_message_resilient``.
     In dry-run mode nothing is sent and a ``[DRY RUN]`` block is printed instead.
+
+    ``admin_only`` routes a high-impact single-source story to the admin chat
+    instead of the public channel, so unverified claims are never broadcast.
     """
     effective_dry_run = settings.immediate_publish_dry_run if dry_run is None else dry_run
-    target_channel = channel_id or settings.telegram_channel_id
-    text = format_immediate_analysis(analysis)
+    if admin_only:
+        target_channel = str(settings.telegram_admin_chat_id)
+        prefix = (
+            "🔒 <b>پیش‌نمایش ادمین — خبر تک‌منبعی با اهمیت بالا</b>\n"
+            "<i>این مورد برای بازبینی ارسال شد و در کانال عمومی منتشر نشد.</i>\n\n"
+        )
+    else:
+        target_channel = channel_id or settings.telegram_channel_id
+        prefix = ""
+    text = prefix + format_immediate_analysis(analysis)
+    delivery_type = "admin" if admin_only else "immediate"
     chunks = split_text(text, limit=3900)
     pause = settings.immediate_publish_delay_seconds if delay_seconds is None else delay_seconds
 
@@ -460,14 +473,15 @@ async def publish_immediate_analysis(
         print(" TELEGRAM IMMEDIATE PUBLISHER [DRY RUN]")
         print("=" * 80)
         print(f"Headline: {analysis.headline_fa}")
-        print(f"Target Channel: {target_channel}")
+        print(f"Delivery: {delivery_type}")
+        print(f"Target: {target_channel}")
         print(f"Total Text Length: {len(text)} characters")
         print(f"Total Chunks: {len(chunks)}")
         print("-" * 80)
         simulated: list[dict[str, Any]] = []
         for idx, chunk in enumerate(chunks, 1):
-            print(f"Chunk #{idx} ({len(chunk)} chars) -> Would send to channel {target_channel}")
-            simulated.append({"chat_id": target_channel, "message_id": 2000 + idx, "type": "immediate"})
+            print(f"Chunk #{idx} ({len(chunk)} chars) -> Would send to {delivery_type} {target_channel}")
+            simulated.append({"chat_id": target_channel, "message_id": 2000 + idx, "type": delivery_type})
         print("=" * 80)
         return simulated
 
@@ -488,7 +502,7 @@ async def publish_immediate_analysis(
                 text=chunk,
                 base_backoff=base_backoff,
             )
-            sent.append({"chat_id": target_channel, "message_id": msg.message_id, "type": "immediate"})
+            sent.append({"chat_id": target_channel, "message_id": msg.message_id, "type": delivery_type})
             if pause > 0 and idx < len(chunks) - 1:
                 await asyncio.sleep(pause)
         return sent
