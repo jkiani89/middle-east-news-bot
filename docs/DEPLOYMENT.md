@@ -61,6 +61,26 @@ To run the workflows securely, add your credentials as **Repository Secrets**:
 | `TELEGRAM_CHANNEL_ID` | Telegram Channel ID (must start with `-100`) | `-1001234567890` |
 | `TELEGRAM_ADMIN_CHAT_ID` | Your numeric Telegram user ID for admin alerts | `987654321` |
 
+### Optional Tuning Variables
+
+Set these as **Repository Variables** (Settings → Secrets and variables → Actions → Variables) or leave them at their defaults:
+
+| Variable | Default | Description |
+|---|---|---|
+| `GEMINI_PRIMARY_MODEL` | `gemini-3.8-flash` | Primary analysis model |
+| `GEMINI_FALLBACK_MODEL` | `gemini-3.5-flash-lite` | Fallback model used on 429/503 |
+| `GEMINI_ENABLE_FALLBACK` | `true` | Enable the fallback model |
+| `MAX_ARTICLES_PER_BATCH` | `15` in `cron.yml` | Articles collected per feed and processed per run |
+| `AI_MAX_ATTEMPTS` | `3` | Retry budget per failed article before it is left alone |
+| `AI_MAX_CONSECUTIVE_FAILURES` | `5` | Circuit breaker: stop the batch after this many transient AI failures in a row |
+| `IMMEDIATE_PUBLISH_ENABLED` | `true` | Publish each analyzed article to the channel right after it is stored |
+| `IMMEDIATE_PUBLISH_ONLY_NEW_EVENTS` | `true` | Skip merged/duplicate events to avoid channel spam |
+| `IMMEDIATE_PUBLISH_MAX_PER_RUN` | `10` | Cap on instant messages per batch; the rest wait for the daily report |
+| `IMMEDIATE_PUBLISH_DELAY_SECONDS` | `2` | Pause between instant messages to avoid Telegram FloodWait |
+| `POSTGRES_SSLROOTCERT` | empty | Path to a CA bundle (e.g. Aiven `ca.pem`); upgrades `sslmode=require` to real certificate validation |
+
+> `DRY_RUN_DAILY_REPORT=true` (workflow input) suppresses **both** the daily report and the instant per-article messages, and only prints `[DRY RUN]` blocks into the logs. Use it for any test dispatch.
+
 ### Required Backup Secrets (for `backup.yml`)
 
 | Secret Name | Description | Example Value |
@@ -85,6 +105,7 @@ To run the workflows securely, add your credentials as **Repository Secrets**:
   3. Executes `scripts/run_once.py`:
      - Synchronizes active feeds from `editorial/sources.json`.
      - Collects and analyzes new articles.
+     - Publishes each analyzed article to the channel immediately after it is stored (capped per run, paced to avoid FloodWait, and skipped entirely in dry-run).
      - Checks if current time is between 8:00 - 9:00 AM Tehran; if so, generates and publishes the daily report (with built-in deduplication so it never sends twice on the same day).
      - Cleans up old request logs.
 

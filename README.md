@@ -57,6 +57,25 @@ DAILY_REPORT_MINUTE=0
 - تطبیق رویدادها در این اسکلت محافظه‌کارانه است؛ ادغام اشتباه خبرها باید در تست‌ها بررسی شود.
 - متن کامل منابع را بدون بررسی مجوز بازنشر نکن؛ لینک و انتساب منبع را نگه دار.
 
+## انتشار لحظه‌ای در تلگرام
+هر خبری که تحلیل شود، بلافاصله پس از ذخیره در دیتابیس (فقط تیتر و خلاصه فارسی، نه متن خام) به کانال ارسال می‌شود و هم‌زمان در گزارش روزانه نیز باقی می‌ماند.
+
+```env
+IMMEDIATE_PUBLISH_ENABLED=true
+IMMEDIATE_PUBLISH_ONLY_NEW_EVENTS=true   # رویدادهای ادغام‌شده پیام تکراری نمی‌سازند
+IMMEDIATE_PUBLISH_MAX_PER_RUN=10
+IMMEDIATE_PUBLISH_DELAY_SECONDS=2
+```
+
+`DRY_RUN_DAILY_REPORT=true` هم گزارش روزانه و هم ارسال لحظه‌ای را در حالت آزمایشی نگه می‌دارد و هیچ پیامی به تلگرام نمی‌فرستد.
+
+## تنظیمات پایداری پردازش
+```env
+AI_MAX_ATTEMPTS=3                  # سقف تلاش مجدد برای هر مقاله ناموفق
+AI_MAX_CONSECUTIVE_FAILURES=5      # توقف بچ پس از این تعداد خطای گذرای متوالی
+MAX_ARTICLES_PER_BATCH=15          # مقدار پیشنهادی برای اجرای ابری
+```
+
 ## Deployment
 
 This project is designed to run on **zero-cost infrastructure with no credit card required** ($0/month):

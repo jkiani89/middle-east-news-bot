@@ -4,6 +4,36 @@
 
 ---
 
+## [2026-11-12] استقرار تولیدی، سه باگ بحرانی، پایداری پردازش و ارسال لحظه‌ای (Phases J, K, L)
+
+### ۱. استقرار واقعی روی GitHub Actions + Aiven
+- ورک‌فلو `cron.yml` روی مخزن عمومی و دیتابیس Aiven اجرا و سبز شد (≈۳۳ دقیقه برای ۱۵ مقاله + گزارش).
+- سه شکست متوالی پیش از سبز شدن، هر کدام یک باگ واقعی را آشکار کرد:
+  1. **`TypeError: connect() got an unexpected keyword argument 'sslmode'`** — asyncpg پارامترهای libpq را نمی‌شناسد؛ DSN پاک‌شده به asyncpg و DSN اصلی به psycopg داده می‌شود (J-7).
+  2. **`SSLCertVerificationError: self-signed certificate in certificate chain`** — Aiven زنجیره را به CA خصوصی خود می‌بندد و `ssl=True` اعتبارسنجی کامل می‌خواست. نگاشت به libpq وفادار شد (J-8): `require` → `CERT_NONE`، `verify-ca` → `CERT_REQUIRED` بدون hostname، `verify-full` → `CERT_REQUIRED` + hostname. با تنظیم `POSTGRES_SSLROOTCERT` روی فایل `ca.pem` آویِن، همان `require` به اعتبارسنجی واقعی ارتقا می‌یابد؛ بدون تغییر کد.
+  3. **`cancelled` در سقف ۲۰ دقیقه** — ۷۲ خطای ۵۰۳ گوگل و تأخیر تا ۱۴۲ ثانیه برای هر فراخوانی، صف ۵۰ مقاله‌ای را در ۲۰ دقیقه تمام نمی‌کرد. سقف جاب به ۴۵ دقیقه و `MAX_ARTICLES_PER_BATCH` برای ابر به ۱۵ کاهش یافت.
+
+### ۲. فاز K — پایداری پردازش (D-1 تا D-4)
+- **D-1:** `commit` به‌ازای هر مقاله در `process_collected_articles`. پیش از این یک `commit` در انتهای حلقه بود و cancel شدن جاب، ۲۲ تحلیل موفق (و سهمیه مصرف‌شده) را کاملاً دور می‌ریخت.
+- **D-2:** ستون‌های `attempt_count` و `last_attempt_at` (مایگریشن `a7d3c1e9f2b4`)؛ مقالات `failed` تا `AI_MAX_ATTEMPTS` دوباره انتخاب می‌شوند و بعد از آن رها می‌شوند.
+- **D-3:** Circuit Breaker با `AI_MAX_CONSECUTIVE_FAILURES`؛ با ۵ خطای گذرای متوالی بچ متوقف می‌شود، `JobLog.status = stopped_unavailable` ثبت می‌شود و مقالات باقی‌مانده `collected` می‌مانند.
+- **D-4:** اگر مدل JSON بریده/نامعتبر برگرداند، یک بار با `purpose='schema_repair'` تلاش مجدد می‌شود.
+- **نتیجه سنجش واقعی:** در اجرای نهایی ۲۹ خطای ۵۰۳، ۲۷ خطای ۴۲۹ و ۵ خطای `Invalid JSON` رخ داد؛ هر ۵ مورد JSON با `schema_repair` نجات یافت و **صفر** مقاله به‌صورت نهایی `failed` ثبت شد (اجرای قبل از فاز K: ۱۱ مقاله failed).
+
+### ۳. منابع جدید و ارسال لحظه‌ای
+- ۷ منبع اضافه شد (Al Jazeera Arabic، Foreign Affairs، Reuters، Associated Press، NYT، Washington Post، Euronews). فید رسمی AP (403) و Euronews (406) در دسترس نبودند و با آینه‌های زنده جایگزین شدند (Google News روی دامنه apnews.com و فید FeedBurner یورونیوز)؛ دلیل در `reliability_note` هر رکورد ثبت شد.
+- ارسال لحظه‌ای: `ImmediateAnalysis` + `publish_immediate_analysis` و فراخوانی امن بعد از هر commit. پیش‌فرض فقط رویدادهای تازه (`IMMEDIATE_PUBLISH_ONLY_NEW_EVENTS=true`)، سقف ۱۰ پیام در هر اجرا، فاصله ۲ ثانیه‌ای، و بلعیدن خطای تلگرام تا هرگز کار ذخیره‌شده را برنگرداند. `DRY_RUN_DAILY_REPORT=true` حالا ارسال لحظه‌ای را هم خاموش می‌کند.
+
+### ۴. امنیت پیش از عمومی‌سازی مخزن
+- کل تاریخچه گیت اسکن شد: هیچ `.env` واقعی، `data/gemini_keys.db`، `scratch/`، فایل `pem/key`، میزبان Aiven یا توکنی کامیت نشده بود؛ تنها رشته‌های شبیه کلید، placeholderهای ۱۴ کاراکتری داخل `.env.example` بودند.
+- `.gitignore` سخت‌تر شد: `.env.*` مسدود و فقط `!.env.example` مجاز است.
+
+### ۵. بدهی فنی باز
+- **زمان اجرا ~۳۳ دقیقه:** `fetch_feed` برای همه‌ی آیتم‌های فید متن کامل را با Trafilatura دانلود می‌کند (۳۵۵ استخراج در آخرین اجرا). تسک آینده: جمع‌آوری فقط متادیتا و استخراج متن کامل صرفاً برای مقالات انتخابی مرحله پردازش، تا زمان اجرا و فشار روی منابع کاهش یابد.
+- **گواهی SSL:** اگر بخواهیم `require` واقعاً اعتبارسنجی کند، باید `ca.pem` آویِن در Secret `POSTGRES_SSLROOTCERT` ذخیره شود.
+
+---
+
 ## [2026-11-10] تکمیل فاز ۸: زمان‌بندی، وظایف خودکار، رفع دو باگ طراحی Pre-Flight و بازپردازش تجربی (Phase 8 Scheduler & Production Automation)
 
 ### ۱. دستاوردها و نتایج مرحله ۰ (Reprocess Mock Articles & Live Fallback Validation)
