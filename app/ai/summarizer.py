@@ -5,13 +5,23 @@ import json
 import logging
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.ai.provider import AIProviderError, BaseAIProvider, get_ai_provider
 
 logger = logging.getLogger(__name__)
 
 MAX_SCHEMA_REPAIR_ATTEMPTS = 1
+
+# Language guard thresholds for Persian output fields (M-2b / Phase N).
+# A Persian-script ratio below this means the field is (partly) English/other script.
+PERSIAN_MIN_SCRIPT_RATIO = 0.70
+# Arabic-only letters never used in Persian orthography: ي ك ة ى
+ARABIC_ONLY_LETTERS = frozenset("\u064a\u0643\u0629\u0649")
+# Share of Arabic-only letters tolerated inside Persian text (e.g. a quoted proper noun).
+ARABIC_ONLY_MAX_RATIO = 0.02
+# Fields shorter than this are not language-classifiable (e.g. a single acronym).
+PERSIAN_MIN_LETTERS = 5
 
 # 10 Strict Category Codes (EDITORIAL_POLICY.md & System Guidelines)
 CategoryCode = Literal[
@@ -35,6 +45,18 @@ VerificationStatus = Literal[
     "disputed",             # مورد مناقشه طرفین
     "false",                # نادرست یا ردشده مستند
 ]
+
+
+def _persian_ratios(text: str) -> tuple[float, float, int]:
+    """Return (Persian-script ratio, Arabic-only ratio, letter count) for a text field."""
+    letters = [ch for ch in text if ch.isalpha()]
+    if not letters:
+        return 0.0, 0.0, 0
+    persian = [ch for ch in letters if "\u0600" <= ch <= "\u06ff"]
+    arabic_only = sum(1 for ch in persian if ch in ARABIC_ONLY_LETTERS)
+    script_ratio = len(persian) / len(letters)
+    arabic_ratio = arabic_only / len(persian) if persian else 0.0
+    return script_ratio, arabic_ratio, len(letters)
 
 
 class NewsAnalysis(BaseModel):
@@ -95,6 +117,30 @@ class NewsAnalysis(BaseModel):
         description="Verification rating adhering strictly to the 5 editorial policy statuses."
     )
 
+    @field_validator("headline_fa", "summary_fa")
+    @classmethod
+    def _enforce_persian_output(cls, value: str) -> str:
+        """Reject non-Persian output so the model has to regenerate it in Persian.
+
+        Guards against the model echoing source-language text (e.g. an Arabic source
+        returning an Arabic headline). A ValidationError here triggers the existing
+        schema-repair retry, which re-asks the model with the language requirement.
+        """
+        script_ratio, arabic_ratio, letter_count = _persian_ratios(value)
+        if letter_count < PERSIAN_MIN_LETTERS:
+            return value
+        if script_ratio < PERSIAN_MIN_SCRIPT_RATIO:
+            raise ValueError(
+                f"text is not Persian (Persian-script ratio {script_ratio:.2f} < "
+                f"{PERSIAN_MIN_SCRIPT_RATIO}); translate it into fluent Persian"
+            )
+        if arabic_ratio > ARABIC_ONLY_MAX_RATIO:
+            raise ValueError(
+                f"text uses Arabic orthography (ratio {arabic_ratio:.2f} > {ARABIC_ONLY_MAX_RATIO}); "
+                "rewrite it in Persian letters (ی/ک instead of ي/ك)"
+            )
+        return value
+
 
 EDITORIAL_SYSTEM_PROMPT = """
 نقش تو دستیار تحلیل‌گر ارشد و بی‌طرف اخبار خاورمیانه برای یک سامانه اطلاعاتی هوشمند است.
@@ -133,6 +179,11 @@ EDITORIAL_SYSTEM_PROMPT = """
 ۸. زبان فیلدهای ساخت‌یافته:
    مقادیر countries و actors را همیشه به فارسی بنویس (مثلاً «ایران»، «ایالات متحده آمریکا»،
    «سازمان ملل متحد»)، حتی اگر متن منبع انگلیسی باشد.
+
+۹. الزام مطلق زبان فارسی (Language Enforcement):
+   تمام خروجی‌ها (تیتر و خلاصه) باید به زبان فارسی روان و با حروف فارسی (مانند ی و ک فارسی، نه عربی) نوشته شوند.
+   حتی اگر متن منبع به زبان عربی یا انگلیسی باشد، باید به فارسی ترجمه شوند.
+   استفاده از حروف عربی «ي»، «ك»، «ة» و «ى» در headline_fa و summary_fa ممنوع است.
 """
 
 
@@ -231,7 +282,9 @@ async def analyze_article(
             f"Do not invent new facts. Return only valid JSON.\n"
             f"Schema requirements: categories must only contain subsets of [POL, MIL, DIP, SEC, TER, ECO, ENE, MAR, INT, HUM]. "
             f"verification_status must be one of [confirmed, partially_confirmed, unconfirmed, disputed, false]. "
-            f"importance must be integer between 1 and 5.\n"
+            f"importance must be integer between 1 and 5. "
+            f"headline_fa and summary_fa must be fluent Persian written with Persian letters, "
+            f"even if the source text is Arabic or English.\n"
             f"Raw invalid data: {data}\nValidation error: {exc}"
         )
         repaired_data = await ai_provider.generate_json(

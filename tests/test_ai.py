@@ -66,6 +66,49 @@ def test_pydantic_strict_validation_valid_payload():
     assert analysis.importance == 3
 
 
+def test_persian_language_guard_accepts_persian_output():
+    data = {
+        "is_relevant": True,
+        "event_title": "Naval Patrol in Strait of Hormuz",
+        "headline_fa": "گشت مشترک دریایی در تنگه هرمز انجام شد",
+        "summary_fa": "طبق بیانیه رسمی، گشت‌های دریایی برای تأمین امنیت دریانوردی مستقر شدند.",
+        "countries": ["عمان"],
+        "importance": 3,
+        "verification_status": "confirmed",
+    }
+    analysis = NewsAnalysis.model_validate(data)
+    assert analysis.headline_fa == data["headline_fa"]
+
+
+def test_persian_language_guard_rejects_arabic_output():
+    # Regression: an Arabic-language source leaked an Arabic headline into the channel.
+    data = {
+        "is_relevant": True,
+        "event_title": "EU commission initiative",
+        "headline_fa": "المفوضية الأوروبية تعتزم دراسة مبادرة شعبية لتعليق اتفاقية الشراكة",
+        "summary_fa": "أعلنت المفوضية الأوروبية اليوم أنها ستدرس مبادرة شعبية تهدف إلى تعليق اتفاقية الشراكة",
+        "countries": ["إسرائيل"],
+        "importance": 4,
+        "verification_status": "unconfirmed",
+    }
+    with pytest.raises(ValidationError, match="Arabic orthography"):
+        NewsAnalysis.model_validate(data)
+
+
+def test_persian_language_guard_rejects_english_output():
+    data = {
+        "is_relevant": True,
+        "event_title": "Naval Patrol",
+        "headline_fa": "Joint naval patrol conducted in the Strait of Hormuz today",
+        "summary_fa": "Officials said the patrols aim to secure international shipping lanes in the region.",
+        "countries": ["Oman"],
+        "importance": 3,
+        "verification_status": "confirmed",
+    }
+    with pytest.raises(ValidationError, match="not Persian"):
+        NewsAnalysis.model_validate(data)
+
+
 def test_pydantic_strict_validation_rejects_invalid_category():
     invalid_data = {
         "is_relevant": True,
