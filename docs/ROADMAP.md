@@ -266,3 +266,20 @@ flowchart LR
 - **وضعیت واقعی:**
   - کد پیاده‌سازی: ✅ (کامیت `912f60f`)
   - تأیید مستقل: ✅ (2026-11-13)
+
+---
+
+### فاز Q — بهینه‌سازی مسیر مدل: تک‌تلاش، Timeout و Circuit Breaker (Phase Q — Model Path Optimization) 🟢 [تکمیل‌شده]
+
+- **اهداف محقق‌شده:**
+  - `RotatorConfig(max_retries=1)` در `app/ai/provider.py`: تلاش سوم روی مدلِ در دسترس‌نیست فقط تأخیر اضافه می‌کرد.
+  - سقف زمانی صریح برای هر فراخوانی مدل: تنظیم جدید `ai_request_timeout_seconds` (پیش‌فرض ۳۰ ثانیه) که `rotator.execute` را در `asyncio.wait_for` می‌پیچد؛ در تولید دو فراخوانی ۷۲۲ و ۹۴۱ ثانیه بلاک شده بودند.
+  - Circuit breaker در سطح مدل: پس از ۲ شکست متوالی مدل اصلی، بقیه‌ی همان اجرا مستقیماً از fallback استفاده می‌کند (`PRIMARY_FAILURE_THRESHOLD = 2`).
+  - `TimeoutError` به خطاهای retryable اضافه شد تا مسیر fallback در timeout هم فعال شود.
+  - پیش‌فرض‌های `GEMINI_PRIMARY_MODEL`/`GEMINI_FALLBACK_MODEL` در `cron.yml` به دو مدل Lite با سهمیه‌ی ۵۰۰ RPD تغییر کرد تا نبودِ متغیر مخزن، مدل مرده را برنگرداند.
+- **معیار پذیرش (محقق‌شده):**
+  - ۷ تست جدید در `tests/test_model_circuit_breaker.py`؛ از جمله: پس از دو شکست، فراخوانی سوم مستقیماً fallback (`calls == [P, F, P, F, F]`).
+  - `222 passed, 14 skipped`، `ruff` پاک، CI سبز روی `4b629c1` (run `43409659150`).
+- **وضعیت واقعی:**
+  - کد پیاده‌سازی: ✅ (کامیت‌های `0e8125d`، `4b629c1`)
+  - تأیید مستقل: ✅ (2026-11-13)

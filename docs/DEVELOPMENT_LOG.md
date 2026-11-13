@@ -748,3 +748,32 @@ ruff باید از ابتدای پروژه در CI فعال باشد. اضافه
 
 ### بدهی باقی‌مانده
 Hydration و گارد زبان هنوز در اجرای زنده تحریک نشده‌اند؛ اولین صف متشکل از مقالات تازه‌ی `rss_summary` و اولین خروجی عربی، آن‌ها را در عمل می‌سنجد.
+
+---
+
+## [2026-11-13] فاز Q — بهینه‌سازی مسیر مدل (Retry، Timeout، Circuit Breaker)
+
+### زمینه
+تحلیل لاگ‌های دو اجرای `43387266312` و `43389312433` نشان داد:
+- `gemini-3.8-flash` در ۸۷ تلاش **صفر** پاسخ موفق داشت (۵۵×503 با پیام «This model is currently experiencing high demand» و ۳۲×429).
+- پیام 429 خودش سقف را افشا کرد: `limit: 20 ... Generate content requests per day limit exceeded on Free Tier` برای فلش؛ در همان بازه `gemini-3.5-flash-lite` ۲۹ از ۲۹ فراخوانی موفق بود.
+- سهمیه per project است، نه per key؛ بنابراین ۹ کلید یک پروژه سهمیه‌ی اضافه نمی‌دهد.
+- هر مقاله ~۲ دقیقه صرف تلاش روی مدل مرده می‌کرد؛ دو فراخوانی SDK به‌تنهایی ۷۲۲ و ~۹۴۱ ثانیه بلاک شده بودند.
+
+### اقدامات (کامیت `0e8125d`)
+- `RotatorConfig(max_retries=1)`.
+- `ai_request_timeout_seconds = 30` + `_execute_model()` که `rotator.execute` را در `asyncio.wait_for` می‌پیچد.
+- `_record_primary_failure()` و `PRIMARY_FAILURE_THRESHOLD = 2`: پس از دو شکست متوالی، اجرا مستقیم از fallback استفاده می‌کند.
+- `TimeoutError` در `is_retryable_ai_error` تا timeout هم به fallback منتهی شود.
+- `cron.yml`: پیش‌فرض هر دو متغیر مدل به Lite تغییر کرد (متغیرهای مخزن از قبل با `vars.` پاس داده می‌شدند).
+
+### نتایج (کامیت `4b629c1`)
+- `tests/test_model_circuit_breaker.py`: ۷ تست، از جمله ترتیب فراخوانی `[primary, fallback, primary, fallback, fallback]`.
+- `pytest -q`: `222 passed, 14 skipped`؛ `ruff check app tests scripts`: All checks passed.
+- CI سبز روی `4b629c1` (run `43409659150`).
+
+### بدهی باقی‌مانده
+اثر عددی فاز Q هنوز در اجرای زنده اندازه‌گیری نشده است؛ اجرای بعدی با `GEMINI_PRIMARY_MODEL=gemini-3.5-flash-lite` و `GEMINI_FALLBACK_MODEL=gemini-3.1-flash-lite` زمان واقعی را مشخص می‌کند. همچنین thread داخلی SDK با `wait_for` لغو نمی‌شود و در پس‌زمینه تمام می‌شود (نتیجه‌اش دور ریخته می‌شود).
+
+### درس
+«Fallback» بدون «circuit breaker» فقط یک تلاش دوباره‌ی گران است: وقتی مدلی ساعت‌ها 503 می‌دهد، هر مقاله هزینه‌ی کامل شکست را می‌پردازد. سقف زمانی و قطع‌کننده در سطح مدل، همان‌قدر مهم‌اند که خودِ fallback.
