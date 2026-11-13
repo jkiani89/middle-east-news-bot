@@ -44,7 +44,13 @@ class NewsAnalysis(BaseModel):
 
     is_relevant: bool = Field(
         ...,
-        description="Whether the article relates to Middle East political, military, security, or humanitarian developments."
+        description=(
+            "Whether the article is a Middle East story: the event happens in a Middle East country "
+            "(Iran, Israel, Palestine/Gaza, Egypt, Saudi Arabia, UAE, Qatar, Turkey, Iraq, Syria, Lebanon, "
+            "Yemen, Jordan, Kuwait, Oman, Bahrain) or in one of its strategic waterways (Hormuz, Bab al-Mandeb, "
+            "Red Sea, Persian Gulf, Suez), or a Middle East state/actor is a main party of it. "
+            "Stories about the Americas, Europe or East Asia with no Middle East party are NOT relevant."
+        )
     )
     is_injection_attempt: bool = Field(
         default=False,
@@ -68,11 +74,11 @@ class NewsAnalysis(BaseModel):
     )
     countries: list[str] = Field(
         default_factory=list,
-        description="Countries directly involved or mentioned in the event."
+        description="Countries directly involved or mentioned in the event. Always written in Persian."
     )
     actors: list[str] = Field(
         default_factory=list,
-        description="Key organizations, governments, or military entities involved."
+        description="Key organizations, governments, or military entities involved. Always written in Persian."
     )
     location: str | None = Field(
         default=None,
@@ -116,6 +122,17 @@ EDITORIAL_SYSTEM_PROMPT = """
 
 ۶. وضعیت‌های مجاز راستی‌آزمایی (verification_status):
    فقط یکی از ۵ مقدار: confirmed, partially_confirmed, unconfirmed, disputed, false.
+
+۷. دامنه جغرافیایی (Relevance):
+   خبر را فقط وقتی "is_relevant": true قرار بده که یا رویداد در یکی از کشورهای خاورمیانه
+   (ایران، اسرائیل، فلسطین/غزه، مصر، عربستان، امارات، قطر، ترکیه، عراق، سوریه، لبنان، یمن،
+   اردن، کویت، عمان، بحرین) یا در یکی از آبراه‌های راهبردی (هرمز، باب‌المندب، دریای سرخ،
+   خلیج فارس، سوئز) رخ داده باشد، یا یک دولت/بازیگر منطقه‌ای طرف اصلی آن باشد.
+   خبرهای مربوط به آمریکا، اروپا یا آسیای شرقی که هیچ طرف منطقه‌ای ندارند مرتبط نیستند.
+
+۸. زبان فیلدهای ساخت‌یافته:
+   مقادیر countries و actors را همیشه به فارسی بنویس (مثلاً «ایران»، «ایالات متحده آمریکا»،
+   «سازمان ملل متحد»)، حتی اگر متن منبع انگلیسی باشد.
 """
 
 
