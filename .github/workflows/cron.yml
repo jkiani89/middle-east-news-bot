@@ -32,8 +32,10 @@ jobs:
       APP_ENV: production
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      GEMINI_PRIMARY_MODEL: ${{ vars.GEMINI_PRIMARY_MODEL || 'gemini-3.8-flash' }}
-      GEMINI_FALLBACK_MODEL: ${{ vars.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash-lite' }}
+      # Free-tier gemini-3.8-flash answers 503 for hours and allows only 20 requests
+      # per day, so the default when the repository variable is unset is a Lite model.
+      GEMINI_PRIMARY_MODEL: ${{ vars.GEMINI_PRIMARY_MODEL || 'gemini-3.5-flash-lite' }}
+      GEMINI_FALLBACK_MODEL: ${{ vars.GEMINI_FALLBACK_MODEL || 'gemini-3.1-flash-lite' }}
       GEMINI_ENABLE_FALLBACK: ${{ vars.GEMINI_ENABLE_FALLBACK || 'true' }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
