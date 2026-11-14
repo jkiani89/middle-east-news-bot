@@ -13,7 +13,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.summarizer import passes_persian_guard
@@ -224,9 +224,15 @@ async def fetch_report_items(
         .where(Article.status.in_(["flagged_for_review", "rejected"]))
     )
 
+    # An event belongs to a slot when its summary was produced in that window, in addition
+    # to the original collection timestamp. A backlog makes the two differ by many hours:
+    # anchored only on collection, a story analyzed at 10:00 from a 23:00 article was
+    # dated a day back and silently fell out of every slot.
     conditions = [
-        Event.first_seen_at >= window_start,
-        Event.first_seen_at < window_end,
+        or_(
+            and_(Summary.created_at >= window_start, Summary.created_at < window_end),
+            and_(Event.first_seen_at >= window_start, Event.first_seen_at < window_end),
+        ),
         Event.importance >= min_importance,
         Event.id.not_in(flagged_subquery),
     ]
