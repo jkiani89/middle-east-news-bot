@@ -78,10 +78,11 @@ class Settings(BaseSettings):
     collection_interval_minutes: int = 60
     daily_report_hour: int = 8
     daily_report_minute: int = 0
-    # Briefing hours in local time (Asia/Tehran). Each slot reports on the window
-    # since the previous slot, so coverage stays gapless and nothing repeats.
-    report_slots: str = "8,14,20"
-    max_articles_per_batch: int = 50
+    # Briefing hours in local time (Asia/Tehran). Two slots of twelve hours each: the
+    # morning bulletin covers 20:00-08:00 and the evening one 08:00-20:00, so coverage
+    # stays gapless and nothing repeats.
+    report_slots: str = "8,20"
+    max_articles_per_batch: int = 30
     ai_max_attempts: int = 3  # attempts per article before a transient failure is final
     ai_max_consecutive_failures: int = 5  # stop a batch after this many transient AI errors in a row
     ai_request_timeout_seconds: int = 30  # hard ceiling for a single model call (SDK retries can hang for minutes)

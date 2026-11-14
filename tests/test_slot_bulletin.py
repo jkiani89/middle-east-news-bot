@@ -44,22 +44,20 @@ def _item(event_id: int, topic_key: str | None, topic_fa: str, importance: int =
 
 
 def test_slot_hours_come_from_settings():
-    assert report_slot_hours() == (8, 14, 20)
+    assert report_slot_hours() == (8, 20)
     assert slot_label(8) == "08:00"
 
 
 def test_slot_windows_are_gapless_and_do_not_overlap():
     rep = date(2026, 11, 14)
     _, start8, end8 = report_window(rep, 8)
-    _, start14, end14 = report_window(rep, 14)
     _, start20, end20 = report_window(rep, 20)
 
-    assert end8 - start8 == timedelta(hours=12)  # previous slot was 20:00
-    assert end14 - start14 == timedelta(hours=6)
-    assert end20 - start20 == timedelta(hours=6)
-    assert start14 == end8
-    assert start20 == end14
-    assert end14.hour == 14
+    # Two twelve-hour bulletins: the morning one starts where last night's ended.
+    assert end8 - start8 == timedelta(hours=12)
+    assert end20 - start20 == timedelta(hours=12)
+    assert start20 == end8
+    assert end8.hour == 8 and end20.hour == 20
 
 
 def test_legacy_window_is_unchanged_without_a_slot():
@@ -71,7 +69,8 @@ def test_legacy_window_is_unchanged_without_a_slot():
 def test_current_slot_hour_is_the_latest_due_slot():
     tz = ZoneInfo(settings.timezone)
     assert current_slot_hour(datetime(2026, 11, 14, 9, 15, tzinfo=tz)) == 8
-    assert current_slot_hour(datetime(2026, 11, 14, 14, 5, tzinfo=tz)) == 14
+    assert current_slot_hour(datetime(2026, 11, 14, 14, 5, tzinfo=tz)) == 8
+    assert current_slot_hour(datetime(2026, 11, 14, 19, 59, tzinfo=tz)) == 8
     assert current_slot_hour(datetime(2026, 11, 14, 23, 0, tzinfo=tz)) == 20
     assert current_slot_hour(datetime(2026, 11, 14, 3, 0, tzinfo=tz)) == 20
 
@@ -92,9 +91,9 @@ def test_slot_bulletin_has_topic_sections_and_one_footer():
     sections = group_items_by_topic(
         [_item(1, "ir", "ایران و مذاکرات"), _item(2, "ye", "یمن و دریای سرخ")]
     )
-    text = format_slot_bulletin(date(2026, 11, 14), sections, 14, {"min_importance": 2})
+    text = format_slot_bulletin(date(2026, 11, 14), sections, 20, {"min_importance": 2})
 
-    assert "نوبت: 14:00" in text
+    assert "نوبت: 20:00" in text
     assert "ایران و مذاکرات" in text
     assert "یمن و دریای سرخ" in text
     assert text.count("یادداشت تحریریه") == 1
@@ -116,7 +115,7 @@ class _FakeSession:
 @pytest.mark.asyncio
 async def test_already_published_slot_is_not_sent_again():
     report = SimpleNamespace(
-        content={"bulletins": {"14:00": {"status": "published", "message_ids": [5]}}}
+        content={"bulletins": {"20:00": {"status": "published", "message_ids": [5]}}}
     )
     session = _FakeSession(report)
 
@@ -124,7 +123,7 @@ async def test_already_published_slot_is_not_sent_again():
          patch("app.scheduler.jobs.publish_report", new_callable=AsyncMock) as publish:
         gen.return_value = (date(2026, 11, 14), [], "text", {})
 
-        sent = await _publish_slot_briefing(session, 14, None, dry_run=False)
+        sent = await _publish_slot_briefing(session, 20, None, dry_run=False)
 
     assert sent == 0
     assert publish.await_count == 0

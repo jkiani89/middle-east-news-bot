@@ -2,11 +2,11 @@ name: Scheduled Batch Runner
 
 on:
   schedule:
-    # Run every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)
+    # Collect every 6 hours (00:00, 06:00, 12:00, 18:00 UTC) so the queue is ready
+    # before each briefing, even though only two briefings are published per day.
     - cron: '0 */6 * * *'
-    # Scheduled briefings in Tehran time (UTC+3:30): 08:00, 14:00 and 20:00
+    # Briefings in Tehran time (UTC+3:30): 08:00 and 20:00, each covering 12 hours.
     - cron: '30 4 * * *'
-    - cron: '30 10 * * *'
     - cron: '30 16 * * *'
   workflow_dispatch:
     inputs:
@@ -21,7 +21,7 @@ on:
         default: false
         type: boolean
       slot_hour:
-        description: 'Briefing slot to publish (8, 14 or 20); empty = the slot that is now due'
+        description: 'Briefing slot to publish (8 or 20); empty = the slot that is now due'
         required: false
         default: ''
         type: string
@@ -47,14 +47,14 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
       TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
-      MAX_ARTICLES_PER_BATCH: '15'
+      MAX_ARTICLES_PER_BATCH: '30'
       TIMEZONE: 'Asia/Tehran'
       DAILY_REPORT_HOUR: '8'
       FORCE_DAILY_REPORT: ${{ inputs.force_daily_report || 'false' }}
       DRY_RUN_DAILY_REPORT: ${{ inputs.dry_run_daily_report || 'false' }}
-      # Publish the briefing of the slot that just came due (08:00/14:00/20:00 Tehran)
+      # Publish the briefing of the slot that just came due (08:00/20:00 Tehran)
       SCHEDULED_BRIEFINGS: 'true'
-      REPORT_SLOTS: '8,14,20'
+      REPORT_SLOTS: '8,20'
       # A manual run usually happens after the slot's window closed; naming the slot
       # lets it report on that slot's window instead of the one that is now due.
       REPORT_SLOT_HOUR: ${{ inputs.slot_hour }}
