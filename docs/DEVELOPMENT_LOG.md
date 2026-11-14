@@ -975,3 +975,9 @@ thread داخلی SDK با `wait_for` لغو نمی‌شود و در پس‌زم
 - اجرای دستی `backup.yml` روی `main` (run `43576548732`، sha `c5b73b1`) بعد از رفع `pg_dump` بلافاصله متوقف شد با: `::error::Backup cannot run, missing secret(s): R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ENDPOINT`. یعنی اسرار ذخیره‌سازی هم هیچ‌وقت تنظیم نشده بودند و شکست قبلی (که پیش از آپلود رخ می‌داد) آن‌ها را پنهان کرده بود.
 - در نتیجه ورک‌فلو حالا هر دو remote را می‌سازد: `r2` و `b2` (`type=b2` با `account`/`key`). انتخاب با متغیر مخزن `BACKUP_STORAGE` است و اسکریپت با `BACKUP_REMOTE`/`BACKUP_BUCKET` کار می‌کند؛ مهاجرت به Backblaze B2 فقط اسرار `B2_ACCOUNT_ID` و `B2_APPLICATION_KEY` و همان متغیر را می‌خواهد، بدون هیچ تغییر کدی.
 - اعتبارسنجی: `bash -n scripts/backup.sh` و پارس YAML هر دو پاس شدند؛ مسیر B2 بدون اسرار قابل اجرا نبود و آزمایش نشد.
+
+### بکاپ Backblaze B2 سبز شد
+- نام اسرار همان است که در مخزن ساخته شده: `B2_APPLICATION_KEY_ID` (به‌عنوان `account` برای rclone)، `B2_APPLICATION_KEY` (به‌عنوان `key`) و `B2_BUCKET_NAME`. ورک‌فلو قبلاً `B2_ACCOUNT_ID` می‌خواست؛ اصلاح شد.
+- متغیر مخزن `BACKUP_STORAGE` در اجرا خالی دیده شد، پس انتخاب ارائه‌دهنده به داخل job منتقل شد: اگر متغیر ست باشد ملاک است، وگرنه وجود `B2_APPLICATION_KEY_ID` یعنی `b2`.
+- آپلود اول با خطای `you must use bucket "newsbot-backups-jkiani89" with this application key` رد شد (کلید B2 به یک باکت محدود است و نام ذخیره‌شده در secret نمی‌خواند). حالا باکت با `rclone lsd b2:` از خود کلید کشف می‌شود و secret فقط fallback است.
+- اجرای واقعی `43579051501` (sha `e09f67a`): `Selected storage: b2 (bucket: newsbot-backups-jkiani89)` → `Uploading to b2:newsbot-backups-jkiani89/db/newsbot-backup-2026-11-14-090752.dump` → `=== Backup completed successfully ===`، نتیجهٔ ران success.
