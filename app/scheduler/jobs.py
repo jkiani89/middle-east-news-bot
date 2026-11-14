@@ -28,14 +28,17 @@ from app.database.connection import SessionLocal
 from app.database.models import Article, DailyReport, JobLog
 from app.processors.pipeline import collect_new_articles, process_collected_articles
 from app.reports.daily_report import (
+    SLOT_CLAIMED,
+    SLOT_IN_FLIGHT,
+    SLOT_PUBLISHED,
+    claim_slot,
     current_slot_hour,
     generate_and_save_daily_report,
     generate_slot_bulletins,
-    mark_slot_in_flight,
     mark_slot_published,
     report_slot_hours,
-    slot_in_flight,
     slot_label,
+    slot_status,
 )
 from app.reports.pdf_report import build_daily_report_pdf
 from app.telegram.publisher import (
@@ -319,7 +322,10 @@ async def _publish_slot_briefing(
     if report is not None and isinstance(report.content, dict):
         record = ((report.content.get("bulletins") or {}).get(label)) or {}
 
-    if record.get("status") == "published" and record.get("message_ids"):
+    state = await slot_status(session, rep_date, slot_hour) or {}
+    if state.get("status") == SLOT_PUBLISHED or (
+        record.get("status") == "published" and record.get("message_ids")
+    ):
         logger.info("Briefing %s for %s was already delivered; skipping.", label, rep_date)
         return 0
 
@@ -327,12 +333,12 @@ async def _publish_slot_briefing(
     # original, or a previous run that GitHub queued). The claim is written before the
     # first send, so it also covers a run that died mid-delivery: after the timeout the
     # next run is allowed to retry instead of the slot being stuck forever.
-    if slot_in_flight(record):
+    if state.get("status") == SLOT_IN_FLIGHT:
         logger.info(
             "Briefing %s for %s is in flight in another run (claimed at %s); skipping.",
             label,
             rep_date,
-            record.get("started_at"),
+            state.get("claimed_at"),
         )
         return 0
 
@@ -344,16 +350,21 @@ async def _publish_slot_briefing(
     items = [item for _key, _name, topic_items in sections for item in topic_items]
 
     # Claim the slot before the first Telegram call. Recording only after delivery would
-    # let a crash between the two post the same bulletin again on the next catch-up run.
+    # let a crash between the two post the same bulletin again on the next catch-up run,
+    # and an unguarded read-then-write would let two runs both take the same slot.
     if not dry_run:
-        claimed = await mark_slot_in_flight(session, rep_date, slot_hour)
-        if not claimed:
-            logger.warning(
-                "Publishing briefing %s for %s without an in-flight claim; a crash from here "
-                "could duplicate it.",
+        outcome = await claim_slot(session, rep_date, slot_hour)
+        if outcome == SLOT_PUBLISHED:
+            logger.info("Briefing %s for %s was delivered by another run; skipping.", label, rep_date)
+            return 0
+        if outcome != SLOT_CLAIMED:
+            logger.info(
+                "Briefing %s for %s could not be claimed (%s); another run holds it.",
                 label,
                 rep_date,
+                outcome,
             )
+            return 0
 
     sent = await publish_report(
         report_date=rep_date,

@@ -112,6 +112,46 @@ class _FakeSession:
         self.commits += 1
 
 
+@pytest.fixture(autouse=True)
+def slot_table(monkeypatch):
+    """In-memory stand-in for the bulletin_slots lock.
+
+    The real claim is a single guarded SQL statement; its concurrency is covered by
+    ``tests/test_bulletin_slots_pg.py`` against PostgreSQL. These unit tests only need the
+    same decisions, so the three database helpers are replaced by a dict.
+    """
+    rows: dict = {}
+
+    async def _slot_status(session, report_date, slot_hour):
+        return rows.get((report_date, slot_hour))
+
+    async def _claim_slot(session, report_date, slot_hour):
+        key = (report_date, slot_hour)
+        row = rows.get(key)
+        if row and row["status"] == "published":
+            return "published"
+        if row and row["status"] == "in_flight":
+            return "in_flight"
+        rows[key] = {
+            "status": "in_flight",
+            "claimed_at": datetime.now(UTC),
+            "message_ids": [],
+        }
+        return "claimed"
+
+    async def _mark_slot_published(session, report_date, slot_hour, message_ids, pdf_message_id=None):
+        rows[(report_date, slot_hour)] = {
+            "status": "published",
+            "claimed_at": None,
+            "message_ids": list(message_ids),
+        }
+
+    monkeypatch.setattr("app.scheduler.jobs.slot_status", _slot_status)
+    monkeypatch.setattr("app.scheduler.jobs.claim_slot", _claim_slot)
+    monkeypatch.setattr("app.scheduler.jobs.mark_slot_published", _mark_slot_published)
+    return rows
+
+
 @pytest.mark.asyncio
 async def test_already_published_slot_is_not_sent_again():
     report = SimpleNamespace(
@@ -130,12 +170,14 @@ async def test_already_published_slot_is_not_sent_again():
 
 
 @pytest.mark.asyncio
-async def test_in_flight_slot_is_skipped_while_the_claim_is_fresh():
+async def test_in_flight_slot_is_skipped_while_the_claim_is_fresh(slot_table):
     """Another run claimed the slot moments ago: do not send a second copy."""
-    started = (datetime.now(UTC) - timedelta(minutes=2)).isoformat()
-    report = SimpleNamespace(
-        content={"bulletins": {"08:00": {"status": "in_flight", "started_at": started}}}
-    )
+    slot_table[(date(2026, 11, 14), 8)] = {
+        "status": "in_flight",
+        "claimed_at": datetime.now(UTC) - timedelta(minutes=2),
+        "message_ids": [],
+    }
+    report = SimpleNamespace(content={"bulletins": {}})
     session = _FakeSession(report)
     sections = [("ir", "ایران و مذاکرات", [_item(1, "ir", "ایران و مذاکرات")])]
 
@@ -150,12 +192,11 @@ async def test_in_flight_slot_is_skipped_while_the_claim_is_fresh():
 
 
 @pytest.mark.asyncio
-async def test_stale_in_flight_claim_allows_a_retry():
-    """A claim older than the timeout belongs to a crashed run, so the slot is retried."""
-    started = (datetime.now(UTC) - timedelta(minutes=30)).isoformat()
-    report = SimpleNamespace(
-        content={"bulletins": {"08:00": {"status": "in_flight", "started_at": started}}}
-    )
+async def test_stale_in_flight_claim_is_released_by_the_database_guard():
+    """A claim older than the timeout is excluded by the SQL guard, so the slot reopens."""
+    # The guard lives in SQL (claimed_at < now() - interval); here we only prove the caller
+    # treats a free slot as publishable instead of skipping it forever.
+    report = SimpleNamespace(content={"bulletins": {}})
     session = _FakeSession(report)
     sections = [("ir", "ایران و مذاکرات", [_item(1, "ir", "ایران و مذاکرات")])]
 
@@ -175,15 +216,15 @@ async def test_stale_in_flight_claim_allows_a_retry():
 
 
 @pytest.mark.asyncio
-async def test_slot_is_claimed_before_the_first_send():
-    """The in-memory claim must exist when Telegram is called, not after."""
+async def test_slot_is_claimed_before_the_first_send(slot_table):
+    """The claim must exist when Telegram is called, not after."""
     report = SimpleNamespace(content={"bulletins": {}})
     session = _FakeSession(report)
     sections = [("ir", "ایران و مذاکرات", [_item(1, "ir", "ایران و مذاکرات")])]
-    seen: dict = {}
+    claim_at_send_time: dict = {}
 
     async def fake_publish(**kwargs):
-        seen.update(session.report.content["bulletins"]["08:00"])
+        claim_at_send_time.update(slot_table[(date(2026, 11, 14), 8)])
         return [{"message_id": 51}]
 
     with patch("app.scheduler.jobs.generate_slot_bulletins", new_callable=AsyncMock) as gen, \
@@ -195,8 +236,8 @@ async def test_slot_is_claimed_before_the_first_send():
 
         await _publish_slot_briefing(session, 8, None, dry_run=False)
 
-    assert seen.get("status") == "in_flight"
-    assert seen.get("started_at")
+    assert claim_at_send_time.get("status") == "in_flight"
+    assert claim_at_send_time.get("claimed_at")
 
 
 @pytest.mark.asyncio

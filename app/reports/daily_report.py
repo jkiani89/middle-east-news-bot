@@ -8,12 +8,13 @@ a structured, neutral Persian daily intelligence report adhering to EDITORIAL_PO
 from __future__ import annotations
 
 import html
+import json
 import logging
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.summarizer import passes_persian_guard
@@ -996,61 +997,88 @@ async def generate_slot_bulletins(
 # block the slot forever, but it is long enough to cover a normal Telegram + PDF delivery.
 SLOT_IN_FLIGHT_TIMEOUT_MINUTES = 15
 
+SLOT_CLAIMED = "claimed"
+SLOT_PUBLISHED = "published"
+SLOT_IN_FLIGHT = "in_flight"
+SLOT_MISSING = "missing"
 
-def slot_in_flight(record: dict[str, Any] | None, now: datetime | None = None) -> bool:
-    """Return True when another run is publishing this slot right now.
+# The row must exist before it can be claimed; both statements are idempotent so a retry is
+# safe, and the unique (report_date, slot_hour) constraint makes the INSERT raceless.
+_CLAIM_INSERT = text("""
+INSERT INTO bulletin_slots (report_date, slot_hour, status, message_ids)
+VALUES (:report_date, :slot_hour, 'pending', '[]'::jsonb)
+ON CONFLICT ON CONSTRAINT uq_bulletin_slot_date_hour DO NOTHING
+""")
 
-    The record is a claim written before the first Telegram send. It counts as live only
-    while it is younger than ``SLOT_IN_FLIGHT_TIMEOUT_MINUTES``; an older claim marks a run
-    that died mid-delivery, so the next catch-up run is allowed to try again. A claim with
-    no readable timestamp cannot be shown to be fresh and is treated as stale.
-    """
-    if not isinstance(record, dict) or record.get("status") != "in_flight":
-        return False
-    started_raw = record.get("started_at")
-    if not isinstance(started_raw, str):
-        return False
-    try:
-        started = datetime.fromisoformat(started_raw)
-    except ValueError:
-        return False
-    if started.tzinfo is None:
-        started = started.replace(tzinfo=UTC)
-    current = now or _utcnow()
-    return current - started < timedelta(minutes=SLOT_IN_FLIGHT_TIMEOUT_MINUTES)
+# One statement claims the slot: it only fires when the slot is not already delivered and no
+# live claim exists. Two concurrent runs therefore cannot both win — the loser gets no row.
+_CLAIM_UPDATE = text("""
+UPDATE bulletin_slots
+   SET status = 'in_flight', claimed_at = now()
+ WHERE report_date = :report_date
+   AND slot_hour = :slot_hour
+   AND (status IS DISTINCT FROM 'in_flight'
+        OR claimed_at IS NULL
+        OR claimed_at < now() - (CAST(:timeout_minutes AS int) * interval '1 minute'))
+RETURNING id
+""")
+
+_SLOT_STATUS = text("""
+SELECT status, claimed_at, message_ids
+  FROM bulletin_slots
+ WHERE report_date = :report_date AND slot_hour = :slot_hour
+""")
+
+_SLOT_MARK_PUBLISHED = text("""
+INSERT INTO bulletin_slots (report_date, slot_hour, status, message_ids)
+VALUES (:report_date, :slot_hour, 'published', CAST(:message_ids AS jsonb))
+ON CONFLICT ON CONSTRAINT uq_bulletin_slot_date_hour
+DO UPDATE SET status = 'published', message_ids = EXCLUDED.message_ids
+""")
 
 
-async def mark_slot_in_flight(
+async def slot_status(
     session: AsyncSession,
     report_date: date,
     slot_hour: int,
-) -> bool:
-    """Claim a slot before any message is sent, so a crash cannot double-post it.
-
-    Returns True when the claim was stored. Without a report row there is nothing to
-    attach the claim to, and the caller is told so instead of assuming it is protected.
-    """
-    report = await session.scalar(
-        select(DailyReport).where(DailyReport.report_date == report_date)
+) -> dict[str, Any] | None:
+    """Return the stored slot row (status, claimed_at, message_ids) or None."""
+    result = await session.execute(
+        _SLOT_STATUS, {"report_date": report_date, "slot_hour": slot_hour}
     )
-    if report is None:
-        logger.warning(
-            "No daily report row for %s; the slot claim could not be stored.", report_date
-        )
-        return False
-    content: dict[str, Any] = dict(report.content or {})
-    bulletins: dict[str, Any] = dict(content.get("bulletins") or {})
-    label = slot_label(slot_hour)
-    payload: dict[str, Any] = dict(bulletins.get(label) or {})
-    payload["status"] = "in_flight"
-    payload["started_at"] = _utcnow().isoformat()
-    payload.pop("message_ids", None)
-    payload.pop("pdf_message_id", None)
-    bulletins[label] = payload
-    content["bulletins"] = bulletins
-    report.content = content
+    row = result.mappings().first()
+    return dict(row) if row is not None else None
+
+
+async def claim_slot(
+    session: AsyncSession,
+    report_date: date,
+    slot_hour: int,
+) -> str:
+    """Atomically claim the slot for delivery; return the outcome.
+
+    Possible results: ``claimed`` (this run may send), ``published`` (already delivered),
+    ``in_flight`` (another live run is sending) or ``missing`` (the row could not be read).
+    The read-then-write shape of the previous JSON claim let two runs both see a free slot;
+    a single guarded UPDATE with RETURNING closes that window.
+    """
+    params = {"report_date": report_date, "slot_hour": slot_hour}
+    await session.execute(_CLAIM_INSERT, params)
     await session.commit()
-    return True
+
+    result = await session.execute(
+        _CLAIM_UPDATE, {**params, "timeout_minutes": SLOT_IN_FLIGHT_TIMEOUT_MINUTES}
+    )
+    won = result.first() is not None
+    await session.commit()
+    if won:
+        return SLOT_CLAIMED
+
+    state = await slot_status(session, report_date, slot_hour)
+    if state is None:
+        return SLOT_MISSING
+    status = state.get("status")
+    return SLOT_PUBLISHED if status == SLOT_PUBLISHED else SLOT_IN_FLIGHT
 
 
 async def mark_slot_published(
@@ -1066,6 +1094,16 @@ async def mark_slot_published(
     )
     if report is None:
         return
+    # The slot table is the authoritative delivery record; the JSON copy below keeps the
+    # reader-facing payload (content quality, PDF id) next to the rest of the report.
+    await session.execute(
+        _SLOT_MARK_PUBLISHED,
+        {
+            "report_date": report_date,
+            "slot_hour": slot_hour,
+            "message_ids": json.dumps(message_ids),
+        },
+    )
     content: dict[str, Any] = dict(report.content or {})
     bulletins: dict[str, Any] = dict(content.get("bulletins") or {})
     label = slot_label(slot_hour)

@@ -13,6 +13,18 @@ from app.database.models import DailyReport
 from scripts.run_once import run_batch_pipeline, should_run_daily_report
 
 
+@pytest.fixture(autouse=True)
+def slot_table(monkeypatch):
+    """Empty bulletin_slots table by default; tests that need a row seed this dict."""
+    rows: dict = {}
+
+    async def _slot_status(session, report_date, slot_hour):
+        return rows.get((report_date, slot_hour))
+
+    monkeypatch.setattr("scripts.run_once.slot_status", _slot_status)
+    return rows
+
+
 @pytest.mark.asyncio
 async def test_should_run_daily_report_already_published():
     """If daily report for today is already marked published with message IDs, skip."""
@@ -164,15 +176,16 @@ async def test_should_run_daily_report_window_crosses_midnight():
 
 
 @pytest.mark.asyncio
-async def test_should_run_daily_report_skips_a_slot_in_flight():
+async def test_should_run_daily_report_skips_a_slot_in_flight(slot_table):
     """A slot claimed by a live run is not started a second time."""
     tz = ZoneInfo("Asia/Tehran")
-    claim = datetime.now(tz) - __import__("datetime").timedelta(minutes=1)
-    report = DailyReport(
-        report_date=claim.date(),
-        status="generated",
-        content={"bulletins": {"08:00": {"status": "in_flight", "started_at": claim.isoformat()}}},
-    )
+    claim = datetime.now(tz)
+    slot_table[(claim.date(), 8)] = {
+        "status": "in_flight",
+        "claimed_at": claim,
+        "message_ids": [],
+    }
+    report = DailyReport(report_date=claim.date(), status="generated", content={})
 
     with (
         patch("scripts.run_once.local_now", return_value=claim),

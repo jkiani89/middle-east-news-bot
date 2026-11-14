@@ -36,7 +36,7 @@ from app.config import settings  # noqa: E402
 from app.database.connection import SessionLocal  # noqa: E402
 from app.database.models import DailyReport  # noqa: E402
 from app.processors.pipeline import collect_and_process  # noqa: E402
-from app.reports.daily_report import current_slot_hour, slot_in_flight, slot_label  # noqa: E402
+from app.reports.daily_report import current_slot_hour, slot_label, slot_status  # noqa: E402
 from app.scheduler.jobs import (  # noqa: E402
     cleanup_gemini_request_log,
     daily_report,
@@ -92,12 +92,15 @@ async def should_run_daily_report(
             label = slot_label(slot_hour)
             bulletins = (db_report.content or {}).get("bulletins", {}) if db_report else {}
             record = bulletins.get(label) or {}
-            if record.get("status") == "published" and record.get("message_ids"):
+            state = await slot_status(session, today_date, slot_hour) or {}
+            if state.get("status") == "published" or (
+                record.get("status") == "published" and record.get("message_ids")
+            ):
                 return False, f"Briefing {label} for {today_date} already published."
-            if slot_in_flight(record):
+            if state.get("status") == "in_flight":
                 return False, (
                     f"Briefing {label} for {today_date} is in flight in another run "
-                    f"(claimed at {record.get('started_at')})."
+                    f"(claimed at {state.get('claimed_at')})."
                 )
 
         if (
