@@ -13,14 +13,17 @@ import argparse
 import asyncio
 import logging
 import re
+import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import Any
 
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
+from aiogram.types import FSInputFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,10 +31,15 @@ from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import DailyReport
 from app.reports.daily_report import CATEGORY_TITLES, VERIFICATION_LABELS, format_persian_daily_report
+from app.reports.pdf_report import build_daily_report_pdf
 
 logger = logging.getLogger(__name__)
 
 TAG_RE = re.compile(r"<(/)?([a-zA-Z0-9_-]+)(?:\s+[^>]*)?>")
+
+# Telegram caps document captions at 1024 characters.
+MAX_DOCUMENT_CAPTION = 1024
+DEFAULT_PDF_CAPTION = "📊 بولتن روزانه خاورمیانه — {date}"
 
 
 class MockPublishRefusedError(RuntimeError):
@@ -193,6 +201,149 @@ async def send_telegram_message_resilient(
         except TelegramAPIError as e:
             logger.error("Permanent Telegram API error for chat %s: %s", chat_id, e)
             raise
+
+
+async def send_telegram_document_resilient(
+    bot: Bot,
+    chat_id: str | int,
+    document: Any,
+    caption: str | None = None,
+    max_retries: int = 3,
+    base_backoff: float = 1.0,
+    **kwargs: Any,
+) -> Any:
+    """Send a Telegram document with the same FloodWait/network handling as text."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            return await bot.send_document(
+                chat_id=chat_id,
+                document=document,
+                caption=caption,
+                **kwargs,
+            )
+        except TelegramRetryAfter as e:
+            wait_time = float(getattr(e, "retry_after", base_backoff * (2 ** (attempt - 1))))
+            logger.warning(
+                "Telegram FloodWait on document send to %s. Waiting %s seconds (attempt %d/%d)...",
+                chat_id,
+                wait_time,
+                attempt,
+                max_retries,
+            )
+            if attempt == max_retries:
+                raise
+            await asyncio.sleep(wait_time)
+        except (TimeoutError, TelegramNetworkError) as e:
+            wait_time = base_backoff * (2 ** (attempt - 1))
+            logger.warning(
+                "Telegram NetworkError on document send to %s: %s. Retrying in %s seconds (attempt %d/%d)...",
+                chat_id,
+                e,
+                wait_time,
+                attempt,
+                max_retries,
+            )
+            if attempt == max_retries:
+                raise
+            await asyncio.sleep(wait_time)
+        except TelegramAPIError as e:
+            logger.error("Permanent Telegram API error on document send to %s: %s", chat_id, e)
+            raise
+
+
+async def publish_daily_report_pdf(
+    report_date: Any,
+    items: list[dict[str, Any]],
+    metadata: dict[str, Any] | None = None,
+    content_quality: str | None = "real",
+    bot: Bot | None = None,
+    dry_run: bool = False,
+    channel_id: str | None = None,
+    caption: str | None = None,
+    output_path: str | Path | None = None,
+    base_backoff: float = 1.0,
+) -> dict[str, Any]:
+    """Render the bulletin as a PDF and send it to Telegram as a document.
+
+    The fail-closed content-quality guard of :func:`publish_report` applies here
+    too, so an unverified bulletin can never leak as an attachment. In dry-run
+    mode the PDF is still rendered (proving the renderer works) but nothing is
+    sent; the temporary file is removed afterwards.
+    """
+    if not dry_run and content_quality != "real" and settings.app_env != "test":
+        raise MockPublishRefusedError(
+            f"Publish refused: Daily report content_quality is '{content_quality}'. "
+            f"Refusing to publish the PDF bulletin to Telegram in '{settings.app_env}' environment."
+        )
+
+    target_channel = channel_id or settings.telegram_channel_id
+    final_caption = (caption or DEFAULT_PDF_CAPTION.format(date=report_date))[:MAX_DOCUMENT_CAPTION]
+
+    temp_dir: tempfile.TemporaryDirectory[str] | None = None
+    if output_path is None:
+        temp_dir = tempfile.TemporaryDirectory(prefix="me-bulletin-")
+        pdf_path = Path(temp_dir.name) / f"bulletin-{report_date}.pdf"
+    else:
+        pdf_path = Path(output_path)
+
+    try:
+        build_daily_report_pdf(report_date, items, metadata or {}, pdf_path)
+        size_bytes = pdf_path.stat().st_size
+
+        if dry_run:
+            logger.info("%s", "=" * 80)
+            logger.info(" TELEGRAM PDF BULLETIN [DRY RUN]")
+            logger.info("%s", "=" * 80)
+            logger.info("Report Date: %s", report_date)
+            logger.info("Content Quality: %s", content_quality or "real")
+            logger.info("Items: %d", len(items))
+            logger.info("PDF Bytes: %d", size_bytes)
+            logger.info("Caption: %s", final_caption)
+            logger.info("Target Channel: %s", target_channel)
+            logger.info("%s", "=" * 80)
+            return {
+                "chat_id": target_channel,
+                "message_id": 0,
+                "type": "document",
+                "dry_run": True,
+                "bytes": size_bytes,
+            }
+
+        own_bot = False
+        if bot is None:
+            bot = Bot(
+                settings.telegram_bot_token,
+                default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+            )
+            own_bot = True
+
+        try:
+            msg = await send_telegram_document_resilient(
+                bot=bot,
+                chat_id=target_channel,
+                document=FSInputFile(str(pdf_path), filename=pdf_path.name),
+                caption=final_caption,
+                base_backoff=base_backoff,
+            )
+        finally:
+            if own_bot:
+                await bot.session.close()
+
+        logger.info(
+            "Daily bulletin PDF (%d bytes) sent to %s as message %s.",
+            size_bytes,
+            target_channel,
+            getattr(msg, "message_id", None),
+        )
+        return {
+            "chat_id": target_channel,
+            "message_id": getattr(msg, "message_id", 0),
+            "type": "document",
+            "bytes": size_bytes,
+        }
+    finally:
+        if temp_dir is not None:
+            temp_dir.cleanup()
 
 
 async def publish_report(
