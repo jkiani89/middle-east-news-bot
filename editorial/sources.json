@@ -2,7 +2,7 @@
   {
     "name": "UN News",
     "base_url": "https://news.un.org/",
-    "feed_url": "https://news.un.org/feed/subscribe/en/news/all/rss.xml",
+    "feed_url": "https://news.google.com/rss/search?q=site:news.un.org&hl=en-US&gl=US&ceid=US:en",
     "source_type": "official",
     "country": "International",
     "language": "en",
