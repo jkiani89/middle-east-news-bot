@@ -20,6 +20,11 @@ on:
         required: false
         default: false
         type: boolean
+      slot_hour:
+        description: 'Briefing slot to publish (8, 14 or 20); empty = the slot that is now due'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: scheduled-batch-runner
@@ -50,6 +55,9 @@ jobs:
       # Publish the briefing of the slot that just came due (08:00/14:00/20:00 Tehran)
       SCHEDULED_BRIEFINGS: 'true'
       REPORT_SLOTS: '8,14,20'
+      # A manual run usually happens after the slot's window closed; naming the slot
+      # lets it report on that slot's window instead of the one that is now due.
+      REPORT_SLOT_HOUR: ${{ inputs.slot_hour }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
