@@ -13,7 +13,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.summarizer import passes_persian_guard
@@ -159,6 +159,48 @@ def report_window(
     return report_date, window_start, window_end
 
 
+async def _log_empty_window(
+    session: AsyncSession,
+    window_start: datetime,
+    window_end: datetime,
+    min_importance: int,
+) -> None:
+    """Explain an empty briefing instead of guessing why nothing was eligible.
+
+    Without this, an empty bulletin is indistinguishable from a genuinely quiet
+    window: an empty result could mean no events, an importance cut, a missing
+    summary, or a window that does not contain the events the pipeline just wrote.
+    """
+    try:
+        in_window = select(func.count(Event.id)).where(
+            Event.first_seen_at >= window_start, Event.first_seen_at < window_end
+        )
+        with_summary = (
+            select(func.count(Event.id))
+            .join(Summary, Summary.event_id == Event.id)
+            .where(Event.first_seen_at >= window_start, Event.first_seen_at < window_end)
+        )
+        # Measured with scalar() calls so the diagnostic never disturbs the report
+        # query itself or the statement order callers rely on.
+        total = await session.scalar(in_window)
+        summarised = await session.scalar(with_summary)
+        earliest = await session.scalar(select(func.min(Event.first_seen_at)))
+        latest = await session.scalar(select(func.max(Event.first_seen_at)))
+        logger.warning(
+            "No eligible events for window %s .. %s (min_importance=%d): "
+            "%s event(s) in window, %s with a summary; stored events span %s .. %s.",
+            window_start.isoformat(),
+            window_end.isoformat(),
+            min_importance,
+            total,
+            summarised,
+            earliest.isoformat() if earliest else None,
+            latest.isoformat() if latest else None,
+        )
+    except Exception:
+        logger.exception("Could not describe an empty report window")
+
+
 async def fetch_report_items(
     session: AsyncSession,
     report_date: date | None = None,
@@ -204,6 +246,7 @@ async def fetch_report_items(
 
     event_summary_rows = (await session.execute(stmt)).all()
     if not event_summary_rows:
+        await _log_empty_window(session, window_start, window_end, min_importance)
         metadata = {
             "report_date": str(report_date),
             "generated_at": _utcnow().isoformat(),
