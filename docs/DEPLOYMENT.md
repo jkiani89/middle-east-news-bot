@@ -4,7 +4,7 @@ This guide covers deploying the Middle East News Bot using **GitHub Actions Cron
 
 By switching from an always-on VM (Oracle/Freestyle) to scheduled batch execution in GitHub Actions, the deployment achieves:
 - **Zero server management:** No VMs to provision, maintain, or keep alive.
-- **Zero credit card requirement:** Neither GitHub Actions, Aiven, nor Cloudflare R2 require a credit card.
+- **Zero credit card requirement:** Neither GitHub Actions, Aiven, nor Backblaze B2 require a credit card.
 - **100% cost-free:** Runs within the generous free-tier limits of GitHub Actions (2,000 public minutes/month) and managed free tiers.
 
 ---
@@ -15,7 +15,8 @@ By switching from an always-on VM (Oracle/Freestyle) to scheduled batch executio
 ┌────────────────────────────────────────────────────────┐
 │  GitHub Actions Scheduled Cron Runner                  │
 │  .github/workflows/cron.yml (Runs Every 6h + 8:00 IRST) │
-│  .github/workflows/backup.yml (Daily R2 Backup)        │
+│  .github/workflows/backup.yml (Daily B2 Backup)        │
+│  .github/workflows/keepalive.yml (Monthly Heartbeat)   │
 └──────────────────────────┬─────────────────────────────┘
                            │
 ┌──────────────────────────▼─────────────────────────────┐
@@ -24,8 +25,8 @@ By switching from an always-on VM (Oracle/Freestyle) to scheduled batch executio
 └──────────────────────────┬─────────────────────────────┘
                            │
 ┌──────────────────────────▼─────────────────────────────┐
-│  Backup & Disaster Recovery (Cloudflare R2 via rclone) │
-│  Cloudflare R2: 10GB Free Storage, Zero Egress Fees   │
+│  Backup & Disaster Recovery (Backblaze B2 via rclone)  │
+│  Backblaze B2: 10GB Free Storage, Zero Egress Fees    │
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -37,7 +38,7 @@ By switching from an always-on VM (Oracle/Freestyle) to scheduled batch executio
 |---|---|---|---|---|
 | **Compute & Scheduler** | **GitHub Actions** | 2,000 Linux runner minutes/month | ❌ No | **$0** |
 | **Database** | **Aiven** | PostgreSQL 16 Free (1 CPU, 1GB RAM, 1GB disk) | ❌ No | **$0** |
-| **Backup** | **Cloudflare R2** | 10GB storage, 1M writes, 10M reads, zero egress | ❌ No | **$0** |
+| **Backup** | **Backblaze B2** | 10 GB storage, bucket-scoped app key, zero egress | ❌ No | **$0** |
 | **AI Processing** | **Google Gemini** | Free Tier multi-project API pool (ISS-020) | ❌ No | **$0** |
 | **Delivery** | **Telegram Bot API** | Bot and Channel broadcast | ❌ No | **$0** |
 
@@ -70,7 +71,7 @@ Set these as **Repository Variables** (Settings → Secrets and variables → Ac
 | `GEMINI_PRIMARY_MODEL` | `gemini-3.8-flash` | Primary analysis model |
 | `GEMINI_FALLBACK_MODEL` | `gemini-3.5-flash-lite` | Fallback model used on 429/503 |
 | `GEMINI_ENABLE_FALLBACK` | `true` | Enable the fallback model |
-| `MAX_ARTICLES_PER_BATCH` | `15` in `cron.yml` | Articles collected per feed and processed per run |
+| `MAX_ARTICLES_PER_BATCH` | `30` in `cron.yml` | Articles collected per feed and processed per run |
 | `AI_MAX_ATTEMPTS` | `3` | Retry budget per failed article before it is left alone |
 | `AI_MAX_CONSECUTIVE_FAILURES` | `5` | Circuit breaker: stop the batch after this many transient AI failures in a row |
 | `IMMEDIATE_PUBLISH_ENABLED` | `true` | Publish each analyzed article to the channel right after it is stored |
@@ -85,10 +86,15 @@ Set these as **Repository Variables** (Settings → Secrets and variables → Ac
 
 | Secret Name | Description | Example Value |
 |---|---|---|
-| `R2_ACCESS_KEY_ID` | Cloudflare R2 Access Key ID | `a1b2c3d4e5...` |
-| `R2_SECRET_ACCESS_KEY` | Cloudflare R2 Secret Access Key | `f6g7h8i9j0...` |
-| `R2_ENDPOINT` | Cloudflare R2 S3 API Endpoint | `https://<account_id>.r2.cloudflarestorage.com` |
-| `R2_BUCKET_NAME` | R2 Bucket Name (optional, defaults to `newsbot-backups`) | `newsbot-backups` |
+| `B2_APPLICATION_KEY_ID` | Backblaze application key **ID** (rclone `account`) | `0051a2b3c4d5e6f0000000001` |
+| `B2_APPLICATION_KEY` | Backblaze application key (rclone `key`) | `K005abcdefghijklmnopqrstuvwxyz` |
+| `B2_BUCKET_NAME` | Bucket the key is scoped to | `newsbot-backups-jkiani89` |
+
+> A Backblaze application key can only write to the bucket(s) it was issued for, so the
+> workflow asks rclone which bucket the key can reach (`rclone lsd b2:`) and uses that name;
+> `B2_BUCKET_NAME` is only the fallback. To use Cloudflare R2 instead, set the repository
+> variable `BACKUP_STORAGE=r2` and provide `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
+> `R2_ENDPOINT` (and optionally `R2_BUCKET_NAME`).
 
 ---
 
@@ -97,26 +103,43 @@ Set these as **Repository Variables** (Settings → Secrets and variables → Ac
 ### 2.1 Batch Collection & Reporting (`.github/workflows/cron.yml`)
 - **Triggers:**
   - `0 */6 * * *`: Every 6 hours (00:00, 06:00, 12:00, 18:00 UTC) for news collection and processing.
-  - `30 4 * * *`: Daily at 04:30 UTC (= **08:00 AM Tehran Time**) to trigger the morning intelligence report.
+  - `30 4 * * *`: Daily at 04:30 UTC (= **08:00 AM Tehran Time**) to trigger the morning bulletin.
+  - `30 16 * * *`: Daily at 16:30 UTC (= **20:00 Tehran Time**) for the evening bulletin.
+  - `0 5`, `0 6`, `0 17`, `0 18` UTC: catch-up chances inside each slot's window (see below).
   - `workflow_dispatch`: Manual trigger from the GitHub Actions UI.
+
+> **Catch-up window:** a slot is publishable for `SLOT_GRACE_HOURS` (default 3) after it
+> starts, i.e. 08:00-11:00 and 20:00-23:00 Tehran. GitHub can delay or drop a scheduled run,
+> so these extra runs make sure a late bulletin still ships; an already published slot is
+> skipped by the record stored in `daily_reports.content.bulletins`.
 - **Actions performed:**
-  1. Sets up Python 3.15.2 and installs pre-compiled wheels.
+  1. Sets up Python 3.15 and installs pre-compiled wheels.
   2. Runs `alembic upgrade head` on Aiven to keep schema updated.
   3. Executes `scripts/run_once.py`:
      - Synchronizes active feeds from `editorial/sources.json`.
      - Collects and analyzes new articles.
      - Publishes each analyzed article to the channel immediately after it is stored (capped per run, paced to avoid FloodWait, and skipped entirely in dry-run).
-     - Checks if current time is between 8:00 - 9:00 AM Tehran; if so, generates and publishes the daily report (with built-in deduplication so it never sends twice on the same day).
+     - Checks whether a briefing slot is due or still inside its catch-up window; if so, generates and publishes that bulletin (with built-in deduplication so it never sends twice for the same slot).
      - Cleans up old request logs.
 
-### 2.2 Automated Database Backup (`.github/workflows/backup.yml`)
+### 2.2 Repository Heartbeat (`.github/workflows/keepalive.yml`)
+- **Trigger:** `0 3 1 * *` (monthly, 1st at 03:00 UTC) plus `workflow_dispatch`.
+- **Why:** GitHub silently disables scheduled workflows in a **public** repository after 60 days
+  without repository activity. This bot produces no commits of its own, so without a heartbeat
+  the schedules would stop with no failed run and no email. The workflow stamps the date into
+  `docs/HEARTBEAT.md` and commits it, well inside that window.
+- **Manual re-enable:** if the schedule is ever disabled anyway
+  ("This scheduled workflow is disabled because there hasn't been activity..."), open the
+  Actions tab and click **Enable workflow**, or run `gh workflow enable cron.yml`.
+
+### 2.3 Automated Database Backup (`.github/workflows/backup.yml`)
 - **Triggers:**
   - `0 2 * * *`: Daily at 02:00 UTC.
   - `workflow_dispatch`: Manual trigger from GitHub Actions UI.
 - **Actions performed:**
   1. Installs `rclone`.
-  2. Uses transient `postgres:16-alpine` Docker container to run `pg_dump -Fc` against Aiven `DATABASE_URL`.
-  3. Uploads the compressed binary dump to Cloudflare R2 and deletes backups older than 7 days.
+  2. Uses transient `postgres:18-alpine` Docker container to run `pg_dump -Fc` against Aiven `DATABASE_URL` (the client must match the server's major version, otherwise `pg_dump` aborts).
+  3. Uploads the compressed binary dump to Backblaze B2 and deletes backups older than 7 days.
 
 ---
 
@@ -166,7 +189,9 @@ To run the batch script locally with your `.env`:
 | Workflow fails on `alembic upgrade` | Missing SSL flag in connection string | Ensure `?sslmode=require` is at the end of `DATABASE_URL`. |
 | Daily report not sent in morning | Iran timezone mismatch | Iran time is UTC+3:30; `cron: '30 4 * * *'` matches 08:00 AM Tehran. |
 | Telegram message rejected | Bot not admin in channel | Add bot to your channel and grant "Post Messages" permission. |
-| Backup fails with `rclone error` | Invalid R2 keys | Check `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` in GitHub Secrets. |
+| Backup fails with `rclone error` | Invalid B2 keys | Check `B2_APPLICATION_KEY_ID` and `B2_APPLICATION_KEY` in GitHub Secrets. |
+| `you must use bucket "..." with this application key` | `B2_BUCKET_NAME` names a different bucket than the key allows | The workflow discovers the bucket from the key; correct the secret if you want it to be the fallback too. |
+| `pg_dump: error: aborting because of server version mismatch` | Dump image older than the PostgreSQL server | Use `postgres:<server major>-alpine` in `scripts/backup.sh`. |
 
 ---
 

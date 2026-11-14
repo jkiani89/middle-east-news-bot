@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Restore PostgreSQL database from a backup file (local or Cloudflare R2).
+# Restore PostgreSQL database from a backup file (local or object storage: B2/R2).
 # WARNING: This will DROP and recreate all tables (--clean --if-exists).
 # Usage: bash scripts/restore.sh <backup_filename>
 
@@ -28,16 +28,17 @@ fi
 
 DB_USER="${POSTGRES_USER:-newsbot}"
 DB_NAME="${POSTGRES_DB:-newsbot}"
-R2_BUCKET="${R2_BUCKET_NAME:-newsbot-backups}"
+BACKUP_REMOTE="${BACKUP_REMOTE:-b2}"
+BACKUP_BUCKET="${BACKUP_BUCKET:-${B2_BUCKET_NAME:-${R2_BUCKET_NAME:-newsbot-backups}}}"
 
 # 1. Download if not present locally
 if [ ! -f "$TMP_PATH" ]; then
-    echo "--- Downloading ${FILENAME} from R2 ---"
+    echo "--- Downloading ${FILENAME} from ${BACKUP_REMOTE}:${BACKUP_BUCKET} ---"
     if ! command -v rclone >/dev/null 2>&1; then
         echo "ERROR: rclone not found. Install it or place the backup file in /tmp/" >&2
         exit 1
     fi
-    rclone copy "r2:${R2_BUCKET}/db/${FILENAME}" "/tmp/"
+    rclone copy "${BACKUP_REMOTE}:${BACKUP_BUCKET}/db/${FILENAME}" "/tmp/"
 fi
 
 # 2. Confirmation prompt
@@ -57,7 +58,8 @@ fi
 echo "--- Restoring database ${DB_NAME} ---"
 if [ -n "${DATABASE_URL:-}" ]; then
     SYNC_DB_URL="${DATABASE_URL//+asyncpg/}"
-    docker run --rm -i postgres:16-alpine pg_restore -d "$SYNC_DB_URL" --clean --if-exists < "$TMP_PATH"
+    # pg_restore must match the server's major version (PostgreSQL 18 on the managed DB).
+    docker run --rm -i postgres:18-alpine pg_restore -d "$SYNC_DB_URL" --clean --if-exists < "$TMP_PATH"
 else
     docker compose exec -T postgres pg_restore -U "$DB_USER" -d "$DB_NAME" --clean --if-exists < "$TMP_PATH"
 fi

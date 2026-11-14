@@ -1,21 +1,26 @@
-# Backup and Restore (PostgreSQL → Cloudflare R2)
+# Backup and Restore (PostgreSQL → Backblaze B2)
 
-This document explains how the Middle East News Bot backs up its PostgreSQL database to Cloudflare R2 and how to restore it.
+This document explains how the Middle East News Bot backs up its PostgreSQL database to Backblaze B2 and how to restore it.
 
-## Why Cloudflare R2?
+## Why Backblaze B2?
 
-- **Zero egress fees:** Restoring backups does not cost money.
-- **Free tier:** 10 GB storage, 1M write operations, 10M read operations per month.
-- **S3-compatible:** Works natively with `rclone`.
+- **Zero egress fees:** Restoring backups does not cost money (up to 3× stored data per day).
+- **Free tier:** 10 GB storage.
+- **Native rclone support:** `type = b2`, no S3 compatibility layer needed.
+- **Bucket-scoped application keys:** a key can only touch the bucket it was issued for.
+
+> Cloudflare R2 is still supported by the same script: set `BACKUP_STORAGE=r2` and provide the
+> `R2_*` secrets. B2 is the default in this project.
 
 ## Prerequisites
 
-1. **Cloudflare Account** with R2 enabled.
-2. **R2 Bucket** created (default name: `newsbot-backups`).
-3. **R2 API Token** (Access Key ID + Secret Access Key) with Object Read & Write permissions.
-4. **rclone installed** on the host machine.
+1. **Backblaze account** with a bucket created (this project uses `newsbot-backups-jkiani89`).
+2. **Application Key** with access to that bucket, created in *App Keys*.
+   You get an **application key ID** and an **application key**; the key ID is the `account`
+   value in rclone, the key is the `key` value.
+3. **rclone installed** on the host machine.
 
-## 1. Install rclone on Oracle Cloud VM (Ubuntu/Debian)
+## 1. Install rclone
 
 ```bash
 sudo apt-get update
@@ -23,29 +28,24 @@ sudo apt-get install -y rclone
 rclone version
 ```
 
-## 2. Configure rclone for Cloudflare R2
+## 2. Configure rclone for Backblaze B2
 
-Run `rclone config` and follow these steps:
+Either run `rclone config` (New remote → name `b2` → storage type `b2` → paste the key ID and
+key) or use environment variables, which is what the GitHub workflow does:
 
-1. Type `n` for "New remote".
-2. Name: `r2`
-3. Storage type: `s3` (Amazon S3 Compliant)
-4. Provider: `Cloudflare`
-5. env_auth: `false`
-6. access_key_id: `<your_R2_Access_Key_ID>`
-7. secret_access_key: `<your_R2_Secret_Access_Key>`
-8. region: `auto`
-9. endpoint: `https://<your_account_id>.r2.cloudflarestorage.com`
-10. acl: `private`
-11. Leave the rest as default.
+```bash
+export RCLONE_CONFIG_B2_TYPE=b2
+export RCLONE_CONFIG_B2_ACCOUNT="<B2_APPLICATION_KEY_ID>"
+export RCLONE_CONFIG_B2_KEY="<B2_APPLICATION_KEY>"
+```
 
 Test the connection:
 
 ```bash
-rclone lsd r2:
+rclone lsd b2:
 ```
 
-You should see your bucket(s) listed.
+You should see the bucket the key is scoped to.
 
 ## 3. Run a Manual Backup
 
@@ -53,17 +53,16 @@ You should see your bucket(s) listed.
 bash scripts/backup.sh
 ```
 
-Check the R2 bucket to verify the `.dump` file was uploaded.
+The dump is written by a `postgres:18-alpine` container, because `pg_dump` refuses to dump a
+server newer than itself and the managed database runs PostgreSQL 18. The script uploads to
+`${BACKUP_REMOTE:-b2}:${BACKUP_BUCKET}/db/` and then deletes backups older than
+`BACKUP_RETENTION_DAYS` (default 7).
 
-## 4. Automate Backups with Cron
+## 4. Automate Backups
 
-Edit the crontab:
-
-```bash
-crontab -e
-```
-
-Add this line (runs daily at 02:00 AM server time):
+In this repository the backup is a GitHub Actions workflow
+(`.github/workflows/backup.yml`, daily at 02:00 UTC), so nothing needs to run on a server.
+For a self-hosted machine instead:
 
 ```cron
 0 2 * * * cd /path/to/middle-east-news-bot && bash scripts/backup.sh >> /var/log/newsbot-backup.log 2>&1
@@ -74,11 +73,14 @@ Add this line (runs daily at 02:00 AM server time):
 **WARNING:** Restore overwrites the current database (`--clean --if-exists`).
 
 ```bash
-bash scripts/restore.sh newsbot-backup-2026-11-11-120000.dump
+bash scripts/restore.sh newsbot-backup-2026-11-14-090752.dump
 ```
 
-You will be prompted to type `yes` to confirm. The script will download the file from R2 if not present locally, restore it, and clean up.
+You will be prompted to type `yes` to confirm. The script downloads the file from
+`${BACKUP_REMOTE:-b2}:${BACKUP_BUCKET}/db/` if it is not already in `/tmp`, restores it with a
+`postgres:18-alpine` `pg_restore`, and cleans up.
 
 ## 6. Retention Policy
 
-By default, backups older than 7 days are automatically deleted from R2. Change this by setting `BACKUP_RETENTION_DAYS` in `.env`.
+By default, backups older than 7 days are deleted from the bucket. Change this by setting
+`BACKUP_RETENTION_DAYS` in `.env` (or in the workflow environment).
