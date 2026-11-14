@@ -39,6 +39,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install rclone
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rclone
+
       - name: Resolve backup storage
         run: |
           storage="${BACKUP_STORAGE:-}"
@@ -50,7 +55,11 @@ jobs:
             fi
           fi
           if [ "$storage" = "b2" ]; then
-            bucket="${B2_BUCKET_NAME:-newsbot-backups}"
+            # A Backblaze application key is scoped to specific buckets and rclone refuses
+            # any other name, so the bucket the key can actually reach is authoritative;
+            # the secret only covers a key that lists no bucket.
+            discovered=$(rclone lsd b2: 2>/dev/null | awk '{print $NF}' | head -n 1 || true)
+            bucket="${discovered:-${B2_BUCKET_NAME:-newsbot-backups}}"
           else
             bucket="${R2_BUCKET_NAME:-newsbot-backups}"
           fi
@@ -75,11 +84,6 @@ jobs:
             echo "::error::Backup cannot run (storage=${BACKUP_REMOTE}), missing secret(s): ${missing[*]}" >&2
             exit 1
           fi
-
-      - name: Install rclone
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y rclone
 
       - name: Run backup script
         run: bash scripts/backup.sh
