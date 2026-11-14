@@ -18,14 +18,12 @@ jobs:
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       BACKUP_RETENTION_DAYS: '7'
-      # 'r2' (Cloudflare) or 'b2' (Backblaze). Set the repository variable
-      # BACKUP_STORAGE=b2 to switch; both remotes are configured below, so switching
-      # only needs the B2 secrets and that variable.
-      BACKUP_STORAGE: ${{ vars.BACKUP_STORAGE || 'r2' }}
-      BACKUP_REMOTE: ${{ vars.BACKUP_STORAGE || 'r2' }}
+      # 'r2' (Cloudflare) or 'b2' (Backblaze). The optional repository variable
+      # BACKUP_STORAGE overrides the choice; without it the provider is inferred from the
+      # credentials that actually exist, so a configured B2 key alone is enough.
+      BACKUP_STORAGE: ${{ vars.BACKUP_STORAGE }}
       R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME || 'newsbot-backups' }}
       B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME || 'newsbot-backups' }}
-      BACKUP_BUCKET: ${{ vars.BACKUP_STORAGE == 'b2' && (secrets.B2_BUCKET_NAME || 'newsbot-backups') || (secrets.R2_BUCKET_NAME || 'newsbot-backups') }}
       RCLONE_CONFIG_R2_TYPE: s3
       RCLONE_CONFIG_R2_PROVIDER: Cloudflare
       RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -41,11 +39,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Resolve backup storage
+        run: |
+          storage="${BACKUP_STORAGE:-}"
+          if [ -z "$storage" ]; then
+            if [ -n "${RCLONE_CONFIG_B2_ACCOUNT:-}" ]; then
+              storage=b2
+            else
+              storage=r2
+            fi
+          fi
+          if [ "$storage" = "b2" ]; then
+            bucket="${B2_BUCKET_NAME:-newsbot-backups}"
+          else
+            bucket="${R2_BUCKET_NAME:-newsbot-backups}"
+          fi
+          echo "BACKUP_REMOTE=$storage" >> "$GITHUB_ENV"
+          echo "BACKUP_BUCKET=$bucket" >> "$GITHUB_ENV"
+          echo "Selected storage: $storage (bucket: $bucket)"
+
       - name: Verify backup credentials are configured
         run: |
           missing=()
           [ -z "${DATABASE_URL:-}" ] && missing+=("DATABASE_URL")
-          if [ "${BACKUP_STORAGE}" = "b2" ]; then
+          if [ "${BACKUP_REMOTE}" = "b2" ]; then
             [ -z "${RCLONE_CONFIG_B2_ACCOUNT:-}" ] && missing+=("B2_APPLICATION_KEY_ID")
             [ -z "${RCLONE_CONFIG_B2_KEY:-}" ] && missing+=("B2_APPLICATION_KEY")
             [ -z "${BACKUP_BUCKET:-}" ] && missing+=("B2_BUCKET_NAME")
@@ -55,7 +72,7 @@ jobs:
             [ -z "${RCLONE_CONFIG_R2_ENDPOINT:-}" ] && missing+=("R2_ENDPOINT")
           fi
           if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::Backup cannot run (BACKUP_STORAGE=${BACKUP_STORAGE}), missing secret(s): ${missing[*]}" >&2
+            echo "::error::Backup cannot run (storage=${BACKUP_REMOTE}), missing secret(s): ${missing[*]}" >&2
             exit 1
           fi
 
