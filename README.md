@@ -2,8 +2,14 @@
 
 ربات جمع‌آوری ساعتی اخبار خاورمیانه، خلاصه‌سازی فارسی با Google Gemini و انتشار در کانال و گفت‌وگوی خصوصی تلگرام.
 
+> **هشدار — دو حالت اجرا با زمان‌بندی متفاوت:**
+> - **اجرای محلی** (`python -m app.main`): جمع‌آوری و خلاصه‌سازی **هر ۶۰ دقیقه** و گزارش یک‌بار در روز.
+> - **اجرای ابری** (GitHub Actions، بخش Deployment پایین): جمع‌آوری هر ۶ ساعت و **دو بولتن ۱۲ساعته** در روز (۰۸:۰۰ و ۲۰:۰۰ تهران) با پنجرهٔ جبرانی ۳ ساعته.
+>
+> پس «انتشار لحظه‌ای» در ابر یعنی «در نخستین اجرای بعدی»، نه ارسال در همان ثانیه.
+
 ## پیش‌نیازها
-- Windows 10/11 و Python 3.11+
+- Windows 10/11 یا Linux و Python 3.15+ (همان نسخه‌ای که CI استفاده می‌کند)
 - PostgreSQL نصب‌شده به‌صورت Native
 - Gemini API key
 - Telegram Bot token، شناسه کانال و شناسه عددی چت خصوصی
@@ -37,7 +43,7 @@ python -m app.init_db
 python -m app.main
 ```
 
-برنامه در شروع یک‌بار RSSها را بررسی می‌کند، سپس هر ۶۰ دقیقه جمع‌آوری و در ساعت تنظیم‌شده گزارش روز قبل را منتشر می‌کند.
+برنامه در شروع یک‌بار RSSها را بررسی می‌کند، سپس **هر ۶۰ دقیقه** جمع‌آوری و در ساعت تنظیم‌شده گزارش روز قبل را منتشر می‌کند. (این زمان‌بندی مخصوص اجرای محلی است؛ حالت ابری در بخش Deployment توضیح داده شده و دو نوبت در روز دارد.)
 
 ## تنظیم ساعت گزارش
 در `.env`:
@@ -81,9 +87,21 @@ MAX_ARTICLES_PER_BATCH=15          # مقدار پیشنهادی برای اجر
 This project is designed to run on **zero-cost infrastructure with no credit card required** ($0/month):
 - **Compute & Scheduler:** GitHub Actions Scheduled Cron Runner (Serverless batch processing)
 - **Database:** Aiven PostgreSQL 16 Free (1 CPU / 1GB RAM)
-- **Backup:** Cloudflare R2 (10GB free tier, zero egress)
+- **Backup:** Backblaze B2 (10GB free tier, zero egress) — see `docs/BACKUP_RESTORE.md`
 - **CI/CD:** GitHub Actions (public repo)
 
 See the full deployment guide: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**
 
 For backup and restore: **[docs/BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md)**
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+## Operations notes
+
+- **Scheduling:** two twelve-hour bulletins per day (08:00 and 20:00 Tehran) with a three-hour
+  catch-up window, collection every 6 hours. See `docs/DEPLOYMENT.md`.
+- **Keep-alive:** `keepalive.yml` commits a monthly heartbeat into `docs/HEARTBEAT.md` so GitHub
+  does not disable the scheduled workflows after 60 days of repository inactivity.
+- **Backups:** daily dump to Backblaze B2 with 7-day retention. See `docs/BACKUP_RESTORE.md`.
