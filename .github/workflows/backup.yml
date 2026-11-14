@@ -29,6 +29,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Verify backup credentials are configured
+        run: |
+          missing=()
+          [ -z "${DATABASE_URL:-}" ] && missing+=("DATABASE_URL")
+          [ -z "${RCLONE_CONFIG_R2_ACCESS_KEY_ID:-}" ] && missing+=("R2_ACCESS_KEY_ID")
+          [ -z "${RCLONE_CONFIG_R2_SECRET_ACCESS_KEY:-}" ] && missing+=("R2_SECRET_ACCESS_KEY")
+          [ -z "${RCLONE_CONFIG_R2_ENDPOINT:-}" ] && missing+=("R2_ENDPOINT")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Backup cannot run, missing secret(s): ${missing[*]}" >&2
+            exit 1
+          fi
+
       - name: Install rclone
         run: |
           sudo apt-get update

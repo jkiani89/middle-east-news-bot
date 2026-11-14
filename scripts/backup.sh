@@ -42,9 +42,11 @@ TMP_PATH="/tmp/${FILENAME}"
 echo "=== Starting backup: ${FILENAME} ==="
 
 if [ -n "${DATABASE_URL:-}" ]; then
-    echo "--- Dumping database from DATABASE_URL via postgres:16-alpine container ---"
+    # pg_dump refuses to dump a newer server, so the client image must match the
+    # server's major version (the managed database runs PostgreSQL 18).
+    echo "--- Dumping database from DATABASE_URL via postgres:18-alpine container ---"
     SYNC_DB_URL="${DATABASE_URL//+asyncpg/}"
-    docker run --rm -i postgres:16-alpine pg_dump -d "$SYNC_DB_URL" -Fc > "$TMP_PATH"
+    docker run --rm -i postgres:18-alpine pg_dump -d "$SYNC_DB_URL" -Fc > "$TMP_PATH"
 else
     echo "--- Dumping database ${DB_NAME} via local postgres container ---"
     docker compose exec -T postgres pg_dump -U "$DB_USER" -Fc "$DB_NAME" > "$TMP_PATH"
