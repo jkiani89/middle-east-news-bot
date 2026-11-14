@@ -357,6 +357,7 @@ async def publish_report(
     channel_id: str | None = None,
     admin_chat_id: str | int | None = None,
     base_backoff: float = 1.0,
+    persist: bool = True,
 ) -> list[dict[str, Any]]:
     """Publish formatted report to Telegram channel and admin chat.
 
@@ -384,7 +385,10 @@ async def publish_report(
     final_text = report_text
     db_report: DailyReport | None = None
 
-    if session is not None:
+    if not persist:
+        # Scheduled briefings live in nested per-slot records; the caller owns them.
+        db_report = None
+    elif session is not None:
         db_report = await session.scalar(
             select(DailyReport).where(DailyReport.report_date == report_date)
         )
@@ -507,7 +511,7 @@ async def publish_report(
             sent.append({"chat_id": str(target_admin), "message_id": admin_res.message_id, "type": "admin"})
 
         # Step 3: Mark DailyReport as published
-        if session is not None and db_report is not None:
+        if persist and session is not None and db_report is not None:
             db_report.status = "published"
             db_report.published_at = datetime.now(UTC)
             db_report.telegram_message_ids = [s["message_id"] for s in sent]
@@ -517,7 +521,7 @@ async def publish_report(
 
     except Exception as exc:
         logger.error("Publishing failed after partial delivery: %s", exc)
-        if session is not None and db_report is not None:
+        if persist and session is not None and db_report is not None:
             db_report.status = "failed"
             db_report.telegram_message_ids = [s["message_id"] for s in sent]
             await session.commit()

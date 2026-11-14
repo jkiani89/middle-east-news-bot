@@ -26,7 +26,14 @@ from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, DailyReport, JobLog
 from app.processors.pipeline import collect_new_articles, process_collected_articles
-from app.reports.daily_report import generate_and_save_daily_report
+from app.reports.daily_report import (
+    current_slot_hour,
+    generate_and_save_daily_report,
+    generate_slot_bulletins,
+    mark_slot_published,
+    report_slot_hours,
+    slot_label,
+)
 from app.telegram.publisher import (
     MockPublishRefusedError,
     publish_daily_report_pdf,
@@ -267,11 +274,94 @@ async def hourly_collection(
         return job_log
 
 
+async def _publish_slot_briefing(
+    session: AsyncSession,
+    slot_hour: int,
+    bot: Any | None,
+    dry_run: bool,
+) -> int:
+    """Generate and deliver the briefing of one scheduled slot; return messages sent."""
+    rep_date, sections, text, metadata = await generate_slot_bulletins(slot_hour=slot_hour)
+    label = slot_label(slot_hour)
+    report = await session.scalar(
+        select(DailyReport).where(DailyReport.report_date == rep_date)
+    )
+    record: dict[str, Any] = {}
+    if report is not None and isinstance(report.content, dict):
+        record = ((report.content.get("bulletins") or {}).get(label)) or {}
+
+    if record.get("status") == "published" and record.get("message_ids"):
+        logger.info("Briefing %s for %s was already delivered; skipping.", label, rep_date)
+        return 0
+
+    if not sections:
+        logger.info("Briefing %s for %s has no eligible events; nothing to publish.", label, rep_date)
+        return 0
+
+    content_quality = record.get("content_quality") or metadata.get("content_quality", "real")
+    items = [item for _key, _name, topic_items in sections for item in topic_items]
+
+    sent = await publish_report(
+        report_date=rep_date,
+        items=items,
+        content_quality=content_quality,
+        report_text=text,
+        bot=bot,
+        dry_run=dry_run,
+        persist=False,
+    )
+    logger.info(
+        "Briefing %s for %s published: %d event(s) in %d section(s), %d message(s).",
+        label,
+        rep_date,
+        len(items),
+        len(sections),
+        len(sent),
+    )
+
+    message_ids = [entry["message_id"] for entry in sent if entry.get("message_id")]
+    if dry_run:
+        return len(sent)
+
+    pdf_message_id: int | None = None
+    delivered_pdf = record.get("pdf_message_id")
+    if isinstance(delivered_pdf, int) and delivered_pdf > 0:
+        pdf_message_id = delivered_pdf
+        logger.info("Briefing PDF already delivered as message %s; skipping.", pdf_message_id)
+    else:
+        try:
+            pdf_info = await publish_daily_report_pdf(
+                report_date=rep_date,
+                items=items,
+                metadata=metadata,
+                content_quality=content_quality,
+                bot=bot,
+                dry_run=False,
+            )
+            candidate = pdf_info.get("message_id")
+            if isinstance(candidate, int) and candidate > 0:
+                pdf_message_id = candidate
+                message_ids.append(pdf_message_id)
+        except Exception:
+            logger.exception(
+                "Briefing PDF delivery failed; the text bulletin stays delivered."
+            )
+
+    await mark_slot_published(session, rep_date, slot_hour, message_ids, pdf_message_id)
+    return len(sent) + (1 if pdf_message_id else 0)
+
+
 async def daily_report(
     bot: Any | None = None,
     dry_run: bool = False,
+    slot_hour: int | None = None,
 ) -> JobLog:
-    """Daily report generation and Telegram publishing."""
+    """Daily report generation and Telegram publishing.
+
+    With ``slot_hour`` this publishes the scheduled briefing for that slot: one
+    message per run, sectioned by topic. Without it, the original single 24-hour
+    report is produced unchanged.
+    """
     async with SessionLocal() as session:
         job_log = JobLog(
             job_name="daily_report",
@@ -284,6 +374,16 @@ async def daily_report(
         await session.refresh(job_log)
 
         try:
+            if slot_hour is not None:
+                job_log.processed_count = await _publish_slot_briefing(
+                    session=session,
+                    slot_hour=slot_hour,
+                    bot=bot,
+                    dry_run=dry_run,
+                )
+                job_log.status = "success"
+                return job_log
+
             rep_date, items, text = await generate_and_save_daily_report()
             # Query stored report to extract content_quality
             db_report = await session.scalar(
@@ -421,6 +521,11 @@ async def cleanup_gemini_request_log() -> None:
             adapter.close()
 
 
+async def _scheduled_briefing() -> JobLog:
+    """Publish the briefing of the slot that just came due."""
+    return await daily_report(slot_hour=current_slot_hour())
+
+
 def build_scheduler() -> AsyncIOScheduler:
     """Build and configure APScheduler instance."""
     scheduler = AsyncIOScheduler(timezone=ZoneInfo(settings.timezone))
@@ -433,10 +538,10 @@ def build_scheduler() -> AsyncIOScheduler:
         misfire_grace_time=300,
     )
     scheduler.add_job(
-        daily_report,
+        _scheduled_briefing,
         trigger=CronTrigger(
-            hour=settings.daily_report_hour,
-            minute=settings.daily_report_minute,
+            hour=",".join(str(hour) for hour in report_slot_hours()),
+            minute=0,
         ),
         id="daily_report",
         max_instances=1,

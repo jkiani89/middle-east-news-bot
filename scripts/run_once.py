@@ -36,6 +36,7 @@ from app.config import settings  # noqa: E402
 from app.database.connection import SessionLocal  # noqa: E402
 from app.database.models import DailyReport  # noqa: E402
 from app.processors.pipeline import collect_and_process  # noqa: E402
+from app.reports.daily_report import current_slot_hour  # noqa: E402
 from app.scheduler.jobs import (  # noqa: E402
     cleanup_gemini_request_log,
     daily_report,
@@ -52,6 +53,7 @@ logger = logging.getLogger("run_once")
 async def should_run_daily_report(
     force: bool = False,
     target_hour: int | None = None,
+    slot_hour: int | None = None,
 ) -> tuple[bool, str]:
     """Determine whether daily report should be generated and published.
 
@@ -72,8 +74,19 @@ async def should_run_daily_report(
         db_report = await session.scalar(
             select(DailyReport).where(DailyReport.report_date == today_date)
         )
+
+        if slot_hour is not None:
+            from app.reports.daily_report import slot_label
+
+            label = slot_label(slot_hour)
+            bulletins = (db_report.content or {}).get("bulletins", {}) if db_report else {}
+            record = bulletins.get(label) or {}
+            if record.get("status") == "published" and record.get("message_ids"):
+                return False, f"Briefing {label} for {today_date} already published."
+
         if (
-            db_report is not None
+            slot_hour is None
+            and db_report is not None
             and db_report.status == "published"
             and bool(db_report.telegram_message_ids)
         ):
@@ -98,6 +111,7 @@ async def should_run_daily_report(
 async def run_batch_pipeline(
     force_daily_report: bool = False,
     dry_run_daily_report: bool = False,
+    slot_hour: int | None = None,
 ) -> int:
     """Execute the end-to-end batch processing pipeline.
 
@@ -123,13 +137,20 @@ async def run_batch_pipeline(
 
     # 3. Check and publish daily report if due
     logger.info("Step 3/4: Checking daily report trigger...")
-    should_publish, reason = await should_run_daily_report(force=force_daily_report)
+    should_publish, reason = await should_run_daily_report(
+        force=force_daily_report, target_hour=slot_hour, slot_hour=slot_hour
+    )
     logger.info("Daily report decision: run=%s (%s)", should_publish, reason)
 
     if should_publish:
         logger.info("Generating and publishing daily intelligence report...")
         try:
-            job_log = await daily_report(dry_run=dry_run_daily_report)
+            if slot_hour is None:
+                job_log = await daily_report(dry_run=dry_run_daily_report)
+            else:
+                job_log = await daily_report(
+                    dry_run=dry_run_daily_report, slot_hour=slot_hour
+                )
             logger.info(
                 "Daily report finished with status '%s' (%d items sent).",
                 job_log.status,
@@ -163,7 +184,25 @@ def main() -> None:
         default=os.environ.get("DRY_RUN_DAILY_REPORT", "").lower() in ("true", "1", "yes"),
         help="Execute report generation without sending real Telegram messages",
     )
+    parser.add_argument(
+        "--slot-hour",
+        type=int,
+        default=None,
+        help="Publish the scheduled briefing of this local hour (default: legacy 24h report)",
+    )
     args = parser.parse_args()
+
+    slot_hour = args.slot_hour
+    if slot_hour is None:
+        env_slot = os.environ.get("REPORT_SLOT_HOUR", "").strip()
+        if env_slot.isdigit():
+            slot_hour = int(env_slot)
+    if slot_hour is None and os.environ.get("SCHEDULED_BRIEFINGS", "").lower() in (
+        "true",
+        "1",
+        "yes",
+    ):
+        slot_hour = current_slot_hour()
 
     # Immediate per-article publishing must follow the same dry-run switch, otherwise a
     # test run would post real messages to the Telegram channel.
@@ -173,6 +212,7 @@ def main() -> None:
         run_batch_pipeline(
             force_daily_report=args.force_daily_report,
             dry_run_daily_report=args.dry_run_daily_report,
+            slot_hour=slot_hour,
         )
     )
     sys.exit(exit_code)

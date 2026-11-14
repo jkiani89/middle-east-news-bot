@@ -20,6 +20,7 @@ from app.ai.summarizer import passes_persian_guard
 from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, ArticleEvent, DailyReport, Event, Source, Summary
+from app.editorial.topics import load_topics, topic_for_event
 
 logger = logging.getLogger(__name__)
 
@@ -98,24 +99,62 @@ def is_summary_mock(summary: Summary | Any) -> bool:
     return False
 
 
-def report_window(report_date: date | None = None) -> tuple[date, datetime, datetime]:
-    """Return (report_date, window_start, window_end) for a true 24-hour window.
+def report_slot_hours() -> tuple[int, ...]:
+    """Configured briefing hours in local time, sorted and de-duplicated."""
+    hours: list[int] = []
+    for raw in (settings.report_slots or "").split(","):
+        value = raw.strip()
+        if value.isdigit() and 0 <= int(value) <= 23:
+            hours.append(int(value))
+    return tuple(sorted(set(hours))) or (settings.daily_report_hour,)
 
-    The window ends at the configured daily-report time (in ``settings.timezone``)
-    on ``report_date`` and starts exactly 24 hours earlier. Anchoring to the
-    configured time instead of ``datetime.now()`` keeps repeated or delayed runs
-    idempotent, and guarantees no hour of the day is ever left uncovered.
+
+def slot_label(slot_hour: int) -> str:
+    """Stable key for one briefing slot, e.g. ``"14:00"``."""
+    return f"{slot_hour:02d}:00"
+
+
+def current_slot_hour(now: datetime | None = None) -> int:
+    """The briefing slot that is due now: the latest configured hour already passed."""
+    tz = ZoneInfo(settings.timezone)
+    moment = now or datetime.now(tz)
+    slots = report_slot_hours()
+    due = [hour for hour in slots if hour <= moment.hour]
+    return due[-1] if due else slots[-1]
+
+
+def report_window(
+    report_date: date | None = None,
+    slot_hour: int | None = None,
+) -> tuple[date, datetime, datetime]:
+    """Return (report_date, window_start, window_end).
+
+    Without a slot this is the original 24-hour window anchored at the configured
+    daily-report time, so repeated or delayed runs stay idempotent. With a slot it
+    ends at that hour and starts at the previous slot, which keeps the three daily
+    briefings gapless and free of overlap.
     """
     tz = ZoneInfo(settings.timezone)
     if report_date is None:
         report_date = datetime.now(tz).date()
 
+    if slot_hour is None:
+        end_hour = settings.daily_report_hour
+        end_minute = settings.daily_report_minute
+        window_hours = 24
+    else:
+        slots = report_slot_hours()
+        earlier = [hour for hour in slots if hour < slot_hour]
+        previous_hour = earlier[-1] if earlier else slots[-1]
+        end_hour, end_minute = slot_hour, 0
+        window_hours = (slot_hour - previous_hour) % 24 or 24
+
     window_end = datetime.combine(
         report_date,
-        time(hour=settings.daily_report_hour, minute=settings.daily_report_minute),
+        time(hour=end_hour, minute=end_minute),
         tzinfo=tz,
     )
-    window_start = window_end - timedelta(days=1)
+    window_start = window_end - timedelta(hours=window_hours)
     return report_date, window_start, window_end
 
 
@@ -123,6 +162,7 @@ async def fetch_report_items(
     session: AsyncSession,
     report_date: date | None = None,
     min_importance: int | None = None,
+    slot_hour: int | None = None,
 ) -> tuple[date, list[dict[str, Any]], dict[str, Any]]:
     """Query PostgreSQL for events in the 24-hour window matching report criteria.
 
@@ -132,7 +172,7 @@ async def fetch_report_items(
     if min_importance is None:
         min_importance = settings.min_importance
 
-    report_date, window_start, window_end = report_window(report_date)
+    report_date, window_start, window_end = report_window(report_date, slot_hour)
 
     # Subquery: identify events that have ANY article with flagged_for_review or rejected status
     flagged_subquery = (
@@ -236,6 +276,8 @@ async def fetch_report_items(
             }
         )
 
+        topic = topic_for_event(event)
+
         primary_art = linked_arts[0][0] if linked_arts else None
         primary_src = linked_arts[0][1] if linked_arts else None
 
@@ -294,6 +336,8 @@ async def fetch_report_items(
             "additional_sources": additional_sources,
             "total_sources_count": max(1 + len(additional_sources), distinct_sources),
             "distinct_sources_count": distinct_sources,
+            "topic_key": topic.key if topic else None,
+            "topic_fa": topic.name_fa if topic else "سایر تحولات",
             "is_mock": is_mock,
         }
 
@@ -339,6 +383,7 @@ async def fetch_report_items(
         "max_items": max_items,
         "language_rejected_count": language_rejected_count,
         "min_created_at": (settings.daily_report_min_created_at or "").strip() or None,
+        "slot": slot_label(slot_hour) if slot_hour is not None else None,
         "timezone": settings.timezone,
     }
 
@@ -357,6 +402,9 @@ def format_persian_daily_report(
     items: list[dict[str, Any]],
     metadata: dict[str, Any] | None = None,
     as_html: bool = True,
+    include_header: bool = True,
+    include_footer: bool = True,
+    section_titles: tuple[str, str] | None = None,
 ) -> str:
     """Format structured items into a clean, professional Persian daily intelligence report.
 
@@ -389,8 +437,9 @@ def format_persian_daily_report(
     else:
         quality_badge = "✅ کیفیت محتوا: تحلیل رسمی هوش مصنوعی (آماده انتشار)"
 
-    if as_html:
-        lines: list[str] = [
+    lines: list[str] = []
+    if include_header and as_html:
+        lines = [
             "<b>📊 بولتن هوش و پایش تحولات خاورمیانه و جهان اسلام</b>",
             f"📅 تاریخ گزارش: <code>{report_date.strftime('%Y/%m/%d') if hasattr(report_date, 'strftime') else str(report_date)}</code> (بازه پایش ۲۴ ساعته)",
             f"📈 آمار رویدادها: <b>{total_events}</b> رخداد واجد شرایط (اهمیت ≥ {min_imp}) | "
@@ -399,7 +448,7 @@ def format_persian_daily_report(
             "═" * 50,
             "",
         ]
-    else:
+    elif include_header:
         lines = [
             "📊 بولتن هوش و پایش تحولات خاورمیانه و جهان اسلام",
             f"📅 تاریخ گزارش: {report_date.strftime('%Y/%m/%d') if hasattr(report_date, 'strftime') else str(report_date)} (بازه پایش ۲۴ ساعته)",
@@ -415,7 +464,10 @@ def format_persian_daily_report(
 
     # Section 1: Strategic Developments (Importance >= 4)
     if strategic_items:
-        sec1_header = "<b>🔴 بخش اول: اهم تحولات راهبردی (اولویت بالا)</b>" if as_html else "🔴 بخش اول: اهم تحولات راهبردی (اولویت بالا)"
+        strategic_title = (
+            section_titles[0] if section_titles else "🔴 بخش اول: اهم تحولات راهبردی (اولویت بالا)"
+        )
+        sec1_header = f"<b>{esc(strategic_title)}</b>" if as_html else strategic_title
         lines.extend([
             sec1_header,
             "─" * 45,
@@ -472,7 +524,10 @@ def format_persian_daily_report(
 
     # Section 2: Regional & Thematic Developments (Importance 2 & 3)
     if regional_items:
-        sec2_header = "<b>🌐 بخش دوم: سایر تحولات منطقه‌ای و موضوعی</b>" if as_html else "🌐 بخش دوم: سایر تحولات منطقه‌ای و موضوعی"
+        regional_title = (
+            section_titles[1] if section_titles else "🌐 بخش دوم: سایر تحولات منطقه‌ای و موضوعی"
+        )
+        sec2_header = f"<b>{esc(regional_title)}</b>" if as_html else regional_title
         lines.extend([
             sec2_header,
             "─" * 45,
@@ -531,14 +586,15 @@ def format_persian_daily_report(
         lines.append("")
 
     # Footer: Editorial Disclosure
-    footer_header = "<b>🛡 یادداشت صحت اطلاعات و خط‌مشی تحریریه (Editorial Note):</b>" if as_html else "🛡 یادداشت صحت اطلاعات و خط‌مشی تحریریه (Editorial Note):"
-    lines.extend([
-        "═" * 50,
-        footer_header,
-        "این گزارش به صورت کاملاً خودکار بر مبنای اصول بی‌طرفی، انتساب دقیق مواضع رسمی",
-        "و تجمیع رویدادهای مستقل تدوین شده است. هیچ‌گونه قضاوت سیاسی، فرضیه‌سازی",
-        "یا توهم زبانی در تهیه این بولتن وارد نشده است.",
-    ])
+    if include_footer:
+        footer_header = "<b>🛡 یادداشت صحت اطلاعات و خط‌مشی تحریریه (Editorial Note):</b>" if as_html else "🛡 یادداشت صحت اطلاعات و خط‌مشی تحریریه (Editorial Note):"
+        lines.extend([
+            "═" * 50,
+            footer_header,
+            "این گزارش به صورت کاملاً خودکار بر مبنای اصول بی‌طرفی، انتساب دقیق مواضع رسمی",
+            "و تجمیع رویدادهای مستقل تدوین شده است. هیچ‌گونه قضاوت سیاسی، فرضیه‌سازی",
+            "یا توهم زبانی در تهیه این بولتن وارد نشده است.",
+        ])
 
     return "\n".join(lines)
 
@@ -606,6 +662,197 @@ async def _build_daily_report_with_session(
         metadata.get("regional_events_count", 0),
     )
     return rep_date, items
+
+
+def group_items_by_topic(
+    items: list[dict[str, Any]],
+) -> list[tuple[str, str, list[dict[str, Any]]]]:
+    """Group items into briefing sections, in configured topic priority order."""
+    names: dict[str, str] = {topic.key: topic.name_fa for topic in load_topics()}
+    grouped: dict[str, list[dict[str, Any]]] = {key: [] for key in names}
+    for item in items:
+        key = item.get("topic_key") or "other"
+        if key not in names:
+            names[key] = item.get("topic_fa") or "سایر تحولات"
+            grouped.setdefault(key, [])
+        grouped[key].append(item)
+    return [(key, names[key], grouped[key]) for key in names if grouped.get(key)]
+
+
+def format_slot_bulletin(
+    report_date: date,
+    sections: list[tuple[str, str, list[dict[str, Any]]]],
+    slot_hour: int,
+    metadata: dict[str, Any] | None = None,
+    as_html: bool = True,
+) -> str:
+    """Render one scheduled briefing: a header plus one section per topic."""
+    metadata = metadata or {}
+    total = sum(len(topic_items) for _key, _name, topic_items in sections)
+    min_imp = metadata.get("min_importance", settings.min_importance)
+    quality = metadata.get("content_quality", "real")
+
+    if quality == "mock":
+        badge = "⚠️ کیفیت محتوا: شبیه‌سازی / آزمایشی (غیرقابل انتشار عمومی)"
+    elif quality == "mixed":
+        badge = "⚠️ کیفیت محتوا: ترکیبی (نیازمند بازپردازش پیش از انتشار)"
+    else:
+        badge = "✅ کیفیت محتوا: تحلیل رسمی هوش مصنوعی (آماده انتشار)"
+
+    date_text = report_date.strftime("%Y/%m/%d") if hasattr(report_date, "strftime") else str(report_date)
+    title = "📊 بولتن زمان‌بندی‌شده تحولات منطقه و جهان"
+    subtitle = f"📅 تاریخ: {date_text} | نوبت: {slot_label(slot_hour)}"
+    stats = f"📈 {total} رویداد در {len(sections)} بخش (اهمیت ≥ {min_imp})"
+
+    if as_html:
+        lines = [
+            f"<b>{esc(title)}</b>",
+            esc(subtitle),
+            esc(stats),
+            badge,
+            "═" * 50,
+            "",
+        ]
+    else:
+        lines = [title, subtitle, stats, badge, "═" * 50, ""]
+
+    for _key, name, topic_items in sections:
+        lines.append(
+            format_persian_daily_report(
+                report_date,
+                topic_items,
+                {"total_events": len(topic_items), "min_importance": min_imp},
+                as_html=as_html,
+                include_header=False,
+                include_footer=False,
+                section_titles=(f"🔴 {name} — تحولات راهبردی", f"🌐 {name} — سایر تحولات"),
+            )
+        )
+
+    if not sections:
+        lines.append("در این بازه هیچ رویدادی واجد شرایط انتشار نبود.")
+        lines.append("")
+
+    if as_html:
+        lines.extend(["═" * 50, "<b>🛡 یادداشت تحریریه:</b>"])
+    else:
+        lines.extend(["═" * 50, "🛡 یادداشت تحریریه:"])
+    lines.append("این بولتن به‌صورت خودکار و بر پایه اصول بی‌طرفی و انتساب دقیق منابع تدوین شده است.")
+    return "\n".join(lines)
+
+
+async def generate_slot_bulletins(
+    report_date: date | None = None,
+    slot_hour: int | None = None,
+    min_importance: int | None = None,
+) -> tuple[date, list[tuple[str, str, list[dict[str, Any]]]], str, dict[str, Any]]:
+    """Build one scheduled briefing and store it under ``content['bulletins'][slot]``.
+
+    The window of a slot starts where the previous slot ended, so the three daily
+    briefings neither overlap nor leave a gap. Delivery state lives in the nested
+    record, which keeps the single-row-per-date ``daily_reports`` schema intact.
+    """
+    if slot_hour is None:
+        slot_hour = current_slot_hour()
+
+    async with SessionLocal() as session:
+        rep_date, items, metadata = await fetch_report_items(
+            session,
+            report_date=report_date,
+            min_importance=min_importance,
+            slot_hour=slot_hour,
+        )
+        sections = group_items_by_topic(items)
+        formatted_text = format_slot_bulletin(rep_date, sections, slot_hour, metadata)
+        label = slot_label(slot_hour)
+
+        report = await session.scalar(
+            select(DailyReport).where(DailyReport.report_date == rep_date)
+        )
+        content: dict[str, Any] = dict(report.content or {}) if report else {}
+        bulletins: dict[str, Any] = dict(content.get("bulletins") or {})
+        previous: dict[str, Any] = dict(bulletins.get(label) or {})
+
+        payload: dict[str, Any] = {
+            "slot": label,
+            "date": str(rep_date),
+            "content_quality": metadata.get("content_quality", "real"),
+            "metadata": metadata,
+            "formatted_text": formatted_text,
+            "items": items,
+            "sections": [
+                {"topic_key": key, "topic_fa": name, "count": len(topic_items)}
+                for key, name, topic_items in sections
+            ],
+            "message_ids": previous.get("message_ids") or [],
+            "pdf_message_id": previous.get("pdf_message_id"),
+            "status": "generated",
+        }
+        bulletins[label] = payload
+
+        new_content = {
+            **content,
+            "date": str(rep_date),
+            "content_quality": payload["content_quality"],
+            "metadata": metadata,
+            "formatted_text": formatted_text,
+            "items": items,
+            "bulletins": bulletins,
+        }
+
+        if report:
+            report.content = new_content
+            report.status = "generated"
+            report.generated_at = _utcnow()
+        else:
+            report = DailyReport(
+                report_date=rep_date,
+                content=new_content,
+                status="generated",
+                generated_at=_utcnow(),
+            )
+            session.add(report)
+        await session.commit()
+
+    logger.info(
+        "Briefing %s for %s generated: %d events in %d section(s).",
+        label,
+        rep_date,
+        len(items),
+        len(sections),
+    )
+    return rep_date, sections, formatted_text, metadata
+
+
+async def mark_slot_published(
+    session: AsyncSession,
+    report_date: date,
+    slot_hour: int,
+    message_ids: list[int],
+    pdf_message_id: int | None = None,
+) -> None:
+    """Record delivery of one briefing slot so a re-run never reposts it."""
+    report = await session.scalar(
+        select(DailyReport).where(DailyReport.report_date == report_date)
+    )
+    if report is None:
+        return
+    content: dict[str, Any] = dict(report.content or {})
+    bulletins: dict[str, Any] = dict(content.get("bulletins") or {})
+    label = slot_label(slot_hour)
+    payload: dict[str, Any] = dict(bulletins.get(label) or {})
+    payload["status"] = "published"
+    payload["message_ids"] = message_ids
+    payload["pdf_message_id"] = pdf_message_id
+    bulletins[label] = payload
+    content["bulletins"] = bulletins
+    report.content = content
+    report.telegram_message_ids = message_ids
+    report.published_at = _utcnow()
+    report.status = "published" if all(
+        (slot.get("status") == "published") for slot in bulletins.values()
+    ) else "generated"
+    await session.commit()
 
 
 async def generate_and_save_daily_report(

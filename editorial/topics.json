@@ -1,0 +1,96 @@
+{
+  "_comment": [
+    "Briefing topics. A story belongs to the first topic (lowest priority number) whose",
+    "primary-subject rule it satisfies. The Middle East topic is built from",
+    "app/editorial/regions.py so the audited regional gate keeps its exact behaviour.",
+    "countries/actors/places/keywords are matched case-insensitively in both Persian and English."
+  ],
+  "topics": [
+    {
+      "key": "ir",
+      "name_fa": "ایران و مذاکرات",
+      "priority": 1,
+      "min_importance": 2,
+      "countries": ["ایران", "iran"],
+      "actors": [
+        "خامنه‌ای", "khamenei", "رئیس‌جمهور ایران", "president of iran", "سپاه پاسداران",
+        "irgc", "وزارت امور خارجه ایران", "iran foreign ministry", "مجلس شورای اسلامی",
+        "iran parliament", "قوه قضائیه ایران", "atomic energy organization of iran", "aeoi"
+      ],
+      "places": [
+        "تهران", "tehran", "اصفهان", "isfahan", "تبریز", "tabriz", "مشهد", "mashhad",
+        "شیراز", "shiraz", "بندرعباس", "bandar abbas", "نطنز", "natanz", "فردو", "fordow",
+        "بوشهر", "bushehr", "خارک", "kharg", "جزیره خارک", "اهواز", "ahvaz", "قشم", "qeshm"
+      ],
+      "keywords": [
+        "برجام", "jcpoa", "مذاکرات هسته‌ای", "nuclear talks", "تحریم", "sanctions",
+        "آژانس بین‌المللی انرژی اتمی", "iaea", "حجاب", "hijab", "اعتراض", "protest",
+        "انتخابات ایران", "iran election", "قیمت ارز", "بازار تهران"
+      ]
+    },
+    {
+      "key": "ye",
+      "name_fa": "یمن و دریای سرخ",
+      "priority": 2,
+      "min_importance": 2,
+      "countries": ["یمن", "yemen"],
+      "actors": [
+        "انصارالله", "ansarallah", "ansar allah", "حوثی", "حوثی‌ها", "houthi", "houthis",
+        "دولت نجات ملی", "کمیته انقلابی", "revolutionary committee", "ائتلاف عربستان",
+        "saudi-led coalition", "التحالف", "ارتش یمن", "yemeni army"
+      ],
+      "places": [
+        "صنعا", "sanaa", "sana'a", "عدن", "aden", "الحدیده", "hodeidah", "حدیده", "مأرب",
+        "marib", "تعز", "taiz", "صعده", "saada", "سیئون", "seiyun", "المکلا", "mukalla",
+        "باب‌المندب", "bab al-mandeb", "دریای سرخ", "red sea"
+      ],
+      "keywords": [
+        "یمن", "yemen", "دریای سرخ", "red sea", "باب‌المندب", "bab al-mandeb",
+        "کشتیرانی", "shipping", "حملات دریایی", "naval attack", "بندر", "port"
+      ]
+    },
+    {
+      "key": "ru-ua",
+      "name_fa": "جنگ روسیه و اوکراین",
+      "priority": 3,
+      "min_importance": 2,
+      "countries": ["اوکراین", "ukraine", "روسیه", "russia", "بلاروس", "belarus"],
+      "actors": [
+        "پوتین", "putin", "زلنسکی", "zelensky", "زلنسکی", "کرملین", "kremlin",
+        "ناتو", "nato", "وزارت دفاع روسیه", "russian defense ministry", "واگنر", "wagner",
+        "ارتش اوکراین", "ukrainian army", "شورای امنیت ملی اوکراین"
+      ],
+      "places": [
+        "کی‌یف", "کیف", "kyiv", "kiev", "خارکف", "خارکیف", "kharkiv", "دونتسک", "donetsk",
+        "لوهانسک", "luhansk", "مسکو", "moscow", "اودسا", "odesa", "زاپوریژیا",
+        "zaporizhzhia", "کورسک", "kursk", "بلگورود", "belgorod", "کریمه", "crimea",
+        "ماریوپول", "mariupol", "دنیپرو", "dnipro"
+      ],
+      "keywords": [
+        "اوکراین", "ukraine", "جنگ", "war", "آتش‌بس", "ceasefire", "مذاکرات صلح",
+        "peace talks", "پهپاد", "drone", "خط مقدم", "front line", "تحریم روسیه",
+        "russia sanctions"
+      ]
+    },
+    {
+      "key": "us",
+      "name_fa": "سیاست داخلی آمریکا",
+      "priority": 4,
+      "min_importance": 3,
+      "countries": ["ایالات متحده آمریکا", "آمریکا", "united states", "usa", "u.s."],
+      "actors": [
+        "ترامپ", "trump", "کنگره", "congress", "کاخ سفید", "white house", "دیوان عالی",
+        "supreme court", "وزارت دادگستری آمریکا", "justice department", "پنتاگون",
+        "pentagon", "دموکرات", "democrat", "جمهوری‌خواه", "republican", "فرماندار",
+        "governor"
+      ],
+      "places": [],
+      "keywords": [
+        "انتخابات", "election", "کنگره", "congress", "دموکرات", "democrat",
+        "جمهوری‌خواه", "republican", "فرمان اجرایی", "executive order", "بودجه",
+        "shutdown", "تعطیلی دولت", "مهاجرت", "immigration", "استیضاح", "impeachment",
+        "دادگاه عالی", "supreme court"
+      ]
+    }
+  ]
+}
