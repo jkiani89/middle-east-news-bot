@@ -1,0 +1,53 @@
+name: Repository Heartbeat
+
+# GitHub silently disables scheduled workflows in a public repository once no repository
+# activity has occurred for 60 days — the bot would stop with no failed run and no email.
+# This workflow exists only to keep the repository active: it stamps the date into
+# docs/HEARTBEAT.md and commits it, comfortably inside that window.
+on:
+  schedule:
+    # Monthly, first day at 03:00 UTC (well inside the 60-day limit even if one run is
+    # delayed or dropped).
+    - cron: '0 3 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repository-heartbeat
+  cancel-in-progress: false
+
+jobs:
+  heartbeat:
+    name: Record repository activity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Stamp the heartbeat file
+        run: |
+          {
+            echo '# Heartbeat'
+            echo
+            echo "Last automatic heartbeat: $(date -u +'%Y-%m-%d %H:%M UTC')"
+            echo
+            echo "This file is maintained by .github/workflows/keepalive.yml."
+            echo "It exists only so the repository shows activity well inside GitHub's 60-day"
+            echo "window; without it the scheduled workflows of a public repository are disabled"
+            echo "and the news bot stops silently."
+          } > docs/HEARTBEAT.md
+
+      - name: Commit the heartbeat
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/HEARTBEAT.md
+          if git diff --cached --quiet; then
+            echo "Heartbeat unchanged; nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore: refresh repository heartbeat"
+          git push
