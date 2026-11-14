@@ -1017,6 +1017,7 @@ UPDATE bulletin_slots
    SET status = 'in_flight', claimed_at = now()
  WHERE report_date = :report_date
    AND slot_hour = :slot_hour
+   AND status IS DISTINCT FROM 'published'
    AND (status IS DISTINCT FROM 'in_flight'
         OR claimed_at IS NULL
         OR claimed_at < now() - (CAST(:timeout_minutes AS int) * interval '1 minute'))
