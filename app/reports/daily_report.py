@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.summarizer import passes_persian_guard
 from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, ArticleEvent, DailyReport, Event, Source, Summary
@@ -46,6 +47,37 @@ VERIFICATION_LABELS: dict[str, str] = {
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def report_created_after_cutoff() -> datetime | None:
+    """Earliest ``Event.created_at`` admitted into the bulletin (Phase R-5).
+
+    Only events ingested after the language and verification guards went live are
+    worth publishing; an empty ``daily_report_min_created_at`` disables the filter.
+    """
+    raw = (settings.daily_report_min_created_at or "").strip()
+    if not raw:
+        return None
+    try:
+        cutoff_date = date.fromisoformat(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid daily_report_min_created_at=%r; the created_at filter stays disabled.",
+            raw,
+        )
+        return None
+    return datetime.combine(cutoff_date, time.min, tzinfo=UTC)
+
+
+def _resolved_verification_status(model_status: str, source_count: int) -> str:
+    """Re-derive the verification label from corroboration at render time (R-1).
+
+    ``app.processors.pipeline`` owns this rule but reaches this module through the
+    Telegram publisher, so the import stays local to avoid a cycle.
+    """
+    from app.processors.pipeline import resolve_verification_status
+
+    return resolve_verification_status(model_status, source_count)
 
 
 def is_summary_mock(summary: Summary | Any) -> bool:
@@ -109,16 +141,23 @@ async def fetch_report_items(
         .where(Article.status.in_(["flagged_for_review", "rejected"]))
     )
 
+    conditions = [
+        Event.first_seen_at >= window_start,
+        Event.first_seen_at < window_end,
+        Event.importance >= min_importance,
+        Event.id.not_in(flagged_subquery),
+    ]
+    created_after = report_created_after_cutoff()
+    if created_after is not None:
+        # ``events`` has no created_at column (and adding one would need a migration);
+        # first_seen_at is its ingestion timestamp, set once when the event is inserted.
+        conditions.append(Event.first_seen_at >= created_after)
+
     # Query events in time window with importance threshold, excluding flagged
     stmt = (
         select(Event, Summary)
         .join(Summary, Summary.event_id == Event.id)
-        .where(
-            Event.first_seen_at >= window_start,
-            Event.first_seen_at < window_end,
-            Event.importance >= min_importance,
-            Event.id.not_in(flagged_subquery),
-        )
+        .where(*conditions)
         .order_by(Event.importance.desc(), Event.first_seen_at.desc())
     )
 
@@ -131,6 +170,10 @@ async def fetch_report_items(
             "total_events": 0,
             "strategic_events_count": 0,
             "regional_events_count": 0,
+            "events_before_cap": 0,
+            "max_items": settings.max_daily_report_items,
+            "language_rejected_count": 0,
+            "min_created_at": (settings.daily_report_min_created_at or "").strip() or None,
         }
         return report_date, [], metadata
 
@@ -155,11 +198,25 @@ async def fetch_report_items(
     seen_event_ids: set[int] = set()
     mock_count = 0
     real_count = 0
+    language_rejected_count = 0
 
     for event, summary in event_summary_rows:
         if event.id in seen_event_ids:
             continue
         seen_event_ids.add(event.id)
+
+        # R-1: stored text may predate the Phase N guard, so re-check it here and
+        # drop anything that is not fluent Persian instead of spreading it further.
+        if not (
+            passes_persian_guard(summary.headline_fa)
+            and passes_persian_guard(summary.summary_fa)
+        ):
+            language_rejected_count += 1
+            logger.warning(
+                "Event #%d dropped from the daily report: headline/summary failed the Persian language guard.",
+                event.id,
+            )
+            continue
 
         is_mock = is_summary_mock(summary)
         if is_mock:
@@ -168,6 +225,17 @@ async def fetch_report_items(
             real_count += 1
 
         linked_arts = articles_by_event.get(event.id, [])
+
+        # R-1: independent sources are recounted from the linked articles at render
+        # time, so a stale stored verdict can never present a single source as confirmed.
+        distinct_sources = len(
+            {
+                art.source_id
+                for art, _src in linked_arts
+                if getattr(art, "source_id", None) is not None
+            }
+        )
+
         primary_art = linked_arts[0][0] if linked_arts else None
         primary_src = linked_arts[0][1] if linked_arts else None
 
@@ -224,10 +292,29 @@ async def fetch_report_items(
             "primary_source": primary_source_name,
             "primary_url": primary_url,
             "additional_sources": additional_sources,
-            "total_sources_count": 1 + len(additional_sources),
+            "total_sources_count": max(1 + len(additional_sources), distinct_sources),
+            "distinct_sources_count": distinct_sources,
             "is_mock": is_mock,
         }
+
+        if distinct_sources < 2:
+            item["verification_status"] = _resolved_verification_status(
+                item["verification_status"], distinct_sources
+            )
+            item["verification_status_fa"] = VERIFICATION_LABELS.get(
+                item["verification_status"], "نامشخص"
+            )
+
         items.append(item)
+
+    # R-3: a bulletin is a briefing, not a dump; keep the strongest events only.
+    events_before_cap = len(items)
+    max_items = max(0, settings.max_daily_report_items)
+    if max_items and len(items) > max_items:
+        logger.info(
+            "Capping the daily report at %d of %d eligible events.", max_items, events_before_cap
+        )
+        items = items[:max_items]
 
     if mock_count > 0 and real_count > 0:
         content_quality = "mixed"
@@ -248,6 +335,10 @@ async def fetch_report_items(
         "content_quality": content_quality,
         "mock_summaries_count": mock_count,
         "real_summaries_count": real_count,
+        "events_before_cap": events_before_cap,
+        "max_items": max_items,
+        "language_rejected_count": language_rejected_count,
+        "min_created_at": (settings.daily_report_min_created_at or "").strip() or None,
         "timezone": settings.timezone,
     }
 

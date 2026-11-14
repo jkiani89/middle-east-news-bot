@@ -33,6 +33,8 @@ COPY --chown=appuser:appuser alembic.ini .
 COPY --chown=appuser:appuser requirements.txt .
 # editorial/sources.json is required at startup by app.collectors.source_manager
 COPY --chown=appuser:appuser editorial/ ./editorial/
+# Vazirmatn fonts are required to render the Persian daily-report PDF (Phase R-4)
+COPY --chown=appuser:appuser assets/ ./assets/
 
 # Python runtime settings
 ENV PYTHONUNBUFFERED=1 \

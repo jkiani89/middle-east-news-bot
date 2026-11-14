@@ -77,9 +77,13 @@ def calculate_event_similarity(
     """Calculate deterministic similarity between an existing Event and an incoming article's AI analysis.
 
     Implements the Dynamic Weight Redistribution Matrix from PHASE_5_DESIGN.md:
-    - Both have actors: countries=0.25, actors=0.25, category=0.20, location=0.15, keywords=0.15
-    - Only one has actors: countries=0.35, actors=0.00, category=0.25, location=0.20, keywords=0.20
+    - Both have actors: countries=0.25, actors=0.25, category=0.20, location=0.22, keywords=0.08
+    - Only one has actors: countries=0.35, actors=0.00, category=0.25, location=0.25, keywords=0.15
     - Neither has actors: countries=0.40, actors=0.00, category=0.25, location=0.20, keywords=0.15
+
+    Phase R: ``location`` outweighs ``keywords`` wherever actors are present, so the
+    same place reported by five agencies with different wording still clusters, while
+    the no-actor row keeps its audited bootstrap weights.
     """
     ev_countries = {normalize_text(c) for c in (event.countries or []) if c}
     inc_countries = {normalize_text(c) for c in (incoming_data.get("countries") or []) if c}
@@ -128,9 +132,9 @@ def calculate_event_similarity(
 
     # Dynamic Weight Assignment
     if has_ev_actors and has_inc_actors:
-        weights = {"countries": 0.25, "actors": 0.25, "category": 0.20, "location": 0.15, "keywords": 0.15}
+        weights = {"countries": 0.25, "actors": 0.25, "category": 0.20, "location": 0.22, "keywords": 0.08}
     elif has_ev_actors or has_inc_actors:
-        weights = {"countries": 0.35, "actors": 0.00, "category": 0.25, "location": 0.20, "keywords": 0.20}
+        weights = {"countries": 0.35, "actors": 0.00, "category": 0.25, "location": 0.25, "keywords": 0.15}
     else:
         weights = {"countries": 0.40, "actors": 0.00, "category": 0.25, "location": 0.20, "keywords": 0.15}
 
@@ -190,7 +194,9 @@ class EventMatcher:
         self,
         time_window_hours: int = 48,
         follow_up_window_days: int = 14,
-        merge_threshold: float = 0.70,
+        # Phase R: 0.70 kept separate reports of one incident apart; 0.60 plus the
+        # heavier location weight clusters same-place coverage from several agencies.
+        merge_threshold: float = 0.60,
         follow_up_threshold: float = 0.80,
     ):
         self.time_window_hours = time_window_hours

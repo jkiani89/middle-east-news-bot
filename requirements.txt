@@ -27,6 +27,13 @@ python-dateutil>=2.9,<5
 tenacity>=9.0,<10
 trafilatura>=1.12,<2
 
+# ── Persian PDF bulletin (Phase R-4) ──
+# Pure-Python on purpose: pango/cairo-based renderers would need system packages in
+# the slim runtime image. arabic-reshaper joins the letters, python-bidi orders them.
+reportlab>=4.2,<6
+arabic-reshaper>=3.0,<4
+python-bidi>=0.6,<1
+
 # ── Validation & Settings ──
 pydantic>=2.14,<3
 pydantic-settings>=2.4,<3

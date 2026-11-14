@@ -59,6 +59,22 @@ def _persian_ratios(text: str) -> tuple[float, float, int]:
     return script_ratio, arabic_ratio, len(letters)
 
 
+def passes_persian_guard(text: str | None) -> bool:
+    """Whether a stored Persian field still satisfies the Phase N language guard.
+
+    Used at report-render time (Phase R) on text that may predate the guard: a
+    headline or summary that fails these thresholds must never reach a published
+    bulletin. Fields too short to classify pass, exactly like the model-side
+    validator treats them; empty or non-text values fail.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return False
+    script_ratio, arabic_ratio, letter_count = _persian_ratios(text)
+    if letter_count < PERSIAN_MIN_LETTERS:
+        return True
+    return script_ratio >= PERSIAN_MIN_SCRIPT_RATIO and arabic_ratio <= ARABIC_ONLY_MAX_RATIO
+
+
 class NewsAnalysis(BaseModel):
     """Strict structured representation of news analysis conforming to Editorial Policy."""
 

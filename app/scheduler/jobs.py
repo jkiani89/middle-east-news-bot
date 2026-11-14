@@ -27,7 +27,11 @@ from app.database.connection import SessionLocal
 from app.database.models import Article, DailyReport, JobLog
 from app.processors.pipeline import collect_new_articles, process_collected_articles
 from app.reports.daily_report import generate_and_save_daily_report
-from app.telegram.publisher import MockPublishRefusedError, publish_report
+from app.telegram.publisher import (
+    MockPublishRefusedError,
+    publish_daily_report_pdf,
+    publish_report,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +302,23 @@ async def daily_report(
                 dry_run=dry_run,
                 session=session,
             )
+            # Phase R-4: the same bulletin is also delivered as a styled PDF.
+            # A PDF failure must never undo an already delivered text report.
+            try:
+                pdf_info = await publish_daily_report_pdf(
+                    report_date=rep_date,
+                    items=items,
+                    metadata=(db_report.content or {}).get("metadata") if db_report else None,
+                    content_quality=content_quality,
+                    bot=bot,
+                    dry_run=dry_run,
+                )
+                logger.info("Daily bulletin PDF delivery finished: %s", pdf_info)
+            except Exception:
+                logger.exception(
+                    "Daily bulletin PDF delivery failed; the text report stays published."
+                )
+
             job_log.processed_count = len(sent) if sent else 0
             job_log.status = "success"
 
