@@ -10,6 +10,7 @@ import pytest
 
 from app.ai.provider import MockAIProvider
 from app.ai.summarizer import (
+    PERSPECTIVES_SYSTEM_PROMPT,
     analyze_perspectives,
     build_perspectives_prompt,
     coerce_perspectives,
@@ -126,7 +127,7 @@ def test_a_non_persian_claim_is_dropped_but_the_rest_survives():
 def test_matrix_renders_camps_in_display_order_with_disagreement_and_silence():
     lines = "\n".join(perspective_lines(_item()))
     assert "مقایسه روایت‌ها" in lines
-    assert lines.index("غربی") < lines.index("روسی") < lines.index("طرف درگیر")
+    assert lines.index("غربی") < lines.index("روسی") < lines.index("انصارالله")
     assert "نقاط اختلاف" in lines
     assert "بی‌واکنش" in lines
     assert "هاآرتص" in lines
@@ -337,3 +338,68 @@ async def test_primary_article_is_not_listed_as_parallel_coverage():
     assert items[0]["primary_source"] == "Reuters"
     assert items[0]["additional_sources"] == []
     assert items[0]["total_sources_count"] == 1
+
+
+# ==============================================================================
+# Phase T-4: the three sides of the Yemen war stay separate
+# ==============================================================================
+
+def test_yemen_prompt_names_the_three_sides_and_the_topic():
+    prompt = build_perspectives_prompt(
+        "اشتباک در مأرب",
+        [
+            {"source_name": "Reuters", "orientation": "غربی", "text": "درگیری ادامه دارد"},
+            {"source_name": "Saba News Agency", "orientation": "انصارالله (حوثی)", "text": "پیشروی در مأرب"},
+        ],
+        topic_fa="یمن و دریای سرخ",
+    )
+    assert "موضوع بولتن: یمن و دریای سرخ" in prompt
+    assert "یمن گو" in PERSPECTIVES_SYSTEM_PROMPT
+    assert "سعودی" in PERSPECTIVES_SYSTEM_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_yemen_matrix_names_the_absent_side_in_the_readers_words():
+    summary = SimpleNamespace(details_fa={}, event_id=42)
+    rows = [
+        (1, "Yemen clashes in Marib", "Houthi forces advanced in Marib.", "Saba News Agency"),
+        (2, "Marib fighting continues", "Fighting continued in Marib.", "Reuters"),
+    ]
+    provider = MockAIProvider(canned_response=VALID_MATRIX)
+
+    rebuilt = await _refresh_event_perspectives(
+        _FakeSession(rows, summary),
+        42,
+        "درگیری در مأرب",
+        provider,
+        topic_key="ye",
+        topic_fa="یمن و دریای سرخ",
+    )
+
+    assert rebuilt is True
+    silent = " ".join(summary.details_fa["silent_parties_fa"])
+    assert "دولت یمن (یمن گو)" in silent
+    assert "رسانه‌های رسمی عربستان (سعودی)" in silent
+    assert "انصارالله (حوثی)" not in silent  # Saba covered this event
+    assert "موضوع بولتن: یمن و دریای سرخ" in provider.last_prompt
+
+
+@pytest.mark.asyncio
+async def test_a_non_yemen_event_keeps_the_generic_silence_labels():
+    summary = SimpleNamespace(details_fa={}, event_id=43)
+    rows = [
+        (1, "Senate vote", "The Senate voted.", "Reuters"),
+        (2, "Senate leadership", "Leadership challenged.", "TASS"),
+    ]
+    provider = MockAIProvider(canned_response=VALID_MATRIX)
+
+    await _refresh_event_perspectives(
+        _FakeSession(rows, summary), 43, "Senate", provider, topic_key="us", topic_fa="سیاست داخلی آمریکا"
+    )
+
+    silent = " ".join(summary.details_fa["silent_parties_fa"])
+    # The camps are still reported, but with their registry labels, not the Yemen wording.
+    assert "دولت یمن (یمن گو)" not in silent
+    assert "رسانه‌های رسمی عربستان (سعودی)" not in silent
+    assert "عربستان سعودی" in silent
+    assert "دولت یمن" in silent

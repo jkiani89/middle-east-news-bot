@@ -882,6 +882,8 @@ async def _backfill_perspectives(
             event_id=int(item["event_id"]),
             event_title=str(item.get("title") or ""),
             provider=provider,
+            topic_key=item.get("topic_key"),
+            topic_fa=item.get("topic_fa"),
         )
         if not rebuilt:
             continue

@@ -56,11 +56,24 @@ def resolve_verification_status(model_status: str, source_count: int) -> str:
     return "unconfirmed"
 
 
+YEMEN_TOPIC_KEY = "ye"
+
+# The Yemen war has three sides the reader named explicitly; when one of them has no
+# excerpt, the silence line must still name it in those words rather than a generic label.
+YEMEN_REQUIRED_SIDES: dict[str, str] = {
+    "houthi": "انصارالله (حوثی)",
+    "saudi": "رسانه‌های رسمی عربستان (سعودی)",
+    "yemen_gov": "دولت یمن (یمن گو)",
+}
+
+
 async def _refresh_event_perspectives(
     session: AsyncSession,
     event_id: int,
     event_title: str,
     provider: BaseAIProvider,
+    topic_key: str | None = None,
+    topic_fa: str | None = None,
 ) -> bool:
     """Rebuild the narrative matrix of an event after a new editorial camp joined it.
 
@@ -136,6 +149,7 @@ async def _refresh_event_perspectives(
             articles=list(chosen.values()),
             provider=provider,
             max_items=settings.max_perspective_articles,
+            topic_fa=topic_fa,
         )
     except Exception:
         # The matrix is an enrichment: a model failure must never lose the event itself.
@@ -157,16 +171,34 @@ async def _refresh_event_perspectives(
     # Silence is derived from the data, never guessed by the model: an absent camp has
     # no excerpt to reason about, so the only verifiable statement is that it did not
     # cover this event inside the window.
-    absent = [
-        f"{orientation.label_fa} ({'، '.join(orientation.sources[:3])})"
-        if orientation.sources
-        else orientation.label_fa
+    absent_pairs: list[tuple[str, str]] = [
+        (
+            orientation.key,
+            f"{orientation.label_fa} ({'، '.join(orientation.sources[:3])})"
+            if orientation.sources
+            else orientation.label_fa,
+        )
         for orientation in load_orientations()
         if orientation.key not in chosen
     ]
-    silent = list(dict.fromkeys([*result.silent_parties_fa, *absent]))[
-        : settings.max_perspective_articles
-    ]
+    if topic_key == YEMEN_TOPIC_KEY:
+        # Name the three sides in the reader's own terms instead of their registry labels.
+        absent_pairs = [
+            (key, text) for key, text in absent_pairs if key not in YEMEN_REQUIRED_SIDES
+        ]
+        absent_pairs += [
+            (key, label)
+            for key, label in YEMEN_REQUIRED_SIDES.items()
+            if key not in chosen
+        ]
+    # A camp with no excerpt is a fact and comes first; the model's own list follows it.
+    # For Yemen the three named sides must never be pushed out of the line by the cap.
+    required = [text for key, text in absent_pairs if key in YEMEN_REQUIRED_SIDES]
+    others = [text for key, text in absent_pairs if key not in YEMEN_REQUIRED_SIDES]
+    limit = settings.max_perspective_articles
+    if topic_key == YEMEN_TOPIC_KEY:
+        limit = max(limit, len(YEMEN_REQUIRED_SIDES) + 1)
+    silent = list(dict.fromkeys([*required, *others, *result.silent_parties_fa]))[:limit]
 
     details["perspectives"] = [item.model_dump(mode="json") for item in result.perspectives]
     details["perspectives_orientations"] = covered
@@ -483,6 +515,8 @@ async def process_collected_articles(
                     event_id=match_res.event_id,
                     event_title=result.event_title or article.title,
                     provider=ai_provider,
+                    topic_key=topic.key if topic else None,
+                    topic_fa=topic.name_fa if topic else None,
                 )
 
             if match_res.is_new_event:
