@@ -31,8 +31,10 @@ from app.reports.daily_report import (
     current_slot_hour,
     generate_and_save_daily_report,
     generate_slot_bulletins,
+    mark_slot_in_flight,
     mark_slot_published,
     report_slot_hours,
+    slot_in_flight,
     slot_label,
 )
 from app.reports.pdf_report import build_daily_report_pdf
@@ -321,12 +323,37 @@ async def _publish_slot_briefing(
         logger.info("Briefing %s for %s was already delivered; skipping.", label, rep_date)
         return 0
 
+    # Another run may be delivering this slot right now (a late catch-up overlapping the
+    # original, or a previous run that GitHub queued). The claim is written before the
+    # first send, so it also covers a run that died mid-delivery: after the timeout the
+    # next run is allowed to retry instead of the slot being stuck forever.
+    if slot_in_flight(record):
+        logger.info(
+            "Briefing %s for %s is in flight in another run (claimed at %s); skipping.",
+            label,
+            rep_date,
+            record.get("started_at"),
+        )
+        return 0
+
     if not sections:
         logger.info("Briefing %s for %s has no eligible events; nothing to publish.", label, rep_date)
         return 0
 
     content_quality = record.get("content_quality") or metadata.get("content_quality", "real")
     items = [item for _key, _name, topic_items in sections for item in topic_items]
+
+    # Claim the slot before the first Telegram call. Recording only after delivery would
+    # let a crash between the two post the same bulletin again on the next catch-up run.
+    if not dry_run:
+        claimed = await mark_slot_in_flight(session, rep_date, slot_hour)
+        if not claimed:
+            logger.warning(
+                "Publishing briefing %s for %s without an in-flight claim; a crash from here "
+                "could duplicate it.",
+                label,
+                rep_date,
+            )
 
     sent = await publish_report(
         report_date=rep_date,

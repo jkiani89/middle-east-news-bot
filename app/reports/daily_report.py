@@ -992,6 +992,67 @@ async def generate_slot_bulletins(
     return rep_date, sections, formatted_text, metadata
 
 
+# A run claims its slot before sending anything. The claim expires so a crashed run cannot
+# block the slot forever, but it is long enough to cover a normal Telegram + PDF delivery.
+SLOT_IN_FLIGHT_TIMEOUT_MINUTES = 15
+
+
+def slot_in_flight(record: dict[str, Any] | None, now: datetime | None = None) -> bool:
+    """Return True when another run is publishing this slot right now.
+
+    The record is a claim written before the first Telegram send. It counts as live only
+    while it is younger than ``SLOT_IN_FLIGHT_TIMEOUT_MINUTES``; an older claim marks a run
+    that died mid-delivery, so the next catch-up run is allowed to try again. A claim with
+    no readable timestamp cannot be shown to be fresh and is treated as stale.
+    """
+    if not isinstance(record, dict) or record.get("status") != "in_flight":
+        return False
+    started_raw = record.get("started_at")
+    if not isinstance(started_raw, str):
+        return False
+    try:
+        started = datetime.fromisoformat(started_raw)
+    except ValueError:
+        return False
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=UTC)
+    current = now or _utcnow()
+    return current - started < timedelta(minutes=SLOT_IN_FLIGHT_TIMEOUT_MINUTES)
+
+
+async def mark_slot_in_flight(
+    session: AsyncSession,
+    report_date: date,
+    slot_hour: int,
+) -> bool:
+    """Claim a slot before any message is sent, so a crash cannot double-post it.
+
+    Returns True when the claim was stored. Without a report row there is nothing to
+    attach the claim to, and the caller is told so instead of assuming it is protected.
+    """
+    report = await session.scalar(
+        select(DailyReport).where(DailyReport.report_date == report_date)
+    )
+    if report is None:
+        logger.warning(
+            "No daily report row for %s; the slot claim could not be stored.", report_date
+        )
+        return False
+    content: dict[str, Any] = dict(report.content or {})
+    bulletins: dict[str, Any] = dict(content.get("bulletins") or {})
+    label = slot_label(slot_hour)
+    payload: dict[str, Any] = dict(bulletins.get(label) or {})
+    payload["status"] = "in_flight"
+    payload["started_at"] = _utcnow().isoformat()
+    payload.pop("message_ids", None)
+    payload.pop("pdf_message_id", None)
+    bulletins[label] = payload
+    content["bulletins"] = bulletins
+    report.content = content
+    await session.commit()
+    return True
+
+
 async def mark_slot_published(
     session: AsyncSession,
     report_date: date,

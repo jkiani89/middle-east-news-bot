@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
@@ -127,6 +127,76 @@ async def test_already_published_slot_is_not_sent_again():
 
     assert sent == 0
     assert publish.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_in_flight_slot_is_skipped_while_the_claim_is_fresh():
+    """Another run claimed the slot moments ago: do not send a second copy."""
+    started = (datetime.now(UTC) - timedelta(minutes=2)).isoformat()
+    report = SimpleNamespace(
+        content={"bulletins": {"08:00": {"status": "in_flight", "started_at": started}}}
+    )
+    session = _FakeSession(report)
+    sections = [("ir", "ایران و مذاکرات", [_item(1, "ir", "ایران و مذاکرات")])]
+
+    with patch("app.scheduler.jobs.generate_slot_bulletins", new_callable=AsyncMock) as gen, \
+         patch("app.scheduler.jobs.publish_report", new_callable=AsyncMock) as publish:
+        gen.return_value = (date(2026, 11, 14), sections, "text", {"content_quality": "real"})
+
+        sent = await _publish_slot_briefing(session, 8, None, dry_run=False)
+
+    assert sent == 0
+    assert publish.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_stale_in_flight_claim_allows_a_retry():
+    """A claim older than the timeout belongs to a crashed run, so the slot is retried."""
+    started = (datetime.now(UTC) - timedelta(minutes=30)).isoformat()
+    report = SimpleNamespace(
+        content={"bulletins": {"08:00": {"status": "in_flight", "started_at": started}}}
+    )
+    session = _FakeSession(report)
+    sections = [("ir", "ایران و مذاکرات", [_item(1, "ir", "ایران و مذاکرات")])]
+
+    with patch("app.scheduler.jobs.generate_slot_bulletins", new_callable=AsyncMock) as gen, \
+         patch("app.scheduler.jobs.publish_report", new_callable=AsyncMock) as publish, \
+         patch("app.scheduler.jobs.publish_daily_report_pdf", new_callable=AsyncMock) as publish_pdf, \
+         patch("app.scheduler.jobs.mark_slot_published", new_callable=AsyncMock) as mark:
+        gen.return_value = (date(2026, 11, 14), sections, "text", {"content_quality": "real"})
+        publish.return_value = [{"message_id": 41}]
+        publish_pdf.return_value = {"message_id": 42}
+
+        sent = await _publish_slot_briefing(session, 8, None, dry_run=False)
+
+    assert publish.await_count == 1
+    assert sent == 2
+    assert mark.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_slot_is_claimed_before_the_first_send():
+    """The in-memory claim must exist when Telegram is called, not after."""
+    report = SimpleNamespace(content={"bulletins": {}})
+    session = _FakeSession(report)
+    sections = [("ir", "ایران و مذاکرات", [_item(1, "ir", "ایران و مذاکرات")])]
+    seen: dict = {}
+
+    async def fake_publish(**kwargs):
+        seen.update(session.report.content["bulletins"]["08:00"])
+        return [{"message_id": 51}]
+
+    with patch("app.scheduler.jobs.generate_slot_bulletins", new_callable=AsyncMock) as gen, \
+         patch("app.scheduler.jobs.publish_report", side_effect=fake_publish), \
+         patch("app.scheduler.jobs.publish_daily_report_pdf", new_callable=AsyncMock) as publish_pdf, \
+         patch("app.scheduler.jobs.mark_slot_published", new_callable=AsyncMock):
+        gen.return_value = (date(2026, 11, 14), sections, "text", {"content_quality": "real"})
+        publish_pdf.return_value = {"message_id": 52}
+
+        await _publish_slot_briefing(session, 8, None, dry_run=False)
+
+    assert seen.get("status") == "in_flight"
+    assert seen.get("started_at")
 
 
 @pytest.mark.asyncio
