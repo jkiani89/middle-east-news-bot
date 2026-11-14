@@ -104,8 +104,14 @@ async def _refresh_event_perspectives(
             "text": excerpt,
         }
 
+    logger.info(
+        "Event #%d coverage before the matrix: %d linked article(s), camps=%s.",
+        event_id,
+        len(rows),
+        sorted(chosen),
+    )
     if len(chosen) < 2:
-        logger.debug(
+        logger.info(
             "Event #%d stays without a perspective matrix: one editorial camp only (%s).",
             event_id,
             sorted(chosen),
