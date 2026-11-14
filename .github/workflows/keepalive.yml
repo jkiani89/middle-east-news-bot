@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: repository-heartbeat
@@ -51,3 +52,17 @@ jobs:
           fi
           git commit -m "chore: refresh repository heartbeat"
           git push
+
+      # Belt and braces: if GitHub already disabled a schedule (60 days of inactivity),
+      # re-enabling it here restores the runs without anyone opening the Actions tab.
+      - name: Re-enable the scheduled workflows
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for workflow in cron.yml backup.yml; do
+            if gh workflow enable "$workflow" 2>/dev/null; then
+              echo "Enabled $workflow"
+            else
+              echo "$workflow was already enabled (or could not be changed)"
+            fi
+          done
