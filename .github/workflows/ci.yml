@@ -39,7 +39,9 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: postgres:16-alpine
+        # Matches the production server (PostgreSQL 18); the 16 image is what made the
+        # scheduled backup's pg_dump abort against a newer server.
+        image: postgres:18-alpine
         env:
           POSTGRES_DB: newsbot_test
           POSTGRES_USER: newsbot
