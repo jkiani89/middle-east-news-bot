@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Coroutine
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -34,6 +35,7 @@ from app.reports.daily_report import (
     report_slot_hours,
     slot_label,
 )
+from app.reports.pdf_report import build_daily_report_pdf
 from app.telegram.publisher import (
     MockPublishRefusedError,
     publish_daily_report_pdf,
@@ -274,6 +276,31 @@ async def hourly_collection(
         return job_log
 
 
+def _dump_dry_run_briefing(
+    report_date: date,
+    label: str,
+    text: str,
+    items: list[dict[str, Any]],
+    metadata: dict[str, Any],
+) -> None:
+    """Write the dry-run bulletin text and PDF so a test run leaves inspectable evidence.
+
+    Without this, a dry run only logs message counts: nothing of what the reader would
+    have received survives, so the narrative matrix cannot be reviewed before a real
+    send. A failure here is logged and swallowed, because evidence collection must
+    never change the outcome of the run itself.
+    """
+    try:
+        out_dir = Path("scratch")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = f"dry_run_briefing_{report_date.isoformat()}_{label.replace(':', '')}"
+        (out_dir / f"{stem}.txt").write_text(text, encoding="utf-8")
+        build_daily_report_pdf(report_date, items, metadata, out_dir / f"{stem}.pdf")
+        logger.info("Dry-run evidence written to %s/%s.{txt,pdf}", out_dir, stem)
+    except Exception:
+        logger.exception("Could not write dry-run evidence files; the run outcome is unaffected.")
+
+
 async def _publish_slot_briefing(
     session: AsyncSession,
     slot_hour: int,
@@ -321,6 +348,7 @@ async def _publish_slot_briefing(
 
     message_ids = [entry["message_id"] for entry in sent if entry.get("message_id")]
     if dry_run:
+        _dump_dry_run_briefing(rep_date, label, text, items, metadata)
         return len(sent)
 
     pdf_message_id: int | None = None

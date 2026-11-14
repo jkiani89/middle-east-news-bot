@@ -72,3 +72,14 @@ jobs:
 
       - name: Execute single-run batch pipeline
         run: python scripts/run_once.py
+
+      # A dry run sends nothing, so the only way to review what the reader would have
+      # received is the bulletin text and PDF the job writes into scratch/.
+      - name: Upload dry-run bulletin evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dry-run-briefing
+          path: scratch/
+          if-no-files-found: ignore
+          retention-days: 7
