@@ -303,21 +303,49 @@ async def daily_report(
                 session=session,
             )
             # Phase R-4: the same bulletin is also delivered as a styled PDF.
-            # A PDF failure must never undo an already delivered text report.
-            try:
-                pdf_info = await publish_daily_report_pdf(
-                    report_date=rep_date,
-                    items=items,
-                    metadata=(db_report.content or {}).get("metadata") if db_report else None,
-                    content_quality=content_quality,
-                    bot=bot,
-                    dry_run=dry_run,
+            # A PDF failure must never undo an already delivered text report, and a
+            # resumed run (after a partial delivery) must never post the document twice.
+            stored_content = dict(db_report.content or {}) if db_report else {}
+            pdf_message_id = stored_content.get("pdf_message_id")
+            if isinstance(pdf_message_id, int) and pdf_message_id > 0:
+                logger.info(
+                    "Daily bulletin PDF already delivered as message %s; skipping.",
+                    pdf_message_id,
                 )
-                logger.info("Daily bulletin PDF delivery finished: %s", pdf_info)
-            except Exception:
-                logger.exception(
-                    "Daily bulletin PDF delivery failed; the text report stays published."
-                )
+            else:
+                try:
+                    pdf_info = await publish_daily_report_pdf(
+                        report_date=rep_date,
+                        items=items,
+                        metadata=stored_content.get("metadata"),
+                        content_quality=content_quality,
+                        bot=bot,
+                        dry_run=dry_run,
+                    )
+                    logger.info("Daily bulletin PDF delivery finished: %s", pdf_info)
+
+                    sent_pdf_id = pdf_info.get("message_id")
+                    if (
+                        not dry_run
+                        and db_report is not None
+                        and isinstance(sent_pdf_id, int)
+                        and sent_pdf_id > 0
+                    ):
+                        stored_content["pdf_message_id"] = sent_pdf_id
+                        db_report.content = stored_content
+                        message_ids = list(db_report.telegram_message_ids or [])
+                        if sent_pdf_id not in message_ids:
+                            message_ids.append(sent_pdf_id)
+                        db_report.telegram_message_ids = message_ids
+                        await session.commit()
+                        logger.info(
+                            "Recorded bulletin PDF message %s for idempotent re-runs.",
+                            sent_pdf_id,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Daily bulletin PDF delivery failed; the text report stays published."
+                    )
 
             job_log.processed_count = len(sent) if sent else 0
             job_log.status = "success"
