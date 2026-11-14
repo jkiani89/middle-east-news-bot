@@ -89,7 +89,8 @@ async def _refresh_event_perspectives(
     # One excerpt per camp is enough to show the difference and keeps the prompt small.
     chosen: dict[str, dict[str, str]] = {}
     for row in rows:
-        if not isinstance(row, tuple) or len(row) != 4:
+        # SQLAlchemy returns Row objects, not tuples; check the shape instead of the type.
+        if len(row) != 4:
             continue
         _article_id, title, text, source_name = row
         if not source_name:
