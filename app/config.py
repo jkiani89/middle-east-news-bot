@@ -89,6 +89,9 @@ class Settings(BaseSettings):
     immediate_publish_delay_seconds: float = 2.0
     immediate_publish_dry_run: bool = False
     min_importance: int = 2
+    max_daily_report_items: int = 15  # hard cap on distinct events in one daily bulletin (Phase R-3)
+    # Ignore events ingested before the Phase N/R cleanliness date (YYYY-MM-DD, empty disables it).
+    daily_report_min_created_at: str = "2026-11-13"
     min_summary_len_for_full_text: int = 800
     require_full_text_for_ai: bool = True
 
