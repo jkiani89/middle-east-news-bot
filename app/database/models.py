@@ -119,6 +119,26 @@ class DailyReport(Base):
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+class BulletinSlot(Base):
+    """One row per scheduled briefing slot.
+
+    The claim and its release are single SQL statements, so two runs cannot both decide a
+    slot is free; the JSON copy inside ``daily_reports.content`` is kept for the reader
+    payload (content quality, PDF id) but is no longer the lock.
+    """
+
+    __tablename__ = "bulletin_slots"
+    __table_args__ = (
+        UniqueConstraint("report_date", "slot_hour", name="uq_bulletin_slot_date_hour"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    report_date: Mapped[date] = mapped_column(Date, nullable=False)
+    slot_hour: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="pending", nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    message_ids: Mapped[list] = mapped_column(JSONB, default=list)
+
+
 class JobLog(Base):
     __tablename__ = "job_logs"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
