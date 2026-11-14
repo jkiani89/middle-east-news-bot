@@ -32,8 +32,10 @@ jobs:
       RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
       RCLONE_CONFIG_R2_ACL: private
+      # Backblaze wants the application key ID as "account" and the application key as
+      # "key"; the repository secret is named B2_APPLICATION_KEY_ID (not B2_ACCOUNT_ID).
       RCLONE_CONFIG_B2_TYPE: b2
-      RCLONE_CONFIG_B2_ACCOUNT: ${{ secrets.B2_ACCOUNT_ID }}
+      RCLONE_CONFIG_B2_ACCOUNT: ${{ secrets.B2_APPLICATION_KEY_ID }}
       RCLONE_CONFIG_B2_KEY: ${{ secrets.B2_APPLICATION_KEY }}
     steps:
       - name: Checkout repository
@@ -44,8 +46,9 @@ jobs:
           missing=()
           [ -z "${DATABASE_URL:-}" ] && missing+=("DATABASE_URL")
           if [ "${BACKUP_STORAGE}" = "b2" ]; then
-            [ -z "${RCLONE_CONFIG_B2_ACCOUNT:-}" ] && missing+=("B2_ACCOUNT_ID")
+            [ -z "${RCLONE_CONFIG_B2_ACCOUNT:-}" ] && missing+=("B2_APPLICATION_KEY_ID")
             [ -z "${RCLONE_CONFIG_B2_KEY:-}" ] && missing+=("B2_APPLICATION_KEY")
+            [ -z "${BACKUP_BUCKET:-}" ] && missing+=("B2_BUCKET_NAME")
           else
             [ -z "${RCLONE_CONFIG_R2_ACCESS_KEY_ID:-}" ] && missing+=("R2_ACCESS_KEY_ID")
             [ -z "${RCLONE_CONFIG_R2_SECRET_ACCESS_KEY:-}" ] && missing+=("R2_SECRET_ACCESS_KEY")
