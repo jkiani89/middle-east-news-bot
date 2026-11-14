@@ -1,9 +1,12 @@
 {
   "_comment": [
-    "Editorial camps used by the narrative-comparison matrix (Phase T-2).",
+    "Editorial camps used by the narrative-comparison matrix (Phase T-2, extended in T-4).",
     "A source name listed here is labelled with that camp whenever its claim is shown next to",
     "another camp's claim; unlisted sources fall back to the neutral 'other' label.",
-    "order controls the display order of the camps inside one event."
+    "order controls the display order of the camps inside one event.",
+    "The Yemen war has three distinct sides on purpose: houthi (Sanaa), saudi (Riyadh-led",
+    "coalition) and yemen_gov (the recognised government in Aden). Collapsing them would",
+    "hide exactly the disagreement the reader asked to see."
   ],
   "orientations": [
     {
@@ -46,10 +49,22 @@
       "sources": ["TASS"]
     },
     {
-      "key": "party",
-      "label_fa": "طرف درگیر",
+      "key": "houthi",
+      "label_fa": "انصارالله (حوثی)",
       "order": 6,
-      "sources": ["Saba News Agency"]
+      "sources": ["Saba News Agency", "Al Masirah"]
+    },
+    {
+      "key": "saudi",
+      "label_fa": "عربستان سعودی",
+      "order": 7,
+      "sources": ["Saudi Press Agency", "Saudi Press Agency (SPA)", "Al Arabiya", "Arab News"]
+    },
+    {
+      "key": "yemen_gov",
+      "label_fa": "دولت یمن",
+      "order": 8,
+      "sources": ["Saba News (Aden)", "Aden TV", "Yemenat"]
     }
   ]
 }

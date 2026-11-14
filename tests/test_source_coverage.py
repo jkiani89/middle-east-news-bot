@@ -47,7 +47,15 @@ def test_every_feed_is_https():
 
 @pytest.mark.parametrize(
     "name",
-    ["TASS", "Radio Farda", "Haaretz", "Saba News Agency", "Mehr News"],
+    [
+        "TASS",
+        "Radio Farda",
+        "Haaretz",
+        "Saba News Agency",
+        "Mehr News",
+        "Saudi Press Agency (SPA)",
+        "Saba News (Aden)",
+    ],
 )
 def test_counterweight_sources_are_active(name: str):
     source = next(source for source in SOURCES if source["name"] == name)
@@ -61,7 +69,9 @@ def test_counterweight_sources_are_active(name: str):
         ("TASS", "russian"),
         ("Radio Farda", "west"),
         ("Haaretz", "israeli"),
-        ("Saba News Agency", "party"),
+        ("Saba News Agency", "houthi"),
+        ("Saudi Press Agency (SPA)", "saudi"),
+        ("Saba News (Aden)", "yemen_gov"),
         ("Mehr News", "iranian"),
         ("Reuters", "west"),
         ("Al Jazeera English", "arab"),

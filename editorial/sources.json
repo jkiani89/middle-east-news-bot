@@ -120,6 +120,26 @@
     "reliability_note": "خبرگزاری رسمی صنعا (تحت کنترل انصارالله)؛ روایت طرف درگیر در یمن. سایت رسمی به درخواست‌های دیتاسنتر 403 می‌دهد، بنابراین از جستجوی Google News روی دامنه saba.ye استفاده می‌شود. صرفاً برای ثبت ادعای طرف مقابل و مقایسه"
   },
   {
+    "name": "Saudi Press Agency (SPA)",
+    "base_url": "https://www.spa.gov.sa",
+    "feed_url": "https://news.google.com/rss/search?q=when:3d+site:spa.gov.sa&hl=en-US&gl=US&ceid=US:en",
+    "source_type": "official",
+    "country": "Saudi Arabia",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "خبرگزاری رسمی عربستان؛ روایت ریاض و ائتلاف به رهبری عربستان. فید رسمی spa.gov.sa در درخواست دیتاسنتر بدنه‌ی بدون آیتم برمی‌گرداند، بنابراین از جستجوی Google News روی دامنه spa.gov.sa استفاده می‌شود. فقط برای مقایسه روایت‌ها، نه تأیید یک‌طرفه"
+  },
+  {
+    "name": "Saba News (Aden)",
+    "base_url": "https://www.sabanew.net",
+    "feed_url": "https://news.google.com/rss/search?q=when:3d+site:sabanew.net&hl=en-US&gl=US&ceid=US:en",
+    "source_type": "official",
+    "country": "Yemen",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "خبرگزاری سبأ در عدن، بازوی خبری دولت مستقر یمن (شورای ریاستی)؛ روایت طرف مقابل انصارالله. توجه: با «Saba News Agency» صنعا اشتباه نشود. از جستجوی Google News روی دامنه sabanew.net خوانده می‌شود"
+  },
+  {
     "name": "Mehr News",
     "base_url": "https://en.mehrnews.com",
     "feed_url": "https://en.mehrnews.com/rss",
