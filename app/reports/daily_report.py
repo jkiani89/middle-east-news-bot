@@ -20,7 +20,7 @@ from app.ai.summarizer import passes_persian_guard
 from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, ArticleEvent, DailyReport, Event, Source, Summary
-from app.editorial.perspectives import group_perspectives
+from app.editorial.perspectives import group_perspectives, orientation_for
 from app.editorial.topics import load_topics, topic_for_event
 
 logger = logging.getLogger(__name__)
@@ -342,10 +342,12 @@ async def fetch_report_items(
         )
 
         # Collect additional sources from Staleness Policy Option C: details_fa['sources']
+        # The primary article is itself listed there, so it must not come back as
+        # "parallel coverage": one outlet read twice is not corroboration.
         additional_sources: list[dict[str, Any]] = []
         if isinstance(details_fa.get("sources"), list):
             for s in details_fa["sources"]:
-                if isinstance(s, dict):
+                if isinstance(s, dict) and s.get("url") != primary_url:
                     additional_sources.append({
                         "source": s.get("source", "منبع ناشناس"),
                         "url": s.get("url", ""),
@@ -841,6 +843,69 @@ def format_slot_bulletin(
     return "\n".join(lines)
 
 
+async def _backfill_perspectives(
+    session: AsyncSession,
+    items: list[dict[str, Any]],
+) -> bool:
+    """Add a narrative matrix to events that two camps already cover but never got one.
+
+    The pipeline builds a matrix when a second camp merges into an event, which leaves
+    out every event that gained its second camp before the feature existed, or whose
+    comparison call failed at the time. Doing it here, bounded per briefing, keeps those
+    events comparable without re-running the whole analysis.
+    """
+    budget = max(0, settings.max_perspective_backfill_per_briefing)
+    if not settings.perspectives_enabled or budget == 0:
+        return False
+
+    from app.ai.provider import get_ai_provider
+    from app.processors.pipeline import _refresh_event_perspectives
+
+    provider = None
+    changed = False
+    for item in items:
+        if item.get("perspectives") or budget == 0:
+            continue
+        names = [item.get("primary_source") or ""] + [
+            str(source.get("source") or "") for source in item.get("additional_sources") or []
+        ]
+        if len(distinct := {orientation_for(name).key for name in names if name}) < 2:
+            logger.debug(
+                "Event #%s stays without a matrix: one camp only (%s).", item.get("event_id"), distinct
+            )
+            continue
+
+        provider = provider or get_ai_provider()
+        budget -= 1
+        rebuilt = await _refresh_event_perspectives(
+            session=session,
+            event_id=int(item["event_id"]),
+            event_title=str(item.get("title") or ""),
+            provider=provider,
+        )
+        if not rebuilt:
+            continue
+
+        summary = await session.scalar(
+            select(Summary).where(Summary.event_id == item["event_id"])
+        )
+        details = dict(getattr(summary, "details_fa", None) or {})
+        item["perspectives"] = [
+            p for p in details.get("perspectives") or [] if isinstance(p, dict)
+        ]
+        item["disagreement_fa"] = details.get("disagreement_fa") or ""
+        item["silent_parties_fa"] = [
+            str(party).strip()
+            for party in details.get("silent_parties_fa") or []
+            if str(party).strip()
+        ]
+        changed = True
+
+    if changed:
+        await session.commit()
+    return changed
+
+
 async def generate_slot_bulletins(
     report_date: date | None = None,
     slot_hour: int | None = None,
@@ -862,6 +927,7 @@ async def generate_slot_bulletins(
             min_importance=min_importance,
             slot_hour=slot_hour,
         )
+        await _backfill_perspectives(session, items)
         sections = group_items_by_topic(items)
         formatted_text = format_slot_bulletin(rep_date, sections, slot_hour, metadata)
         label = slot_label(slot_hour)

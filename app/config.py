@@ -100,6 +100,9 @@ class Settings(BaseSettings):
     perspectives_enabled: bool = True
     max_perspective_articles: int = 5
     perspective_excerpt_chars: int = 1800
+    # Matrices missing for events that two camps already cover are rebuilt while the
+    # briefing is generated, bounded so one briefing cannot spend the whole quota.
+    max_perspective_backfill_per_briefing: int = 3
     min_summary_len_for_full_text: int = 800
     require_full_text_for_ai: bool = True
 

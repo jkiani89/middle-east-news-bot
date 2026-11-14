@@ -105,6 +105,11 @@ async def _refresh_event_perspectives(
         }
 
     if len(chosen) < 2:
+        logger.debug(
+            "Event #%d stays without a perspective matrix: one editorial camp only (%s).",
+            event_id,
+            sorted(chosen),
+        )
         return False
 
     summary = (
@@ -134,6 +139,12 @@ async def _refresh_event_perspectives(
         return False
 
     if not result.perspectives:
+        logger.warning(
+            "Perspective comparison for event #%d returned no usable claim from %s; "
+            "the summary keeps its single voice.",
+            event_id,
+            covered,
+        )
         return False
 
     # Silence is derived from the data, never guessed by the model: an absent camp has
