@@ -1064,3 +1064,36 @@ thread داخلی SDK با `wait_for` لغو نمی‌شود و در پس‌زم
 - اجرای واقعی مسیر `in_flight` با تلگرام واقعی آزمایش نشد (حفظ سهمیه).
 - قید یکتای دیتابیسی برای (تاریخ، نوبت) همچنان وجود ندارد؛ محافظ اصلی در سطح اپلیکیشن و گروه `concurrency` است.
 - اصلاح مقدار `B2_BUCKET_NAME` در Secrets سمت کاربر است.
+
+---
+
+## [2026-11-14] فاز X — قفل اتمی نوبت روی جدول اختصاصی
+
+### X-1 — مایگریشن
+- مدل `BulletinSlot` در `app/database/models.py` و مایگریشن `a7c1d2e3f4b5_add_bulletin_slots.py` (down_revision = `a7d3c1e9f2b4`).
+- Backfill داخل خود مایگریشن با `jsonb_each` روی `daily_reports.content->'bulletins'` و فیلتر `status = 'published'`؛ `ON CONFLICT ... DO NOTHING` تا اجرای دوباره بی‌خطر باشد.
+- تست `tests/test_alembic.py` به‌روز شد (revision جدید + head جدید) — این یک snapshot عمدی است، نه تضعیف assert.
+
+### X-2 — ادعای اتمی
+- `claim_slot`: INSERT ON CONFLICT + UPDATE ... RETURNING id. نتیجه: `claimed` / `published` / `in_flight` / `missing`.
+- `slot_status`: خواندن وضعیت از جدول؛ `mark_slot_published` هم ردیف را upsert می‌کند و هم JSON خواننده را می‌نویسد.
+- `jobs.py` و `run_once.py` هر دو از جدول می‌خوانند (JSON فقط fallback سازگاری برای رکوردهای قدیمی است).
+
+### X-3 — تست روی PostgreSQL واقعی
+- `tests/test_bulletin_slots_pg.py` با سه تست (رقابت، published، قید یکتا) که بدون Postgres به‌صورت skip اجرا می‌شوند.
+- CI postgres به `postgres:18-alpine` ارتقا یافت.
+
+### یافتهٔ مهم از CI
+اجرای `43654557781` تست `test_published_slot_cannot_be_claimed_again` را رد کرد:
+`AssertionError: assert 'claimed' == 'published'` — گارد SQL فقط `in_flight` را مستثنا می‌کرد.
+اصلاح: `AND status IS DISTINCT FROM 'published'` (کامیت `0b2daa3`). این همان چیزی است که تست روی دیتابیس واقعی برای گرفتنش وجود داشت.
+
+### نتایج (خام)
+- CI روی `0b2daa3`: **`333 passed`**، ۰ skip؛ `ruff` پاک (`43654780767`).
+- محلی (بدون Postgres): `316 passed, 17 skipped`.
+- سه تست نوبت روی PG در CI PASSED: `test_concurrent_slot_claim`, `test_published_slot_cannot_be_claimed_again`, `test_unique_constraint_protects_the_slot`.
+
+### باقی‌مانده
+- JSON داخل `daily_reports.content` برای payload خواننده می‌ماند (منبع حقیقت قفل، جدول است).
+- اصلاح `B2_BUCKET_NAME` در Secrets سمت کاربر است.
+- سناریوی «رقابت واقعی + ارسال واقعی تلگرام» اجرا نشد؛ رقابت روی دیتابیس اثبات شد، ارسال با mock.

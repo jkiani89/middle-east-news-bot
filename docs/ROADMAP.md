@@ -419,3 +419,16 @@ flowchart LR
 - **معیار پذیرش (محقق‌شده):** `ruff` پاک و **316 passed, 14 skipped** با شش تست جدید (نشانهٔ تازه رد می‌شود، نشانهٔ کهنه اجازهٔ تلاش می‌دهد، ادعا قبل از ارسال وجود دارد، clamp صفر/منفی/بیشینه، و پنجرهٔ عبور از نیمه‌شب).
 - **بدهی باقی‌مانده:** قید یکتای دیتابیسی برای (تاریخ، نوبت) وجود ندارد؛ dedup همچنان سمت اپلیکیشن روی JSON است و اجرای موازی بیرون از GitHub (مثلاً اسکریپت محلی) را فقط گروه `concurrency` پوشش می‌دهد. مقدار `B2_BUCKET_NAME` در Secrets هم هنوز با نام واقعی باکت نمی‌خواند و باید دستی اصلاح شود.
 - **وضعیت واقعی:** کد پیاده‌سازی ✅ / اجرای زندهٔ مسیر `in_flight` با تلگرام واقعی ⛔ (عمداً برای حفظ سهمیه اجرا نشد؛ منطق با تست پوشش دارد).
+
+---
+
+### فاز X — اتمیک‌سازی قفل نوبت و تست روی PostgreSQL واقعی (Phase X — Atomic Claim) 🟢 [تکمیل‌شده]
+
+- **زمینه:** قفل نوبت به‌صورت JSON داخل `daily_reports.content` بود و به شکل خواندن-تغییر-نوشتن اعمال می‌شد؛ دو اجرای هم‌زمان می‌توانستند هر دو نوبت را آزاد ببینند. گروه `concurrency` فقط اجراهای GitHub را جدا می‌کند، نه اجرای محلی در برابر ابری.
+- **X-1 — جدول `bulletin_slots`:** مایگریشن `a7c1d2e3f4b5` با ستون‌های `id`, `report_date`, `slot_hour`, `status`, `claimed_at`, `message_ids` (JSONB) و `UniqueConstraint(report_date, slot_hour)`. همان مایگریشن، تاریخچهٔ ارسال‌های قبلی را از `daily_reports.content->'bulletins'` (**فقط رکوردهای `published`**) به جدول منتقل می‌کند تا مدارک تحویل از دست نرود.
+- **X-2 — ادعای اتمی:** `claim_slot` ابتدا `INSERT ... ON CONFLICT ON CONSTRAINT uq_bulletin_slot_date_hour DO NOTHING` می‌زند تا ردیف تضمین شود، سپس **یک** دستور `UPDATE ... WHERE status IS DISTINCT FROM 'published' AND (status IS DISTINCT FROM 'in_flight' OR claimed_at IS NULL OR claimed_at < now() - 15 min) RETURNING id`. اگر ردیفی برنگشت، وضعیت فعلی خوانده می‌شود و نتیجه یکی از `published` / `in_flight` / `missing` است. `message_ids` در زمان claim پاک نمی‌شود.
+- **X-3 — تست روی دیتابیس واقعی:** `tests/test_bulletin_slots_pg.py` با سه تست: رقابت دو session روی یک نوبت (دقیقاً یکی برنده)، باز‌نشدن نوبتِ `published`، و رد شدن رکورد تکراری توسط قید یکتا. سرویس CI از `postgres:16-alpine` به `postgres:18-alpine` رفت تا با سرور تولید (۱۸.۶) هم‌نسل باشد.
+- **باگ واقعی که همین تست‌ها گرفتند:** گارد SQL در نسخهٔ اول فقط `in_flight` را مستثنا می‌کرد، پس ردیف `published` هم دوباره claim می‌شد؛ CI این را در اجرای `43654557781` نشان داد (`assert 'claimed' == 'published'`) و گارد با شرط `status IS DISTINCT FROM 'published'` اصلاح شد.
+- **معیار پذیرش (محقق‌شده):** CI روی `0b2daa3` → **333 passed، 0 skipped** (۱۴ تست آداپتر Postgres و ۳ تست جدید نوبت هم اجرا شدند)؛ `ruff` پاک. محلی بدون Postgres: 316 passed، 17 skipped.
+- **بدهی باقی‌مانده:** JSON داخل `daily_reports.content` همچنان برای payload خواننده (کیفیت محتوا و شناسهٔ PDF) نوشته می‌شود؛ منبع حقیقت قفل، جدول است. مقدار `B2_BUCKET_NAME` در Secrets هم هنوز دستی اصلاح نشده است.
+- **وضعیت واقعی:** کد ✅ / اجرای زندهٔ رقابت روی Postgres واقعی در CI ✅ / ارسال واقعی تلگرام در سناریوی رقابت ⛔ (عمداً اجرا نشد).
