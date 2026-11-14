@@ -80,6 +80,65 @@ async def test_should_run_daily_report_outside_window():
 
 
 @pytest.mark.asyncio
+async def test_should_run_daily_report_inside_catch_up_window():
+    """A run that starts late (09:30 for the 08:00 slot) still publishes that slot."""
+    tz = ZoneInfo("Asia/Tehran")
+    late_run = datetime(2026, 11, 14, 9, 30, tzinfo=tz)
+
+    with (
+        patch("scripts.run_once.local_now", return_value=late_run),
+        patch("scripts.run_once.SessionLocal") as mock_session_local,
+    ):
+        mock_session = AsyncMock()
+        mock_session.scalar.return_value = None
+        mock_session_local.return_value.__aenter__.return_value = mock_session
+
+        should_run, reason = await should_run_daily_report(slot_hour=8)
+        assert should_run is True
+        assert "matches" in reason
+
+
+@pytest.mark.asyncio
+async def test_should_run_daily_report_after_catch_up_window():
+    """Three hours after the slot the latch closes: 11:05 for the 08:00 slot is late."""
+    tz = ZoneInfo("Asia/Tehran")
+    too_late = datetime(2026, 11, 14, 11, 5, tzinfo=tz)
+
+    with (
+        patch("scripts.run_once.local_now", return_value=too_late),
+        patch("scripts.run_once.SessionLocal") as mock_session_local,
+    ):
+        mock_session = AsyncMock()
+        mock_session.scalar.return_value = None
+        mock_session_local.return_value.__aenter__.return_value = mock_session
+
+        should_run, reason = await should_run_daily_report(slot_hour=8)
+        assert should_run is False
+        assert "outside" in reason
+
+
+@pytest.mark.asyncio
+async def test_should_run_daily_report_evening_slot_window():
+    """The 20:00 slot is still publishable at 22:45 but not at 19:59."""
+    tz = ZoneInfo("Asia/Tehran")
+
+    for moment, expected in (
+        (datetime(2026, 11, 14, 22, 45, tzinfo=tz), True),
+        (datetime(2026, 11, 14, 19, 59, tzinfo=tz), False),
+    ):
+        with (
+            patch("scripts.run_once.local_now", return_value=moment),
+            patch("scripts.run_once.SessionLocal") as mock_session_local,
+        ):
+            mock_session = AsyncMock()
+            mock_session.scalar.return_value = None
+            mock_session_local.return_value.__aenter__.return_value = mock_session
+
+            should_run, _reason = await should_run_daily_report(slot_hour=20)
+            assert should_run is expected, moment
+
+
+@pytest.mark.asyncio
 async def test_run_batch_pipeline_flow():
     """End-to-end mocked run of the batch pipeline."""
     with (

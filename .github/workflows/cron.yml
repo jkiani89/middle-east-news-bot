@@ -8,6 +8,13 @@ on:
     # Briefings in Tehran time (UTC+3:30): 08:00 and 20:00, each covering 12 hours.
     - cron: '30 4 * * *'
     - cron: '30 16 * * *'
+    # Catch-up runs inside each slot's three-hour window (08:00-11:00 and 20:00-23:00
+    # Tehran). GitHub can delay or drop a scheduled run; these extra chances publish the
+    # bulletin instead of losing the whole slot. An already published slot is skipped.
+    - cron: '0 5 * * *'
+    - cron: '0 6 * * *'
+    - cron: '0 17 * * *'
+    - cron: '0 18 * * *'
   workflow_dispatch:
     inputs:
       force_daily_report:
@@ -52,8 +59,10 @@ jobs:
       DAILY_REPORT_HOUR: '8'
       FORCE_DAILY_REPORT: ${{ inputs.force_daily_report || 'false' }}
       DRY_RUN_DAILY_REPORT: ${{ inputs.dry_run_daily_report || 'false' }}
-      # Publish the briefing of the slot that just came due (08:00/20:00 Tehran)
+      # Publish the briefing of the slot that just came due (08:00/20:00 Tehran). A slot
+      # stays publishable for SLOT_GRACE_HOURS after it starts, so a late run still ships it.
       SCHEDULED_BRIEFINGS: 'true'
+      SLOT_GRACE_HOURS: '3'
       REPORT_SLOTS: '8,20'
       # A manual run usually happens after the slot's window closed; naming the slot
       # lets it report on that slot's window instead of the one that is now due.

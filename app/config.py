@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     # morning bulletin covers 20:00-08:00 and the evening one 08:00-20:00, so coverage
     # stays gapless and nothing repeats.
     report_slots: str = "8,20"
+    # A scheduled GitHub run can start late or be dropped entirely, so a slot stays
+    # publishable for this many hours after its start instead of only during that hour.
+    slot_grace_hours: int = 3
     max_articles_per_batch: int = 30
     ai_max_attempts: int = 3  # attempts per article before a transient failure is final
     ai_max_consecutive_failures: int = 5  # stop a batch after this many transient AI errors in a row

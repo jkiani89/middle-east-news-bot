@@ -50,6 +50,11 @@ logging.basicConfig(
 logger = logging.getLogger("run_once")
 
 
+def local_now(tz: ZoneInfo | None = None) -> datetime:
+    """Current time in the configured timezone (patchable in tests)."""
+    return datetime.now(tz or ZoneInfo(settings.timezone))
+
+
 async def should_run_daily_report(
     force: bool = False,
     target_hour: int | None = None,
@@ -61,14 +66,22 @@ async def should_run_daily_report(
     1. Check if today's report in configured timezone has already been published.
        If published with confirmed message IDs, returns (False, reason).
     2. If force is True: returns (True, reason).
-    3. Check if current hour in configured timezone matches target_hour (default: 8 AM Tehran).
-       If in window: returns (True, reason).
+    3. Check if current time is inside the slot's catch-up window: from the slot hour
+       until ``settings.slot_grace_hours`` later (default 8-11 and 20-23 Tehran).
+       A scheduled run that GitHub delays or queues late still publishes its bulletin.
     4. Otherwise returns (False, reason).
     """
     tz = ZoneInfo(settings.timezone)
-    now_tz = datetime.now(tz)
+    now_tz = local_now(tz)
     today_date = now_tz.date()
-    effective_hour = settings.daily_report_hour if target_hour is None else target_hour
+    # A caller that names only the slot must still get that slot: falling back to the
+    # legacy daily hour would silently check the 08:00 window for every slot.
+    if target_hour is not None:
+        effective_hour = target_hour
+    elif slot_hour is not None:
+        effective_hour = slot_hour
+    else:
+        effective_hour = settings.daily_report_hour
 
     async with SessionLocal() as session:
         db_report = await session.scalar(
@@ -96,15 +109,23 @@ async def should_run_daily_report(
     if force:
         return True, "Forced via argument or environment variable."
 
-    if now_tz.hour == effective_hour:
+    # A grace of zero would mean "this hour only", which is how a late run used to lose
+    # its bulletin; keep at least one hour of slack even if configured smaller.
+    grace_hours = max(1, settings.slot_grace_hours)
+    now_minutes = now_tz.hour * 60 + now_tz.minute
+    window_start = effective_hour * 60
+    window_end = window_start + grace_hours * 60
+    window_label = f"{effective_hour:02d}:00 - {window_end // 60:02d}:{window_end % 60:02d}"
+
+    if window_start <= now_minutes < window_end:
         return True, (
-            f"Current hour ({now_tz.strftime('%H:%M')} {settings.timezone}) matches "
-            f"daily report window ({effective_hour:02d}:00 - {effective_hour + 1:02d}:00)."
+            f"Current time ({now_tz.strftime('%H:%M')} {settings.timezone}) matches "
+            f"the {effective_hour:02d}:00 slot inside its catch-up window ({window_label})."
         )
 
     return False, (
         f"Current time ({now_tz.strftime('%H:%M')} {settings.timezone}) is outside "
-        f"daily report window ({effective_hour:02d}:00 - {effective_hour + 1:02d}:00)."
+        f"the catch-up window of the {effective_hour:02d}:00 slot ({window_label})."
     )
 
 
