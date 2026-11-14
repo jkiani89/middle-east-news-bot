@@ -80,6 +80,56 @@
     "reliability_note": "رسانه بین‌المللی؛ بخش خاورمیانه، برخی گزارش‌ها پشت paywall هستند"
   },
   {
+    "name": "TASS",
+    "base_url": "https://tass.com",
+    "feed_url": "https://tass.com/rss/v2.xml",
+    "source_type": "official",
+    "country": "Russia",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "خبرگزاری دولتی روسیه؛ روایت رسمی مسکو. فقط برای مقایسه روایت‌ها استفاده شود و هرگز به‌تنهایی مبنای تأیید نباشد"
+  },
+  {
+    "name": "Radio Farda",
+    "base_url": "https://www.radiofarda.com",
+    "feed_url": "https://news.google.com/rss/search?q=when:3d+site:radiofarda.com&hl=en-US&gl=US&ceid=US:en",
+    "source_type": "international",
+    "country": "Czechia",
+    "language": "fa",
+    "is_active": true,
+    "reliability_note": "رسانه فارسی‌زبان رادیو اروپای آزاد/آزادی (RFE/RL)؛ فید رسمی برای درخواست‌های دیتاسنتر پاسخ خالی می‌دهد، بنابراین از جستجوی Google News روی دامنه radiofarda.com استفاده می‌شود"
+  },
+  {
+    "name": "Haaretz",
+    "base_url": "https://www.haaretz.com",
+    "feed_url": "https://news.google.com/rss/search?q=when:3d+site:haaretz.com&hl=en-US&gl=US&ceid=US:en",
+    "source_type": "international",
+    "country": "Israel",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "روزنامه اسرائیلی؛ فید رسمی haaretz.com پاسخ 404 داد، بنابراین از جستجوی Google News روی دامنه haaretz.com استفاده می‌شود. روایت اسرائیلی برای مقایسه، نه تأیید یک‌طرفه"
+  },
+  {
+    "name": "Saba News Agency",
+    "base_url": "https://www.saba.ye",
+    "feed_url": "https://news.google.com/rss/search?q=when:3d+site:saba.ye&hl=en-US&gl=US&ceid=US:en",
+    "source_type": "official",
+    "country": "Yemen",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "خبرگزاری رسمی صنعا (تحت کنترل انصارالله)؛ روایت طرف درگیر در یمن. سایت رسمی به درخواست‌های دیتاسنتر 403 می‌دهد، بنابراین از جستجوی Google News روی دامنه saba.ye استفاده می‌شود. صرفاً برای ثبت ادعای طرف مقابل و مقایسه"
+  },
+  {
+    "name": "Mehr News",
+    "base_url": "https://en.mehrnews.com",
+    "feed_url": "https://en.mehrnews.com/rss",
+    "source_type": "official",
+    "country": "Iran",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "خبرگزاری نزدیک به نهادهای امنیتی ایران؛ روایت رسمی تهران برای مقایسه، نه تأیید یک‌طرفه"
+  },
+  {
     "name": "Euronews",
     "base_url": "https://www.euronews.com",
     "feed_url": "https://feeds.feedburner.com/euronews/en/home",

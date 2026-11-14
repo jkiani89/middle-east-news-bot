@@ -1,0 +1,55 @@
+{
+  "_comment": [
+    "Editorial camps used by the narrative-comparison matrix (Phase T-2).",
+    "A source name listed here is labelled with that camp whenever its claim is shown next to",
+    "another camp's claim; unlisted sources fall back to the neutral 'other' label.",
+    "order controls the display order of the camps inside one event."
+  ],
+  "orientations": [
+    {
+      "key": "west",
+      "label_fa": "غربی",
+      "order": 1,
+      "sources": [
+        "Reuters",
+        "Associated Press",
+        "New York Times",
+        "Washington Post",
+        "Euronews",
+        "UN News",
+        "Foreign Affairs",
+        "Radio Farda"
+      ]
+    },
+    {
+      "key": "arab",
+      "label_fa": "عربی",
+      "order": 2,
+      "sources": ["Al Jazeera English", "Al Jazeera Arabic"]
+    },
+    {
+      "key": "israeli",
+      "label_fa": "اسرائیلی",
+      "order": 3,
+      "sources": ["Haaretz"]
+    },
+    {
+      "key": "iranian",
+      "label_fa": "ایرانی",
+      "order": 4,
+      "sources": ["Mehr News"]
+    },
+    {
+      "key": "russian",
+      "label_fa": "روسی",
+      "order": 5,
+      "sources": ["TASS"]
+    },
+    {
+      "key": "party",
+      "label_fa": "طرف درگیر",
+      "order": 6,
+      "sources": ["Saba News Agency"]
+    }
+  ]
+}
