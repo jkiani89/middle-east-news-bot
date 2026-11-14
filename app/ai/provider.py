@@ -42,7 +42,7 @@ class BaseAIProvider(ABC):
         prompt: str,
         system_instruction: str | None = None,
         *,
-        purpose: Literal["analysis", "preflight", "schema_repair"] = "analysis",
+        purpose: Literal["analysis", "preflight", "schema_repair", "perspectives"] = "analysis",
     ) -> dict[str, Any]:
         """Generate structured JSON response for a given prompt, optionally with system instruction.
 
@@ -292,7 +292,7 @@ class GeminiProvider(BaseAIProvider):
         prompt: str,
         system_instruction: str | None = None,
         *,
-        purpose: Literal["analysis", "preflight", "schema_repair"] = "analysis",
+        purpose: Literal["analysis", "preflight", "schema_repair", "perspectives"] = "analysis",
     ) -> dict[str, Any]:
         """Generate structured JSON response using Gemini via gemini-api-rotator.
 
@@ -474,7 +474,7 @@ class MockAIProvider(BaseAIProvider):
         prompt: str,
         system_instruction: str | None = None,
         *,
-        purpose: Literal["analysis", "preflight", "schema_repair"] = "analysis",
+        purpose: Literal["analysis", "preflight", "schema_repair", "perspectives"] = "analysis",
     ) -> dict[str, Any]:
         """Generate structured JSON mock response.
 

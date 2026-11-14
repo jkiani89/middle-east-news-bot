@@ -95,6 +95,11 @@ class Settings(BaseSettings):
     max_daily_report_items: int = 15  # hard cap on distinct events in one daily bulletin (Phase R-3)
     # Ignore events ingested before the Phase N/R cleanliness date (YYYY-MM-DD, empty disables it).
     daily_report_min_created_at: str = "2026-11-13"
+    # Narrative matrix (Phase T-2): compare the camps that covered one event instead of
+    # publishing a single voice. One model call per event, only once a second camp joins.
+    perspectives_enabled: bool = True
+    max_perspective_articles: int = 5
+    perspective_excerpt_chars: int = 1800
     min_summary_len_for_full_text: int = 800
     require_full_text_for_ai: bool = True
 

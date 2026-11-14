@@ -20,6 +20,7 @@ from app.ai.summarizer import passes_persian_guard
 from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, ArticleEvent, DailyReport, Event, Source, Summary
+from app.editorial.perspectives import group_perspectives
 from app.editorial.topics import load_topics, topic_for_event
 
 logger = logging.getLogger(__name__)
@@ -331,6 +332,17 @@ async def fetch_report_items(
             "verification_status_fa": VERIFICATION_LABELS.get(
                 summary.verification_status, "نامشخص"
             ),
+            # Phase T-2: per-camp claims, kept as stored so the same event reads the
+            # same way in the text bulletin and in the PDF.
+            "perspectives": [
+                p for p in details_fa.get("perspectives") or [] if isinstance(p, dict)
+            ],
+            "disagreement_fa": details_fa.get("disagreement_fa") or "",
+            "silent_parties_fa": [
+                str(s).strip()
+                for s in (details_fa.get("silent_parties_fa") or [])
+                if str(s).strip()
+            ],
             "primary_source": primary_source_name,
             "primary_url": primary_url,
             "additional_sources": additional_sources,
@@ -395,6 +407,41 @@ def esc(text: Any) -> str:
     if text is None:
         return ""
     return html.escape(str(text), quote=True)
+
+
+def perspective_lines(item: dict[str, Any], as_html: bool = True) -> list[str]:
+    """Render the narrative-comparison block of one item, or nothing when absent.
+
+    Claims are grouped by editorial camp in display order, so the reader sees "غربی"
+    next to "روسی" and "طرف درگیر" rather than one blended voice. A camp that stayed
+    silent is named explicitly instead of being left out.
+    """
+    grouped = group_perspectives(item.get("perspectives") or [])
+    if not grouped:
+        return []
+
+    label = "   🗣 <b>مقایسه روایت‌ها:</b>" if as_html else "   🗣 مقایسه روایت‌ها:"
+    lines: list[str] = [label]
+    for orientation, claims in grouped:
+        sources = "، ".join(
+            dict.fromkeys(str(claim.get("source_name") or "").strip() for claim in claims)
+        ).strip("، ")
+        text = " / ".join(str(claim.get("claim_fa") or "").strip() for claim in claims)
+        source_text = f" ({esc(sources)})" if sources else ""
+        lines.append(f"      🔹 <b>{esc(orientation.label_fa)}</b>{source_text}: {esc(text)}" if as_html
+                     else f"      🔹 {orientation.label_fa}{sources and f' ({sources})'}: {text}")
+
+    disagreement = str(item.get("disagreement_fa") or "").strip()
+    if disagreement:
+        lines.append(f"      ⚠️ <b>نقاط اختلاف:</b> {esc(disagreement)}" if as_html
+                     else f"      ⚠️ نقاط اختلاف: {disagreement}")
+
+    silent = [str(s).strip() for s in item.get("silent_parties_fa") or [] if str(s).strip()]
+    if silent:
+        joined = "، ".join(silent)
+        lines.append(f"      🔇 <b>بی‌واکنش:</b> {esc(joined)}" if as_html
+                     else f"      🔇 بی‌واکنش: {joined}")
+    return lines
 
 
 def format_persian_daily_report(
@@ -491,6 +538,7 @@ def format_persian_daily_report(
                 lines.append(f"   ▫️ درجه اهمیت: {stars} ({importance}/5) | حوزه: <b>{esc(cat)}</b> [{esc(event_type)}]")
                 lines.append(f"   ▫️ جغرافیا و بازیگران: {esc(geo)} | {esc(acts)}")
                 lines.append(f"   ▫️ خلاصه گزیده: {esc(summary_txt)}")
+                lines.extend(perspective_lines(item, as_html=True))
                 lines.append(f"   ▫️ راستی‌آزمایی: {esc(verification)}")
                 if primary_u:
                     lines.append(f"   ▫️ منبع اصلی: <a href=\"{esc(primary_u)}\">{esc(primary_src)}</a>")
@@ -512,6 +560,7 @@ def format_persian_daily_report(
                 lines.append(f"   ▫️ درجه اهمیت: {stars} ({importance}/5) | حوزه: {cat} [{event_type}]")
                 lines.append(f"   ▫️ جغرافیا و بازیگران: {geo} | {acts}")
                 lines.append(f"   ▫️ خلاصه گزیده: {summary_txt}")
+                lines.extend(perspective_lines(item, as_html=False))
                 lines.append(f"   ▫️ راستی‌آزمایی: {verification}")
                 lines.append(f"   ▫️ منبع اصلی: {primary_src} ⟵ {primary_u}")
                 if item.get("additional_sources"):
@@ -556,6 +605,7 @@ def format_persian_daily_report(
                 if as_html:
                     lines.append(f"  • <b>{esc(headline)}</b> ({stars})")
                     lines.append(f"    - خلاصه: {esc(summary_txt)}")
+                    lines.extend(perspective_lines(item, as_html=True))
                     if primary_u:
                         lines.append(f"    - راستی‌آزمایی: {esc(verification)} | منبع: <a href=\"{esc(primary_u)}\">{esc(primary_src)}</a>")
                     else:
@@ -572,6 +622,7 @@ def format_persian_daily_report(
                 else:
                     lines.append(f"  • {headline} ({stars})")
                     lines.append(f"    - خلاصه: {summary_txt}")
+                    lines.extend(perspective_lines(item, as_html=False))
                     lines.append(f"    - راستی‌آزمایی: {verification} | منبع: {primary_src}")
                     if primary_u:
                         lines.append(f"    - پیوند: {primary_u}")

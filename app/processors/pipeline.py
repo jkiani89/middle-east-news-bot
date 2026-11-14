@@ -8,11 +8,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.provider import BaseAIProvider, get_ai_provider, is_retryable_ai_error
-from app.ai.summarizer import PROMPT_VERSION, analyze_article
+from app.ai.summarizer import PROMPT_VERSION, analyze_article, analyze_perspectives
 from app.collectors.rss_collector import fetch_article_full_text, fetch_feed
 from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, ArticleEvent, Event, JobLog, Source, Summary
+from app.editorial.perspectives import load_orientations, orientation_for
 from app.editorial.regions import has_middle_east_nexus, is_primary_actor
 from app.editorial.topics import match_primary_topic
 from app.processors.event_matcher import EventMatcher
@@ -53,6 +54,115 @@ def resolve_verification_status(model_status: str, source_count: int) -> str:
             return model_status
         return "partially_confirmed"
     return "unconfirmed"
+
+
+async def _refresh_event_perspectives(
+    session: AsyncSession,
+    event_id: int,
+    event_title: str,
+    provider: BaseAIProvider,
+) -> bool:
+    """Rebuild the narrative matrix of an event after a new editorial camp joined it.
+
+    One call per event, and only when the event is covered by at least two camps: a
+    single-camp story has nothing to compare, so spending a model call on it would
+    add cost without adding information. The matrix is skipped when the stored one
+    already covers every camp, which keeps repeated merges idempotent.
+    """
+    if not settings.perspectives_enabled:
+        return False
+
+    try:
+        rows = (
+            await session.execute(
+                select(Article.id, Article.title, Article.original_text, Source.name)
+                .join(ArticleEvent, ArticleEvent.article_id == Article.id)
+                .join(Source, Source.id == Article.source_id)
+                .where(ArticleEvent.event_id == event_id)
+                .order_by(ArticleEvent.confidence.desc().nullslast(), Article.collected_at.asc())
+            )
+        ).all()
+    except Exception:
+        logger.exception("Could not load the coverage of event #%d for a perspective matrix.", event_id)
+        return False
+
+    # One excerpt per camp is enough to show the difference and keeps the prompt small.
+    chosen: dict[str, dict[str, str]] = {}
+    for row in rows:
+        if not isinstance(row, tuple) or len(row) != 4:
+            continue
+        _article_id, title, text, source_name = row
+        if not source_name:
+            continue
+        orientation = orientation_for(source_name)
+        if orientation.key in chosen or len(chosen) >= settings.max_perspective_articles:
+            continue
+        excerpt = (f"{title}\n{text or ''}").strip()[: settings.perspective_excerpt_chars]
+        chosen[orientation.key] = {
+            "source_name": source_name,
+            "orientation": orientation.label_fa,
+            "text": excerpt,
+        }
+
+    if len(chosen) < 2:
+        return False
+
+    summary = (
+        await session.scalars(select(Summary).where(Summary.event_id == event_id))
+    ).first()
+    if summary is None:
+        return False
+
+    details = dict(summary.details_fa or {})
+    covered = sorted(chosen)
+    if sorted(details.get("perspectives_orientations") or []) == covered and details.get("perspectives"):
+        return False
+
+    try:
+        result = await analyze_perspectives(
+            event_title=event_title,
+            articles=list(chosen.values()),
+            provider=provider,
+            max_items=settings.max_perspective_articles,
+        )
+    except Exception:
+        # The matrix is an enrichment: a model failure must never lose the event itself.
+        logger.exception(
+            "Perspective comparison failed for event #%d; the summary stays without a matrix.",
+            event_id,
+        )
+        return False
+
+    if not result.perspectives:
+        return False
+
+    # Silence is derived from the data, never guessed by the model: an absent camp has
+    # no excerpt to reason about, so the only verifiable statement is that it did not
+    # cover this event inside the window.
+    absent = [
+        f"{orientation.label_fa} ({'، '.join(orientation.sources[:3])})"
+        if orientation.sources
+        else orientation.label_fa
+        for orientation in load_orientations()
+        if orientation.key not in chosen
+    ]
+    silent = list(dict.fromkeys([*result.silent_parties_fa, *absent]))[
+        : settings.max_perspective_articles
+    ]
+
+    details["perspectives"] = [item.model_dump(mode="json") for item in result.perspectives]
+    details["perspectives_orientations"] = covered
+    details["disagreement_fa"] = result.disagreement_fa
+    details["silent_parties_fa"] = silent
+    summary.details_fa = details
+    logger.info(
+        "Narrative matrix for event #%d rebuilt from %d camp(s): %d claim(s), disagreement=%s.",
+        event_id,
+        len(covered),
+        len(result.perspectives),
+        "yes" if result.disagreement_fa else "no",
+    )
+    return True
 
 
 async def _publish_immediate_safely(analysis: ImmediateAnalysis, admin_only: bool = False) -> bool:
@@ -348,6 +458,14 @@ async def process_collected_articles(
             source_count = await _count_event_sources(session, match_res.event_id)
             verification_status = resolve_verification_status(result.verification_status, source_count)
             payload_dict["verification_status_resolved"] = verification_status
+
+            if source_count >= 2:
+                await _refresh_event_perspectives(
+                    session=session,
+                    event_id=match_res.event_id,
+                    event_title=result.event_title or article.title,
+                    provider=ai_provider,
+                )
 
             if match_res.is_new_event:
                 session.add(

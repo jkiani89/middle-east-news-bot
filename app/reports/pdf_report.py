@@ -35,6 +35,8 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from app.editorial.perspectives import group_perspectives
+
 logger = logging.getLogger(__name__)
 
 FONT_DIR = Path(__file__).resolve().parents[2] / "assets" / "fonts"
@@ -212,6 +214,22 @@ def _styles() -> dict[str, ParagraphStyle]:
             fontSize=8.4,
             leading=13,
             textColor=SLATE,
+            alignment=2,
+        ),
+        "persp_label": ParagraphStyle(
+            "PerspLabel",
+            fontName=bold,
+            fontSize=8.6,
+            leading=13,
+            textColor=NAVY,
+            alignment=2,
+        ),
+        "persp": ParagraphStyle(
+            "PerspClaim",
+            fontName=regular,
+            fontSize=8.4,
+            leading=13,
+            textColor=INK,
             alignment=2,
         ),
         "body": ParagraphStyle(
@@ -397,6 +415,75 @@ def _sources_text(item: dict[str, Any]) -> str:
     return "منابع: " + "؛ ".join(entries)
 
 
+def _perspective_blocks(
+    styles: dict[str, ParagraphStyle],
+    item: dict[str, Any],
+    width: float,
+) -> list[Any]:
+    """Render the per-camp claim table of one item, or nothing when absent (T-2)."""
+    grouped = group_perspectives(item.get("perspectives") or [])
+    if not grouped:
+        return []
+
+    label_width = width * 0.28
+    claim_width = width * 0.72
+    rows: list[list[Any]] = []
+    for orientation, claims in grouped:
+        sources = "، ".join(
+            dict.fromkeys(str(claim.get("source_name") or "").strip() for claim in claims)
+        ).strip("، ")
+        text = " / ".join(str(claim.get("claim_fa") or "").strip() for claim in claims)
+        head = orientation.label_fa + (f" ({sources})" if sources else "")
+        rows.append(
+            [
+                Paragraph(_wrap_rtl(text, styles["persp"], claim_width, pad=6), styles["persp"]),
+                Paragraph(_wrap_rtl(head, styles["persp_label"], label_width, pad=6), styles["persp_label"]),
+            ]
+        )
+
+    disagreement = str(item.get("disagreement_fa") or "").strip()
+    if disagreement:
+        rows.append(
+            [
+                Paragraph(_wrap_rtl(disagreement, styles["persp"], claim_width, pad=6), styles["persp"]),
+                Paragraph(_wrap_rtl("نقاط اختلاف", styles["persp_label"], label_width, pad=6), styles["persp_label"]),
+            ]
+        )
+
+    silent = "، ".join(
+        str(party).strip() for party in item.get("silent_parties_fa") or [] if str(party).strip()
+    )
+    if silent:
+        rows.append(
+            [
+                Paragraph(_wrap_rtl(silent, styles["persp"], claim_width, pad=6), styles["persp"]),
+                Paragraph(_wrap_rtl("بی‌واکنش", styles["persp_label"], label_width, pad=6), styles["persp_label"]),
+            ]
+        )
+
+    table = Table(rows, colWidths=[claim_width, label_width])
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), PAPER_TINT),
+                ("BOX", (0, 0), (-1, -1), 0.6, LIGHT_RULE),
+                ("INNERGRID", (0, 0), (-1, -1), 0.4, LIGHT_RULE),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    return [
+        Spacer(1, 4),
+        Paragraph(_wrap_rtl("مقایسه روایت‌ها", styles["persp_label"], width, pad=0), styles["persp_label"]),
+        Spacer(1, 2),
+        table,
+    ]
+
+
 def _item_flowables(
     styles: dict[str, ParagraphStyle],
     index: int,
@@ -436,6 +523,8 @@ def _item_flowables(
         Spacer(1, 3),
         Paragraph(_wrap_rtl(summary, styles["body"], text_width, pad=0), styles["body"]),
     ]
+    cells.extend(_perspective_blocks(styles, item, text_width))
+
     sources = _sources_text(item)
     if sources:
         cells.extend(
