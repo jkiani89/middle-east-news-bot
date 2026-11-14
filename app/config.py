@@ -116,6 +116,17 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
+    @field_validator("slot_grace_hours")
+    @classmethod
+    def _clamp_slot_grace_hours(cls, value: int) -> int:
+        """Keep the catch-up window inside a single slot.
+
+        Zero or a negative value would mean "no window at all" (the old behaviour that
+        lost bulletins), and a value above 11 hours would let one slot's window run into
+        the next slot and publish the wrong bulletin.
+        """
+        return min(max(int(value), 1), 11)
+
     @field_validator("database_url", mode="before")
     @classmethod
     def fix_database_url(cls, v: str) -> str:

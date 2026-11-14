@@ -36,7 +36,7 @@ from app.config import settings  # noqa: E402
 from app.database.connection import SessionLocal  # noqa: E402
 from app.database.models import DailyReport  # noqa: E402
 from app.processors.pipeline import collect_and_process  # noqa: E402
-from app.reports.daily_report import current_slot_hour  # noqa: E402
+from app.reports.daily_report import current_slot_hour, slot_in_flight, slot_label  # noqa: E402
 from app.scheduler.jobs import (  # noqa: E402
     cleanup_gemini_request_log,
     daily_report,
@@ -89,13 +89,16 @@ async def should_run_daily_report(
         )
 
         if slot_hour is not None:
-            from app.reports.daily_report import slot_label
-
             label = slot_label(slot_hour)
             bulletins = (db_report.content or {}).get("bulletins", {}) if db_report else {}
             record = bulletins.get(label) or {}
             if record.get("status") == "published" and record.get("message_ids"):
                 return False, f"Briefing {label} for {today_date} already published."
+            if slot_in_flight(record):
+                return False, (
+                    f"Briefing {label} for {today_date} is in flight in another run "
+                    f"(claimed at {record.get('started_at')})."
+                )
 
         if (
             slot_hour is None
@@ -109,15 +112,34 @@ async def should_run_daily_report(
     if force:
         return True, "Forced via argument or environment variable."
 
-    # A grace of zero would mean "this hour only", which is how a late run used to lose
-    # its bulletin; keep at least one hour of slack even if configured smaller.
-    grace_hours = max(1, settings.slot_grace_hours)
+    # The settings validator already clamps this to 1..11; repeat the guard here so a
+    # directly-mutated setting in a test or script cannot produce a zero-length window.
+    grace_hours = min(max(1, settings.slot_grace_hours), 11)
     now_minutes = now_tz.hour * 60 + now_tz.minute
     window_start = effective_hour * 60
     window_end = window_start + grace_hours * 60
-    window_label = f"{effective_hour:02d}:00 - {window_end // 60:02d}:{window_end % 60:02d}"
 
-    if window_start <= now_minutes < window_end:
+    start_label = f"{window_start // 60:02d}:{window_start % 60:02d}"
+    if window_end <= 24 * 60:
+        window_label = f"{start_label} - {window_end // 60:02d}:{window_end % 60:02d}"
+    else:
+        carry_hour = (window_end - 24 * 60) // 60
+        window_label = f"{start_label} - {carry_hour:02d}:{window_end % 60:02d} (+1d)"
+
+    # Modulo keeps a window that crosses midnight working instead of silently ending at
+    # 24:00: with a 5-hour grace the 20:00 slot stays open until 01:00 next day.
+    minutes_since_window = (now_minutes - window_start) % (24 * 60)
+    inside_window = minutes_since_window < grace_hours * 60
+
+    logger.info(
+        "Slot decision: slot=%s, now=%s, grace=%sh -> publish=%s",
+        effective_hour,
+        now_tz.strftime("%H:%M"),
+        grace_hours,
+        inside_window,
+    )
+
+    if inside_window:
         return True, (
             f"Current time ({now_tz.strftime('%H:%M')} {settings.timezone}) matches "
             f"the {effective_hour:02d}:00 slot inside its catch-up window ({window_label})."

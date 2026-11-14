@@ -23,7 +23,17 @@ def test_settings_default_values():
     assert settings.max_articles_per_batch == 30
     assert settings.min_importance == 2
     assert settings.min_summary_len_for_full_text == 800
+    assert settings.slot_grace_hours == 3
     assert settings.require_full_text_for_ai is True
+
+
+def test_slot_grace_hours_is_clamped_to_one_slot():
+    """Zero would lose bulletins and more than 11 hours would reach the next slot."""
+    assert Settings(slot_grace_hours=0).slot_grace_hours == 1
+    assert Settings(slot_grace_hours=-5).slot_grace_hours == 1
+    assert Settings(slot_grace_hours=11).slot_grace_hours == 11
+    assert Settings(slot_grace_hours=99).slot_grace_hours == 11
+    assert Settings(slot_grace_hours=5).slot_grace_hours == 5
 
 
 def test_settings_validate_runtime_missing():

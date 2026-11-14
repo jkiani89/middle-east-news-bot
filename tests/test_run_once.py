@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from app.config import settings
 from app.database.models import DailyReport
 from scripts.run_once import run_batch_pipeline, should_run_daily_report
 
@@ -136,6 +137,54 @@ async def test_should_run_daily_report_evening_slot_window():
 
             should_run, _reason = await should_run_daily_report(slot_hour=20)
             assert should_run is expected, moment
+
+
+@pytest.mark.asyncio
+async def test_should_run_daily_report_window_crosses_midnight():
+    """With a 5-hour grace the 20:00 slot stays open until 01:00 the next day."""
+    tz = ZoneInfo("Asia/Tehran")
+
+    for moment, expected in (
+        (datetime(2026, 11, 15, 0, 30, tzinfo=tz), True),
+        (datetime(2026, 11, 15, 1, 30, tzinfo=tz), False),
+    ):
+        with (
+            patch("scripts.run_once.local_now", return_value=moment),
+            patch.object(settings, "slot_grace_hours", 5),
+            patch("scripts.run_once.SessionLocal") as mock_session_local,
+        ):
+            mock_session = AsyncMock()
+            mock_session.scalar.return_value = None
+            mock_session_local.return_value.__aenter__.return_value = mock_session
+
+            should_run, reason = await should_run_daily_report(slot_hour=20)
+            assert should_run is expected, moment
+            if expected is False:
+                assert "01:00 (+1d)" in reason
+
+
+@pytest.mark.asyncio
+async def test_should_run_daily_report_skips_a_slot_in_flight():
+    """A slot claimed by a live run is not started a second time."""
+    tz = ZoneInfo("Asia/Tehran")
+    claim = datetime.now(tz) - __import__("datetime").timedelta(minutes=1)
+    report = DailyReport(
+        report_date=claim.date(),
+        status="generated",
+        content={"bulletins": {"08:00": {"status": "in_flight", "started_at": claim.isoformat()}}},
+    )
+
+    with (
+        patch("scripts.run_once.local_now", return_value=claim),
+        patch("scripts.run_once.SessionLocal") as mock_session_local,
+    ):
+        mock_session = AsyncMock()
+        mock_session.scalar.return_value = report
+        mock_session_local.return_value.__aenter__.return_value = mock_session
+
+        should_run, reason = await should_run_daily_report(slot_hour=8)
+        assert should_run is False
+        assert "in flight" in reason
 
 
 @pytest.mark.asyncio
