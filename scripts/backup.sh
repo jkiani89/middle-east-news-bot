@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Backup PostgreSQL database to Cloudflare R2 via rclone.
-# Requires: docker compose (running), rclone configured with remote named "r2".
+# Backup PostgreSQL database to object storage via rclone (Cloudflare R2 or Backblaze B2).
+# Requires: docker, rclone configured with the remote named by BACKUP_REMOTE.
 # Usage: bash scripts/backup.sh
 
 set -euo pipefail
@@ -25,7 +25,9 @@ fi
 # Defaults
 DB_USER="${POSTGRES_USER:-newsbot}"
 DB_NAME="${POSTGRES_DB:-newsbot}"
-R2_BUCKET="${R2_BUCKET_NAME:-newsbot-backups}"
+# The workflow sets BACKUP_REMOTE/BACKUP_BUCKET; the fallbacks keep a local run working.
+BACKUP_REMOTE="${BACKUP_REMOTE:-r2}"
+BACKUP_BUCKET="${BACKUP_BUCKET:-${R2_BUCKET_NAME:-${B2_BUCKET_NAME:-newsbot-backups}}}"
 RETENTION="${BACKUP_RETENTION_DAYS:-7}"
 
 # Check if rclone is installed
@@ -52,15 +54,15 @@ else
     docker compose exec -T postgres pg_dump -U "$DB_USER" -Fc "$DB_NAME" > "$TMP_PATH"
 fi
 
-echo "--- Uploading to R2: r2:${R2_BUCKET}/db/${FILENAME} ---"
-rclone copy "$TMP_PATH" "r2:${R2_BUCKET}/db/"
+echo "--- Uploading to ${BACKUP_REMOTE}:${BACKUP_BUCKET}/db/${FILENAME} ---"
+rclone copy "$TMP_PATH" "${BACKUP_REMOTE}:${BACKUP_BUCKET}/db/"
 
 # 2. Cleanup local temp file
 rm -f "$TMP_PATH"
 echo "--- Local temp file removed ---"
 
-# 3. Cleanup old backups in R2
-echo "--- Removing R2 backups older than ${RETENTION} days ---"
-rclone delete "r2:${R2_BUCKET}/db/" --min-age "${RETENTION}d"
+# 3. Cleanup old backups in the bucket
+echo "--- Removing ${BACKUP_REMOTE} backups older than ${RETENTION} days ---"
+rclone delete "${BACKUP_REMOTE}:${BACKUP_BUCKET}/db/" --min-age "${RETENTION}d"
 
 echo "=== Backup completed successfully ==="

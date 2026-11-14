@@ -12,19 +12,29 @@ concurrency:
 
 jobs:
   backup:
-    name: Backup PostgreSQL to Cloudflare R2
+    name: Backup PostgreSQL to object storage
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME || 'newsbot-backups' }}
       BACKUP_RETENTION_DAYS: '7'
+      # 'r2' (Cloudflare) or 'b2' (Backblaze). Set the repository variable
+      # BACKUP_STORAGE=b2 to switch; both remotes are configured below, so switching
+      # only needs the B2 secrets and that variable.
+      BACKUP_STORAGE: ${{ vars.BACKUP_STORAGE || 'r2' }}
+      BACKUP_REMOTE: ${{ vars.BACKUP_STORAGE || 'r2' }}
+      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME || 'newsbot-backups' }}
+      B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME || 'newsbot-backups' }}
+      BACKUP_BUCKET: ${{ vars.BACKUP_STORAGE == 'b2' && (secrets.B2_BUCKET_NAME || 'newsbot-backups') || (secrets.R2_BUCKET_NAME || 'newsbot-backups') }}
       RCLONE_CONFIG_R2_TYPE: s3
       RCLONE_CONFIG_R2_PROVIDER: Cloudflare
       RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
       RCLONE_CONFIG_R2_ACL: private
+      RCLONE_CONFIG_B2_TYPE: b2
+      RCLONE_CONFIG_B2_ACCOUNT: ${{ secrets.B2_ACCOUNT_ID }}
+      RCLONE_CONFIG_B2_KEY: ${{ secrets.B2_APPLICATION_KEY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -33,11 +43,16 @@ jobs:
         run: |
           missing=()
           [ -z "${DATABASE_URL:-}" ] && missing+=("DATABASE_URL")
-          [ -z "${RCLONE_CONFIG_R2_ACCESS_KEY_ID:-}" ] && missing+=("R2_ACCESS_KEY_ID")
-          [ -z "${RCLONE_CONFIG_R2_SECRET_ACCESS_KEY:-}" ] && missing+=("R2_SECRET_ACCESS_KEY")
-          [ -z "${RCLONE_CONFIG_R2_ENDPOINT:-}" ] && missing+=("R2_ENDPOINT")
+          if [ "${BACKUP_STORAGE}" = "b2" ]; then
+            [ -z "${RCLONE_CONFIG_B2_ACCOUNT:-}" ] && missing+=("B2_ACCOUNT_ID")
+            [ -z "${RCLONE_CONFIG_B2_KEY:-}" ] && missing+=("B2_APPLICATION_KEY")
+          else
+            [ -z "${RCLONE_CONFIG_R2_ACCESS_KEY_ID:-}" ] && missing+=("R2_ACCESS_KEY_ID")
+            [ -z "${RCLONE_CONFIG_R2_SECRET_ACCESS_KEY:-}" ] && missing+=("R2_SECRET_ACCESS_KEY")
+            [ -z "${RCLONE_CONFIG_R2_ENDPOINT:-}" ] && missing+=("R2_ENDPOINT")
+          fi
           if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::Backup cannot run, missing secret(s): ${missing[*]}" >&2
+            echo "::error::Backup cannot run (BACKUP_STORAGE=${BACKUP_STORAGE}), missing secret(s): ${missing[*]}" >&2
             exit 1
           fi
 
