@@ -300,3 +300,46 @@ async def test_alert_is_sent_after_the_batch_commit(monkeypatch: pytest.MonkeyPa
     assert "commit" in events
     assert events[-1] == "alert"
     assert events.index("commit") < events.index("alert")
+
+
+@pytest.mark.asyncio
+async def test_uncommitted_article_is_not_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A commit that fails mid-batch aborts the run before any alert is sent."""
+    events: list[str] = []
+    alert_calls: list[list[dict[str, Any]]] = []
+
+    async def record_alert(entries, *args: Any, **kwargs: Any) -> list:
+        alert_calls.append([dict(entry) for entry in entries])
+        return []
+
+    monkeypatch.setattr(pipeline, "publish_flag_alert", AsyncMock(side_effect=record_alert))
+    monkeypatch.setattr(settings, "number_check_mode", "log")
+    injection = NewsAnalysis(
+        is_relevant=True,
+        categories=["SEC"],
+        event_title="Injected headline",
+        headline_fa="پیام تزریق",
+        summary_fa="خلاصه.",
+        countries=["ایران"],
+        actors=["بازیگر"],
+        location="تهران",
+        importance=3,
+        verification_status="disputed",
+        is_injection_attempt=True,
+    )
+    monkeypatch.setattr(pipeline, "analyze_article", AsyncMock(return_value=injection))
+    monkeypatch.setattr(pipeline, "_hydrate_article_body", AsyncMock(return_value=None))
+    monkeypatch.setattr(pipeline, "_publish_immediate_safely", AsyncMock(return_value=None))
+
+    session = FakeSession([_article(1), _article(2)], events)
+    session.commit = AsyncMock(side_effect=[None, RuntimeError("commit failed")])
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await pipeline.process_collected_articles(
+            session,
+            provider=MockAIProvider(canned_response=injection.model_dump(mode="json")),
+        )
+
+    # The article whose commit failed (and any later one) must never appear in an alert.
+    for entries in alert_calls:
+        assert 2 not in {entry["article_id"] for entry in entries}
