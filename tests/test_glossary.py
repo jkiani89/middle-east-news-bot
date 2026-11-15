@@ -38,9 +38,28 @@ def test_real_glossary_file_loads_in_ci() -> None:
     glossary = load_glossary()
     assert DEFAULT_GLOSSARY_PATH.exists()
     assert glossary.version >= 1
-    assert all(entry.review_required for entry in glossary.entries)
-    # Nothing awaiting approval may reach a prompt.
-    assert glossary.usable_entries() == ()
+    assert glossary.entries, "the shipped glossary must not be empty"
+    # Structure only. Whether an entry is approved is editorial data, not a test
+    # invariant: approved entries are exactly the ones injected into the prompt.
+    for entry in glossary.entries:
+        assert entry.id.strip()
+        assert entry.kind in {"person", "place", "organization", "country", "other"}
+        assert entry.canonical_fa.strip()
+        assert entry.source_forms, f"{entry.id}: source_forms must not be empty"
+        assert all(form.strip() for form in entry.source_forms)
+        assert isinstance(entry.review_required, bool)
+
+
+def test_real_glossary_file_has_approved_entries() -> None:
+    """Guards the opposite mistake: a file where every entry is review_required.
+
+    Approved entries (review_required: false) are what the prompt actually uses, so
+    flagging them all back to true would silently disable the glossary feature.
+    """
+    glossary = load_glossary()
+    approved = tuple(entry for entry in glossary.entries if not entry.review_required)
+    assert approved, "no glossary entry has review_required: false"
+    assert glossary.usable_entries() == approved
 
 
 def test_content_sha_tracks_the_file_contents() -> None:
