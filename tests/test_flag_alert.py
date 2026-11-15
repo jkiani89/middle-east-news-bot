@@ -16,7 +16,7 @@ from app.config import settings
 from app.database.models import Article
 from app.processors import pipeline
 from app.telegram import publisher
-from app.telegram.publisher import format_flag_alert, publish_flag_alert
+from app.telegram.publisher import _defang_host, format_flag_alert, publish_flag_alert
 
 
 def _entry(index: int, *, reason: str = "number_mismatch", headline: str = "تیتر نمونه", numbers=None) -> dict:
@@ -395,6 +395,25 @@ def test_injection_source_name_url_is_defanged_without_scheme_or_path() -> None:
     assert "evil.example" not in text
     assert re.search(r"[A-Za-z0-9-]+\.[A-Za-z]{2,}", text) is None
     assert "<a href" not in text
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", ""),
+        (None, ""),
+        ("http://[bad", "http://[bad"),  # urlparse raises ValueError; the fallback still defangs
+        ("javascript:alert(1)", "alert(1)"),
+        ("HTTP://WWW.EVIL.EXAMPLE/Path?x=1", "WWW[.]EVIL[.]EXAMPLE"),
+        ("evil.example/path", "evil[.]example"),
+        ("www.evil.example", "evil[.]example"),
+        ("Reuters via evil.example", "Reuters via evil[.]example"),
+    ],
+)
+def test_defang_host_never_emits_a_bare_domain(value: str | None, expected: str) -> None:
+    result = _defang_host(value)
+    assert result == expected
+    assert re.search(r"[A-Za-z0-9-]+\.[A-Za-z]{2,}", result) is None
 
 
 def test_injection_has_no_clickable_link() -> None:
