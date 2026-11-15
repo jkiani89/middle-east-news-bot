@@ -203,6 +203,17 @@ async def test_number_check_does_not_add_model_calls(monkeypatch: pytest.MonkeyP
     assert provider.calls_by_purpose["schema_repair"] == 0
 
 
+def _patch_checker_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the numeric checker raise, as a malformed input would."""
+
+    import app.ai.number_check as number_check_module
+
+    def _raise(**kwargs):
+        raise RuntimeError("checker exploded")
+
+    monkeypatch.setattr(number_check_module, "check_numbers", _raise)
+
+
 class _EmptyReportSession(FakeSession):
     """Session that records the SQL it is asked to run and returns no rows."""
 
@@ -212,6 +223,68 @@ class _EmptyReportSession(FakeSession):
 
     async def scalar(self, stmt: object) -> int:
         return 0
+
+
+@pytest.mark.asyncio
+async def test_checker_failure_does_not_fail_the_article(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Y-1b.1: a checker exception leaves the article on its normal path."""
+    _patch_checker_failure(monkeypatch)
+    article, _, publish = await _run(
+        monkeypatch, mode="log", analysis=_analysis(GROUNDED_HEADLINE, GROUNDED_SUMMARY)
+    )
+    assert article.status == "summarized"
+    assert article.attempt_count == 1  # the ordinary per-run increment, nothing extra
+    report = article.ai_payload["number_check"]
+    assert report["status"] == "error"
+    assert report["blocking"] is False
+    assert report["unmatched"] == []
+    assert report["error"].startswith("RuntimeError: checker exploded")
+    # Y-1b.2: log mode still publishes immediately.
+    publish.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_checker_failure_in_flag_mode_never_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Y-1b.4: an errored report is not a finding."""
+    _patch_checker_failure(monkeypatch)
+    article, session, _ = await _run(
+        monkeypatch, mode="flag", analysis=_analysis(UNGROUNDED_HEADLINE, UNGROUNDED_SUMMARY)
+    )
+    assert article.status == "summarized"
+    assert article.ai_payload["number_check"]["status"] == "error"
+    assert not [obj for obj in session.added if isinstance(obj, Event)]
+
+
+@pytest.mark.asyncio
+async def test_checker_failure_does_not_trip_the_breaker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Y-1b.3/Y-1b.5: the batch continues and no extra model call is spent."""
+    _patch_checker_failure(monkeypatch)
+    analysis = _analysis(GROUNDED_HEADLINE, GROUNDED_SUMMARY)
+    monkeypatch.setattr(settings, "number_check_mode", "log")
+    monkeypatch.setattr(pipeline, "_hydrate_article_body", AsyncMock(return_value=None))
+    monkeypatch.setattr(pipeline, "_count_event_sources", AsyncMock(return_value=1))
+    monkeypatch.setattr(pipeline, "_refresh_event_perspectives", AsyncMock(return_value=None))
+    monkeypatch.setattr(pipeline, "_publish_immediate_safely", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        pipeline,
+        "EventMatcher",
+        lambda: SimpleNamespace(
+            match_or_create_event=AsyncMock(
+                return_value=SimpleNamespace(event_id=10, is_new_event=True, match_type="initial", confidence=0.9)
+            )
+        ),
+    )
+    provider = MockAIProvider(canned_response=analysis.model_dump(mode="json"))
+    second = _article()
+    second.id = 2
+    session = FakeSession([_article(), second])
+
+    processed = await pipeline.process_collected_articles(session, provider=provider)
+
+    assert pipeline._circuit_breaker_tripped is False
+    assert processed == 2
+    assert provider.calls_by_purpose["analysis"] == 2  # one per article, no repair calls
+    assert provider.calls_by_purpose["schema_repair"] == 0
 
 
 @pytest.mark.asyncio

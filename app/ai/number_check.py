@@ -17,8 +17,11 @@ Only a token that survives all of that as *unparsed* can produce the
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 # Single source of truth for the prompt truncation: summarizer.py imports this
 # constant, so the checker and the prompt can never drift apart (acceptance Y-1.6).
@@ -332,6 +335,47 @@ def _is_unverifiable(
     # Arabic spelled-out compounds are not summed yet; leave small numbers alone
     # instead of calling them fabricated (documented limitation).
     return arabic_compound and any(0 <= value <= 9_999 for value in values)
+
+
+ERROR_MESSAGE_MAX_CHARS = 200
+
+
+def safe_check_numbers(
+    *,
+    headline: str,
+    summary: str,
+    source_title: str,
+    source_body: str,
+    mode: NumberCheckMode = "log",
+) -> dict[str, Any]:
+    """Run :func:`check_numbers` without ever breaking article processing (Y-1b).
+
+    Only ``Exception`` is caught on purpose: cancellation and interpreter-level
+    exits must propagate. A failure is reported as ``status="error"``, is never
+    blocking, and leaves the article on its normal successful path.
+    """
+    try:
+        return check_numbers(
+            headline=headline,
+            summary=summary,
+            source_title=source_title,
+            source_body=source_body,
+            mode=mode,
+        )
+    except Exception as exc:  # noqa: BLE001 - deliberate boundary around a local check
+        logger.exception("Number grounding check failed; continuing without it: %s", exc)
+        return {
+            "mode": mode,
+            "checked_source_chars": 0,
+            "source_truncated": False,
+            "numbers_checked": 0,
+            "matched": 0,
+            "unmatched": [],
+            "reason_codes": {},
+            "status": "error",
+            "blocking": False,
+            "error": f"{type(exc).__name__}: {exc}"[:ERROR_MESSAGE_MAX_CHARS],
+        }
 
 
 def check_numbers(

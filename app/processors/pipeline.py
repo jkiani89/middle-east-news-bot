@@ -7,7 +7,7 @@ from sqlalchemy import and_, distinct, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.number_check import check_numbers
+from app.ai.number_check import safe_check_numbers
 from app.ai.provider import BaseAIProvider, get_ai_provider, is_retryable_ai_error
 from app.ai.summarizer import PROMPT_VERSION, analyze_article, analyze_perspectives
 from app.collectors.rss_collector import fetch_article_full_text, fetch_feed
@@ -423,8 +423,9 @@ async def process_collected_articles(
         payload_dict["model_name"] = ai_provider.model_name
 
         # Phase Y-1: every number in the Persian output must be grounded in the exact
-        # text the model saw (title + body truncated by the prompt builder).
-        number_check = check_numbers(
+        # text the model saw (title + body truncated by the prompt builder). A checker
+        # failure is contained (Y-1b) so one odd article cannot abort the batch.
+        number_check = safe_check_numbers(
             headline=result.headline_fa,
             summary=result.summary_fa,
             source_title=article.title or "",
