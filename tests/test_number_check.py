@@ -223,13 +223,15 @@ def test_unverifiable_never_blocks() -> None:
     assert report["blocking"] is False
 
 
-def test_arabic_spelled_compound_is_unverifiable_and_documented() -> None:
+def test_arabic_spelled_compound_is_summed() -> None:
+    """Y-5 changed this: «ثلاثة وعشرون» is now summed instead of unverifiable."""
     report = _check(
         "۲۳ نفر کشته شدند",
         "منابع از کشته شدن ۲۳ نفر خبر دادند.",
         "أعلنت السلطات مقتل ثلاثة وعشرون شخصا.",
     )
-    assert report["reason_codes"]["unverifiable"] == 2
+    assert report["status"] == "clean", report["unmatched"]
+    assert report["reason_codes"].get("word_number_source") == 2
     assert report["blocking"] is False
 
 
@@ -276,3 +278,120 @@ def test_off_mode_skips_the_check() -> None:
 def test_extract_numbers_exposes_both_readings_of_thousands_separator() -> None:
     values = {value for value, _, _ in extract_numbers("1,200 and 1,200,000")}
     assert {1200.0, 1.2, 1_200_000.0} <= values
+
+
+# ── Y-5: ambiguous words are only numbers in a numeric phrase ──────────────────
+
+
+def test_bare_ambiguous_word_is_not_a_number() -> None:
+    report = _check(
+        "یک نفر در حمله زخمی شد",
+        "منابع محلی از زخمی شدن یک نفر خبر دادند.",
+        "Local sources said one person was wounded in the attack.",
+    )
+    assert report["numbers_checked"] == 0, report["unmatched"]
+    assert report["status"] == "clean"
+
+
+def test_ambiguous_word_before_a_scale_word_is_a_number() -> None:
+    report = _check(
+        "یک میلیون نفر آواره شدند",
+        "گزارش‌ها از آوارگی گسترده خبر می‌دهند.",
+        "Aid agencies said 1,000,000 people were displaced.",
+    )
+    assert report["status"] == "clean", report["unmatched"]
+    assert report["numbers_checked"] == 1
+    assert report["matched"] == 1
+
+
+@pytest.mark.parametrize("word", ["نه", "واحد"])
+def test_bare_no_and_unit_words_are_ignored(word: str) -> None:
+    report = _check(
+        f"{word} مورد گزارش شد",
+        "جزئیات بیشتری منتشر نشد.",
+        "No further details were released.",
+    )
+    assert report["numbers_checked"] == 0, report["unmatched"]
+
+
+def test_bare_scale_word_is_ignored() -> None:
+    report = _check(
+        "میلیارد در بودجه گم شد",
+        "جزئیات بیشتری منتشر نشد.",
+        "No further details were released.",
+    )
+    assert report["numbers_checked"] == 0, report["unmatched"]
+
+
+# ── Y-5: Arabic spelled-out numbers in the source ─────────────────────────────
+
+
+def test_arabic_unit_word_in_source_matches_digit_output() -> None:
+    report = _check(
+        "۳ کشته در حمله",
+        "منابع از کشته شدن ۳ نفر خبر دادند.",
+        "أعلنت السلطات مقتل ثلاثة أشخاص في الغارة.",
+    )
+    assert report["status"] == "clean", report["unmatched"]
+    assert report["reason_codes"].get("word_number_source") == 2
+
+
+def test_arabic_teen_compound_is_parsed() -> None:
+    assert {value for value, _, _ in extract_numbers("خمسة عشر")} == {15.0}
+    report = _check(
+        "۱۵ کشته در حمله",
+        "منابع از کشته شدن ۱۵ نفر خبر دادند.",
+        "أعلنت السلطات مقتل خمسة عشر شخصا.",
+    )
+    assert report["status"] == "clean", report["unmatched"]
+
+
+def test_arabic_hundred_and_tens_compound_is_parsed() -> None:
+    assert {value for value, _, _ in extract_numbers("مئة وثلاثين")} == {130.0}
+    report = _check(
+        "۱۳۰ کشته در حمله",
+        "منابع از کشته شدن ۱۳۰ نفر خبر دادند.",
+        "أعلنت السلطات مقتل مئة وثلاثين شخصا.",
+    )
+    assert report["status"] == "clean", report["unmatched"]
+
+
+def test_digit_output_without_source_number_still_blocks() -> None:
+    report = _check(
+        "۱۳۰ نفر کشته شدند",
+        "جزئیات بیشتری منتشر نشد.",
+        "Officials said many people were killed.",
+    )
+    assert [item["reason_code"] for item in report["unmatched"]] == ["not_in_source"]
+    assert report["blocking"] is True
+    assert report["status"] == "mismatch"
+
+
+# ── Y-5: status separates a real mismatch from an informational finding ───────
+
+
+def test_jalali_only_article_is_unverifiable_not_mismatch() -> None:
+    report = _check(
+        "در سال ۱۴۰۴ این توافق امضا شد",
+        "این توافق در سال ۱۴۰۴ نهایی شد.",
+        "The agreement was signed in 2025, officials said.",
+    )
+    assert report["reason_codes"]["jalali_calendar"] == 2
+    assert report["status"] == "unverifiable"
+    assert report["status"] != "mismatch"
+    assert report["blocking"] is False
+
+
+def test_number_check_stays_local_and_needs_no_model_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    import socket
+
+    def _no_network(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the number check must not make a model or network call")
+
+    monkeypatch.setattr(socket, "socket", _no_network)
+    report = _check(
+        "۳ میلیون نفر آواره شدند",
+        "سازمان‌های امدادی از آوارگی گسترده خبر دادند.",
+        "Aid agencies said 3,000,000 people were displaced.",
+    )
+    assert report["status"] == "clean", report["unmatched"]
