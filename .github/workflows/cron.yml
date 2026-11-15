@@ -54,6 +54,12 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
       TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
+      # Editorial guards: log every numeric mismatch, and send one admin alert per run
+      # about the articles parked for review. Override any of these with a repository
+      # variable of the same name; the defaults are the safe, non-blocking behaviour.
+      NUMBER_CHECK_MODE: ${{ vars.NUMBER_CHECK_MODE || 'log' }}
+      FLAG_ALERT_ENABLED: ${{ vars.FLAG_ALERT_ENABLED || 'true' }}
+      FLAG_ALERT_MAX_PER_RUN: ${{ vars.FLAG_ALERT_MAX_PER_RUN || '5' }}
       MAX_ARTICLES_PER_BATCH: '30'
       TIMEZONE: 'Asia/Tehran'
       DAILY_REPORT_HOUR: '8'

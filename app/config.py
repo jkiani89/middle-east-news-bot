@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     # the text the model actually saw. "log" records findings in ai_payload only;
     # "flag" parks the article for review instead of publishing it.
     number_check_mode: Literal["off", "log", "flag"] = "log"
+    # Phase Z: at most one admin alert per run about the articles parked for review.
+    flag_alert_enabled: bool = True
+    flag_alert_max_per_run: int = 5
     immediate_publish_delay_seconds: float = 2.0
     immediate_publish_dry_run: bool = False
     min_importance: int = 2

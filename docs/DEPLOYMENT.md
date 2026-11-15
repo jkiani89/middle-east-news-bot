@@ -79,8 +79,13 @@ Set these as **Repository Variables** (Settings → Secrets and variables → Ac
 | `IMMEDIATE_PUBLISH_MAX_PER_RUN` | `10` | Cap on instant messages per batch; the rest wait for the daily report |
 | `IMMEDIATE_PUBLISH_DELAY_SECONDS` | `2` | Pause between instant messages to avoid Telegram FloodWait |
 | `POSTGRES_SSLROOTCERT` | empty | Path to a CA bundle (e.g. Aiven `ca.pem`); upgrades `sslmode=require` to real certificate validation |
+| `NUMBER_CHECK_MODE` (repo variable `vars.NUMBER_CHECK_MODE`) | `log` | Numeric grounding of `headline_fa`/`summary_fa`: `off`, `log` (record in `ai_payload.number_check` only) or `flag` (park the article for review instead of publishing it) |
+| `FLAG_ALERT_ENABLED` (repo variable `vars.FLAG_ALERT_ENABLED`) | `true` | Send one admin summary per run for the articles parked for review |
+| `FLAG_ALERT_MAX_PER_RUN` (repo variable `vars.FLAG_ALERT_MAX_PER_RUN`) | `5` | Items listed in that single admin message; the rest appear as a count |
 
-> `DRY_RUN_DAILY_REPORT=true` (workflow input) suppresses **both** the daily report and the instant per-article messages, and only prints `[DRY RUN]` blocks into the logs. Use it for any test dispatch.
+> `DRY_RUN_DAILY_REPORT=true` (workflow input) suppresses the daily report, the instant per-article messages **and** the flag alert; only `[DRY RUN]` blocks are printed into the logs. Use it for any test dispatch.
+
+> These three are wired in `.github/workflows/cron.yml` as `${{ vars.X || '<default>' }}`, so the repository variable of the same name overrides the safe default (`log` / `true` / `5`) without editing the workflow. Set them under Settings → Secrets and variables → Actions → **Variables**; leave them unset to keep the defaults.
 
 ### Required Backup Secrets (for `backup.yml`)
 

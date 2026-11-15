@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import logging
 import re
 import tempfile
@@ -18,12 +19,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
-from aiogram.types import FSInputFile
+from aiogram.types import FSInputFile, LinkPreviewOptions
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,11 +49,14 @@ class MockPublishRefusedError(RuntimeError):
     pass
 
 
-def esc(s: Any) -> str:
+def esc(s: Any, quote: bool = False) -> str:
     """Sanitize HTML special characters for Telegram HTML parse mode."""
     if s is None:
         return ""
-    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    text = str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    if quote:
+        text = text.replace('"', "&quot;").replace("'", "&#x27;")
+    return text
 
 
 def get_tag_name(tag_str: str) -> str:
@@ -669,6 +674,138 @@ async def publish_immediate_analysis(
             sent.append({"chat_id": target_channel, "message_id": msg.message_id, "type": delivery_type})
             if pause > 0 and idx < len(chunks) - 1:
                 await asyncio.sleep(pause)
+        return sent
+    finally:
+        if own_bot:
+            await bot.session.close()
+
+
+FLAG_REASON_LABELS = {
+    "injection_detected": "تلاش برای تزریق پرامپت در متن منبع",
+    "number_mismatch": "عدد بدون پشتوانه در متن فارسی",
+    "other": "دلیل دیگر (بازبینی دستی)",
+}
+MAX_FLAG_HEADLINE_CHARS = 80
+MAX_FLAG_NUMBERS = 5
+
+
+def _truncate(text: str, limit: int) -> str:
+    cleaned = " ".join((text or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 1].rstrip() + "…"
+
+
+def _is_http_url(url: str) -> bool:
+    try:
+        scheme = urlparse(url).scheme.lower()
+    except ValueError:
+        return False
+    return scheme in {"http", "https"}
+
+
+def _source_domain(url: str) -> str:
+    """Bare host for the alert, so a hostile URL is never clickable there."""
+    try:
+        host = urlparse(url).netloc.lower()
+    except ValueError:
+        return ""
+    return host[4:] if host.startswith("www.") else host
+
+
+def format_flag_alert(entries: list[dict[str, Any]], total: int, max_items: int = 5) -> str:
+    """Format one admin alert for articles parked for review (Phase Z)."""
+    shown = entries[:max(0, max_items)]
+    lines = [
+        "🚩 <b>هشدار تحریریه: مقاله‌های پارک‌شده</b>",
+        "<i>این موارد در همین اجرا به بازبینی انسانی سپرده شدند و منتشر نشدند.</i>",
+        "",
+    ]
+    for index, entry in enumerate(shown, 1):
+        reason_code = entry.get("reason", "other")
+        reason = FLAG_REASON_LABELS.get(reason_code, FLAG_REASON_LABELS["other"])
+        lines.append(f"{index}. <b>#{entry.get('article_id', '?')}</b> — {esc(reason)}")
+        # An injected article's model output may itself carry the attack text, so only
+        # its identity, reason, source and domain are shown: no headline, no link.
+        if reason_code != "injection_detected":
+            headline = _truncate(entry.get("headline_fa") or "", MAX_FLAG_HEADLINE_CHARS)
+            lines.append(f"   ▫️ تیتر: {esc(headline)}")
+            numbers = [str(value) for value in (entry.get("numbers") or [])][:MAX_FLAG_NUMBERS]
+            if numbers:
+                lines.append(f"   ▫️ عددهای بدون پشتوانه: {esc('، '.join(numbers))}")
+        source = esc(entry.get("source_name") or "منبع نامشخص", quote=True)
+        url = entry.get("source_url") or ""
+        domain = _source_domain(url)
+        # Only number_mismatch (and other non-injection) entries may expose a clickable
+        # link, and only for http(s) URLs. Injection reports stay link-free.
+        if reason_code != "injection_detected" and _is_http_url(url):
+            lines.append(
+                f"   ▫️ منبع: <a href=\"{html.escape(url, quote=True)}\">{source}</a>"
+                + (f" ({esc(domain)})" if domain else "")
+            )
+        else:
+            lines.append(f"   ▫️ منبع: {source} ({esc(domain)})" if domain else f"   ▫️ منبع: {source}")
+        lines.append("")
+    remaining = total - len(shown)
+    if remaining > 0:
+        lines.append(f"… و {remaining} مورد دیگر در همین اجرا پارک شد.")
+    return "\n".join(lines).strip()
+
+
+async def publish_flag_alert(
+    entries: list[dict[str, Any]],
+    total: int | None = None,
+    bot: Bot | None = None,
+    dry_run: bool | None = None,
+    chat_id: str | int | None = None,
+) -> list[dict[str, Any]]:
+    """Send at most one admin message per run about articles parked for review.
+
+    Only the entries passed in (this run's flagged articles) are reported; older
+    parked rows are never re-announced. ``flag_alert_enabled=False`` or a dry run
+    sends nothing. Telegram failures are logged and swallowed so the batch keeps
+    its normal course.
+    """
+    if not settings.flag_alert_enabled or not entries:
+        return []
+    total_count = total if total is not None else len(entries)
+    effective_dry_run = settings.immediate_publish_dry_run if dry_run is None else dry_run
+    target = str(chat_id or settings.telegram_admin_chat_id or "")
+    text = format_flag_alert(entries, total_count, max_items=settings.flag_alert_max_per_run)
+
+    if effective_dry_run:
+        logger.info(
+            "TELEGRAM FLAG ALERT [DRY RUN] target=%s shown=%d total=%d",
+            target or "(unset)",
+            min(len(entries), settings.flag_alert_max_per_run),
+            total_count,
+        )
+        return [{"chat_id": target, "message_id": 3000, "type": "flag_alert_dry_run"}]
+    if not target:
+        logger.warning("Flag alert skipped: TELEGRAM_ADMIN_CHAT_ID is not configured.")
+        return []
+
+    own_bot = False
+    if bot is None:
+        bot = Bot(
+            settings.telegram_bot_token,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
+        own_bot = True
+
+    sent: list[dict[str, Any]] = []
+    try:
+        for chunk in split_text(text, limit=3900):
+            msg = await send_telegram_message_resilient(
+                bot=bot,
+                chat_id=target,
+                text=chunk,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            )
+            sent.append({"chat_id": target, "message_id": msg.message_id, "type": "flag_alert"})
+        return sent
+    except Exception:  # noqa: BLE001 - a failed alert must never break a batch
+        logger.exception("Flag alert delivery failed; the batch continues.")
         return sent
     finally:
         if own_bot:
