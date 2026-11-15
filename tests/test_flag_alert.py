@@ -155,7 +155,7 @@ def test_injection_entry_hides_model_headline_and_link() -> None:
     assert "تیتر:" not in text
     assert "<a href" not in text
     assert "evil.example" not in text
-    assert "Source 7 (example.com)" in text
+    assert "Source 7 (example[.]com)" in text
 
 
 @pytest.mark.asyncio
@@ -362,3 +362,28 @@ def test_javascript_url_is_not_linked() -> None:
     entry["source_url"] = "javascript:alert(1)"
     text = format_flag_alert([entry], total=1, max_items=5)
     assert "<a href" not in text
+
+
+def test_injection_domain_is_defanged() -> None:
+    text = format_flag_alert(
+        [_entry(1, reason="injection_detected", headline="x")],
+        total=1,
+        max_items=5,
+    )
+    assert "example[.]com" in text
+    assert "example.com" not in text
+
+
+def test_injection_has_no_clickable_link() -> None:
+    text = format_flag_alert(
+        [_entry(1, reason="injection_detected", headline="x")],
+        total=1,
+        max_items=5,
+    )
+    assert "<a href" not in text
+
+
+def test_number_mismatch_keeps_clickable_link_and_raw_domain() -> None:
+    text = format_flag_alert([_entry(1, numbers=["12"])], total=1, max_items=5)
+    assert '<a href="https://example.com/1">Source 1</a>' in text
+    assert "(example.com)" in text

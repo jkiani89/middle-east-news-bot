@@ -744,7 +744,14 @@ def format_flag_alert(entries: list[dict[str, Any]], total: int, max_items: int 
                 + (f" ({esc(domain)})" if domain else "")
             )
         else:
-            lines.append(f"   ▫️ منبع: {source} ({esc(domain)})" if domain else f"   ▫️ منبع: {source}")
+            # Defang the host for injection reports so Telegram does not turn the
+            # attacker's domain into a clickable link in the admin chat.
+            display_domain = domain.replace(".", "[.]") if reason_code == "injection_detected" else domain
+            lines.append(
+                f"   ▫️ منبع: {source} ({esc(display_domain)})"
+                if display_domain
+                else f"   ▫️ منبع: {source}"
+            )
         lines.append("")
     remaining = total - len(shown)
     if remaining > 0:
