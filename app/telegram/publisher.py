@@ -18,12 +18,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramRetryAfter
-from aiogram.types import FSInputFile
+from aiogram.types import FSInputFile, LinkPreviewOptions
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -691,6 +692,15 @@ def _truncate(text: str, limit: int) -> str:
     return cleaned[: limit - 1].rstrip() + "…"
 
 
+def _source_domain(url: str) -> str:
+    """Bare host for the alert, so a hostile URL is never clickable there."""
+    try:
+        host = urlparse(url).netloc.lower()
+    except ValueError:
+        return ""
+    return host[4:] if host.startswith("www.") else host
+
+
 def format_flag_alert(entries: list[dict[str, Any]], total: int, max_items: int = 5) -> str:
     """Format one admin alert for articles parked for review (Phase Z)."""
     shown = entries[:max(0, max_items)]
@@ -700,19 +710,20 @@ def format_flag_alert(entries: list[dict[str, Any]], total: int, max_items: int 
         "",
     ]
     for index, entry in enumerate(shown, 1):
-        reason = FLAG_REASON_LABELS.get(entry.get("reason", "other"), FLAG_REASON_LABELS["other"])
+        reason_code = entry.get("reason", "other")
+        reason = FLAG_REASON_LABELS.get(reason_code, FLAG_REASON_LABELS["other"])
         lines.append(f"{index}. <b>#{entry.get('article_id', '?')}</b> — {esc(reason)}")
-        headline = _truncate(entry.get("headline_fa") or "", MAX_FLAG_HEADLINE_CHARS)
-        lines.append(f"   ▫️ تیتر: {esc(headline)}")
-        numbers = [str(value) for value in (entry.get("numbers") or [])][:MAX_FLAG_NUMBERS]
-        if numbers:
-            lines.append(f"   ▫️ عددهای بدون پشتوانه: {esc('، '.join(numbers))}")
+        # An injected article's model output may itself carry the attack text, so only
+        # its identity, reason, source and domain are shown: no headline, no link.
+        if reason_code != "injection_detected":
+            headline = _truncate(entry.get("headline_fa") or "", MAX_FLAG_HEADLINE_CHARS)
+            lines.append(f"   ▫️ تیتر: {esc(headline)}")
+            numbers = [str(value) for value in (entry.get("numbers") or [])][:MAX_FLAG_NUMBERS]
+            if numbers:
+                lines.append(f"   ▫️ عددهای بدون پشتوانه: {esc('، '.join(numbers))}")
         source = esc(entry.get("source_name") or "منبع نامشخص")
-        url = entry.get("source_url") or ""
-        if url:
-            lines.append(f"   ▫️ منبع: <a href=\"{esc(url)}\">{source}</a>")
-        else:
-            lines.append(f"   ▫️ منبع: {source}")
+        domain = _source_domain(entry.get("source_url") or "")
+        lines.append(f"   ▫️ منبع: {source} ({esc(domain)})" if domain else f"   ▫️ منبع: {source}")
         lines.append("")
     remaining = total - len(shown)
     if remaining > 0:
@@ -764,7 +775,12 @@ async def publish_flag_alert(
     sent: list[dict[str, Any]] = []
     try:
         for chunk in split_text(text, limit=3900):
-            msg = await send_telegram_message_resilient(bot=bot, chat_id=target, text=chunk)
+            msg = await send_telegram_message_resilient(
+                bot=bot,
+                chat_id=target,
+                text=chunk,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            )
             sent.append({"chat_id": target, "message_id": msg.message_id, "type": "flag_alert"})
         return sent
     except Exception:  # noqa: BLE001 - a failed alert must never break a batch
