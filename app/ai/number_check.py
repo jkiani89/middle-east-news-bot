@@ -191,6 +191,13 @@ _ARABIC_PARTS: dict[str, tuple[str, float]] = {
     **{word: ("scale", value) for word, value in _ARABIC_SCALES.items()},
 }
 _WORD_TOKEN_RE = re.compile(r"[^\W\d_]+")
+# Glued spelled-out number + scale word with a ZWNJ («دو‌میلیون», «سه‌هزار»):
+# the number word is multiplied by the scale, mirroring digit + scale handling.
+_GLUED_SCALE_RE = re.compile(
+    rf"(?<!\w)(?P<num>دو|سه)\u200c"
+    rf"(?P<scale>{'|'.join(re.escape(w) for w in sorted(_SCALE_WORDS, key=len, reverse=True))})"
+    rf"(?!\w)"
+)
 # Words inside one Arabic number are separated by spaces, ZWNJ, tatweel, or a
 # glued conjunction «و» («ثلاثة وعشرون»).
 _ARABIC_JOIN_RE = re.compile(r"[\s\u200c\u0640]*(?:و[\s\u200c\u0640]*)?")
@@ -470,6 +477,19 @@ def _extract(
     consumed.extend(arabic_spans)
     consumed.sort()
 
+    # Glued spelled-out number + scale word («دو‌میلیون», «سه‌هزار»): emit the
+    # scaled value and consume the span so the bare words are not counted twice.
+    for glued in _GLUED_SCALE_RE.finditer(prepared):
+        if _in_any(glued.start(), consumed):
+            continue
+        num_value = _WORD_NUMBERS[glued.group("num")]
+        scale_value = _SCALE_WORDS[glued.group("scale")]
+        occurrences.append(
+            ([round(num_value * scale_value, 6)], glued.group(0), {"word", "scaled"})
+        )
+        consumed.append((glued.start(), glued.end()))
+    consumed.sort()
+
     # Words that are only numbers in a numeric phrase (see _AMBIGUOUS_ALONE) and
     # bare scale words never count on their own in the Persian output.
     alone_words = set() if source_side else _AMBIGUOUS_ALONE.keys() | _SCALE_WORDS.keys()
@@ -501,7 +521,20 @@ def extract_numbers(text: str) -> list[tuple[float, str, set[str]]]:
 
 
 _ARABIC_LETTER_RANGE = ("\u0600", "\u06ff")
-_DUAL_SUFFIXES = ("ان", "ين", "تان", "تين")
+# Restricted list of Arabic dual news nouns (Y-6b). A source is only treated as
+# "possibly reporting a dual as 2" when one of these exact nouns occurs in it;
+# any word merely ending in ان/ين/تان/تين no longer qualifies (e.g. إيران،
+# لبنان، الفلسطينيين، المدنيين do not). Entries are normalised through
+# _fold_arabic + _without_article at lookup time.
+_ARABIC_DUAL_NOUNS_RAW: tuple[str, ...] = (
+    "شهيدان", "قتيلان", "جريحان", "مصابان", "شخصان", "مدنيان", "طفلان",
+    "امرأتان", "امراتان", "جنديان", "صاروخان", "طائرتان", "طايرتان",
+    "غارتان", "قذيفتان", "فلسطينيان", "إسرائيليان",
+    "البلدين", "الجانبين", "الطرفين", "الدولتين", "الحزبين",
+)
+_ARABIC_DUAL_NOUNS: frozenset[str] = frozenset(
+    _without_article(_fold_arabic(word)) for word in _ARABIC_DUAL_NOUNS_RAW
+)
 
 
 def _arabic_letter_ratio(text: str) -> float:
@@ -513,13 +546,17 @@ def _arabic_letter_ratio(text: str) -> float:
     return arabic / len(letters)
 
 
-def _has_arabic_dual_token(text: str) -> bool:
-    """Whether the text holds a word with an Arabic dual ending (Y-6 pattern الف)."""
+def _find_arabic_dual_token(text: str) -> str | None:
+    """Return the first restricted Arabic dual noun found in ``text``, or None.
+
+    Normalisation mirrors :func:`_fold_arabic` plus removal of the definite
+    article, so «البلدين» matches the entry «بلدين» (Y-6b).
+    """
     for match in _WORD_TOKEN_RE.finditer(text or ""):
         word = match.group(0)
-        if len(word) >= 4 and word.endswith(_DUAL_SUFFIXES):
-            return True
-    return False
+        if _without_article(_fold_arabic(word)) in _ARABIC_DUAL_NOUNS:
+            return word
+    return None
 
 
 def _is_unverifiable(values: list[float], unparsed_units: list[tuple[float, str]]) -> bool:
@@ -620,6 +657,9 @@ def check_numbers(
 
     output_items, _ = _extract(f"{headline or ''}\n{summary or ''}", source_side=False)
     source_text = f"{source_title or ''}\n{body}"
+    # Both are source-wide facts, so they are computed once and only the token
+    # scan is deferred until an output figure of exactly 2 actually needs it.
+    source_is_arabic = _arabic_letter_ratio(source_text) >= 0.5
     reason_codes: dict[str, int] = {}
     matched = 0
     unmatched: list[dict[str, str]] = []
@@ -641,12 +681,10 @@ def check_numbers(
 
         # Report the widest reading of the token: ``1,200`` is reported as 1200.
         key = max(values)
-        if (
-            len(values) == 1
-            and abs(values[0] - 2.0) < 1e-6
-            and _arabic_letter_ratio(source_text) >= 0.5
-            and _has_arabic_dual_token(source_text)
-        ):
+        dual_token: str | None = None
+        if len(values) == 1 and abs(values[0] - 2.0) < 1e-6 and source_is_arabic:
+            dual_token = _find_arabic_dual_token(source_text)
+        if dual_token is not None:
             code = "arabic_dual_possible"
         elif _is_unverifiable(values, unparsed_units):
             code: ReasonCode = "unverifiable"
@@ -657,7 +695,14 @@ def check_numbers(
         else:
             code = "not_in_source"
         reason_codes[code] = reason_codes.get(code, 0) + 1
-        unmatched.append({"value": _fmt(key), "reason_code": code, "token": token})
+        unmatched.append(
+            {
+                "value": _fmt(key),
+                "reason_code": code,
+                "token": token,
+                "dual_token": dual_token if code == "arabic_dual_possible" else None,
+            }
+        )
 
     blocking = any(item["reason_code"] in BLOCKING_CODES for item in unmatched)
     # Y-5: "mismatch" is reserved for a real disagreement with the source. An article
