@@ -19,9 +19,11 @@
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
+pip install --no-deps "aiogram==3.22.0"
 pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
+> **نسخهٔ aiogram و نصب با `--no-deps`:** متادیتای `aiogram 3.22.0` وابستگی‌های `pydantic<2.12` و `aiohttp<3.13` را اعلام می‌کند، ولی این پروژه به `pydantic>=2.14` (الزام `google-genai`) و `aiohttp 3.14.x` برای Python 3.15 نیاز دارد. `pip install aiogram` ساده این دو را downgrade و `google-genai` را می‌شکند؛ به همین دلیل aiogram دقیقاً مثل `Dockerfile` و ورک‌فلوهای CI/کران با `--no-deps` نصب می‌شود و زیروابستگی‌هایش در `requirements.txt` اعلام شده‌اند. برای اجرای تست‌ها `pip install -r requirements-dev.txt` (این فایل خودش `requirements.txt` را شامل می‌شود).
 
 ## دیتابیس
 در pgAdmin یا psql اجرا کن:
