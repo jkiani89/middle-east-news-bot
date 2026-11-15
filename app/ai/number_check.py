@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+from bisect import bisect_right
 from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
@@ -300,7 +301,13 @@ def _fold_arabic(word: str) -> str:
 
 
 def _in_any(position: int, spans: list[tuple[int, int]]) -> bool:
-    return any(start <= position < end for start, end in spans)
+    """Whether a position falls inside one of the spans, in O(log n).
+
+    ``spans`` must be sorted by start: pathological input produces thousands of
+    them, and a linear scan per token made the check quadratic (Y-5).
+    """
+    index = bisect_right(spans, (position, float("inf"))) - 1
+    return index >= 0 and spans[index][1] > position
 
 
 def _ambiguous_scaled_words(
@@ -467,12 +474,14 @@ def _extract(
         for factor in factors or [1.0]:
             occurrences.append(([round(value * factor, 6) for value in readings], token, set(flags)))
 
+    consumed.sort()  # _in_any() bisects this list
     arabic_items, arabic_spans, fuzzy_arabic = _arabic_word_numbers(
         prepared, consumed, source_side=source_side
     )
     for value, token in arabic_items:
         occurrences.append(([value], token, {"word"}))
     consumed.extend(arabic_spans)
+    consumed.sort()
 
     # Words that are only numbers in a numeric phrase (see _AMBIGUOUS_ALONE) and
     # bare scale words never count on their own in the Persian output.
