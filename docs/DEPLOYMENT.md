@@ -148,6 +148,112 @@ Set these as **Repository Variables** (Settings → Secrets and variables → Ac
 
 ---
 
+### 2.4 External Cron Reliability
+
+GitHub Actions `schedule` triggers are **best-effort**, not a guaranteed timer. GitHub
+documents that scheduled workflows can start several minutes late under load, and in
+practice they can be delayed for hours or silently dropped. For a time-boxed bulletin this
+is fatal: the slot logic correctly refuses to publish outside its catch-up window, so a
+six-hour delay is indistinguishable from a missing run.
+
+**Observed incident (2026-11-15).** The 20:00 Tehran bulletin (16:30 UTC) was never
+published and `bulletin_slots` had no row for it, while the 08:00 slot published normally:
+
+- the 08:00 slot was claimed at `05:34:00Z` by run `43681348002`
+  (`Slot decision: slot=8, now=09:04, grace=3h -> publish=True`);
+- **no workflow run existed at all between `13:39:16Z` and `21:07:42Z`**, so the 16:30 UTC
+  schedule and its 17:00/18:00 UTC catch-up chances never fired;
+- the next three runs (`21:07:42Z`, `21:27:28Z`, `22:20:54Z`) all logged
+  `Slot decision: slot=20, now=00:42/01:11/01:53, grace=3h -> publish=False`
+  — by then Tehran time was past the 20:00-23:00 window, so the code did the right thing.
+
+**Defence in depth.** Keep the `schedule` triggers as the second layer; add an external
+pinger as the first layer so the 16:30 UTC (and optionally 04:30 UTC) dispatch does not
+depend on GitHub's scheduler at all. Duplicate triggers are safe: the slot record in
+`bulletin_slots`/`daily_reports.content.bulletins` makes a second run for an already
+published slot a no-op.
+
+#### Evening Briefing (20:00 Tehran)
+
+[cron-job.org](https://cron-job.org) is free and supports arbitrary custom HTTP headers,
+a custom method and a request body — exactly what the GitHub dispatch API needs. Jobs have
+a 30-second timeout and **no automatic retries**, so keep the GitHub `schedule` catch-up
+runs in place.
+
+1. **Create the token (once).** At <https://github.com/settings/personal-access-tokens/new>
+   create a **fine-grained** token:
+   - *Repository access*: **Only select repositories** -> this repository.
+   - *Permissions* -> *Repository permissions* -> **Actions: Read and write** (nothing else).
+   - Set the shortest practical expiry and note the renewal date.
+   A classic token with the `repo` scope also works, but is far broader. **Never commit the
+   token, never paste it into an issue or a workflow file, and do not add it as a repository
+   secret** — a `workflow_dispatch` callee does not need it. It lives only in cron-job.org.
+2. **Create the job.** Sign in at <https://console.cron-job.org>, click **Create cronjob**.
+3. **Common** tab:
+   - *Title*: `Middle East News Bot - 20:00 Tehran bulletin`
+   - *URL*:
+     ```
+     https://api.github.com/repos/jkiani89/middle-east-news-bot/actions/workflows/cron.yml/dispatches
+     ```
+   - *Enable job*: on. Leave *Notify on failure* on so a broken token or URL is visible.
+4. **Schedule** tab:
+   - *Time zone*: **UTC** (do not pick Tehran here; the cron times below are UTC).
+   - *Execution schedule*: **Every day** at **16:30**.
+   - Optional extra chances inside the 20:00-23:00 Tehran window (16:30-19:30 UTC): add
+     jobs at **17:00** and **17:30** UTC, or set the same job to run at 16:30, 17:00 and 17:30.
+5. **Advanced** tab:
+   - *Request method*: **POST**
+   - *Request body*:
+     ```json
+     {"ref":"main"}
+     ```
+   - *Headers* (add each as a separate custom header):
+     ```
+     Accept: application/vnd.github+json
+     Authorization: Bearer <YOUR_FINE_GRAINED_TOKEN>
+     X-GitHub-Api-Version: 2022-11-28
+     Content-Type: application/json
+     ```
+6. **Save**, then use **Test run**. GitHub answers `204 No Content` on success; cron-job.org
+   shows the status code in the execution history.
+
+#### Morning Briefing (08:00 Tehran)
+
+The morning slot is the mirror image of the evening one: same token, same dispatch URL,
+same method, body and headers — only the title and the schedule time change.
+
+- *Title*: `Middle East News Bot - 08:00 Tehran bulletin`
+- *URL*: the same
+  `https://api.github.com/repos/jkiani89/middle-east-news-bot/actions/workflows/cron.yml/dispatches`
+- *Schedule* tab: *Time zone* **UTC**, *Execution schedule* **every day at 04:30**
+  (= 08:00 Tehran). Optional extra chances inside the 08:00-11:00 Tehran window
+  (04:30-07:30 UTC): add 05:00 and 05:30 UTC.
+- *Advanced* tab: *Request method* **POST**, *Request body* `{"ref":"main"}`, and the same
+  headers as above (`Accept`, `Authorization: Bearer <YOUR_FINE_GRAINED_TOKEN>`,
+  `X-GitHub-Api-Version: 2022-11-28`, `Content-Type: application/json`).
+
+> **Two jobs on the free plan.** cron-job.org does not cap the number of jobs per account
+> (fair use applies), so keep **two independent jobs** — one at **04:30 UTC** and one at
+> **16:30 UTC** — rather than one job with multiple run times. Separate jobs give each slot
+> its own title, history and failure notification, so a broken morning job cannot be confused
+> with a broken evening one.
+
+#### Verification
+
+- In the cron-job.org history the test run must return **204** (a `401`/`403` means the token
+  is wrong, expired, or missing *Actions: write*; `404` usually means a typo in the owner,
+  repository or workflow file name).
+- In **Actions -> Scheduled Batch Runner** a new run must appear with
+  **event = `workflow_dispatch`** and actor = the token owner.
+- In that run's log the line `Slot decision: slot=20, ... -> publish=True` (evening job) or
+  `slot=8, ... -> publish=True` (morning job), or
+  `run=False (Briefing 20:00/08:00 for <date> already published.)`, confirms the bulletin
+  layer was reached. A `publish=False` with `now=…` outside 20:00-23:00 means the job fired too
+  late — check the cron-job.org schedule time zone.
+- `workflow_dispatch` must stay enabled in `.github/workflows/cron.yml`; the dispatch API
+  only works for a workflow that declares it, and the workflow file must exist on the `ref`
+  you dispatch (`main`).
+
 ## 3. Database Setup: Aiven PostgreSQL 16 Free
 
 1. Sign up at [aiven.io](https://aiven.io) (no credit card required).
