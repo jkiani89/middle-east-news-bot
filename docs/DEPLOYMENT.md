@@ -173,7 +173,7 @@ depend on GitHub's scheduler at all. Duplicate triggers are safe: the slot recor
 `bulletin_slots`/`daily_reports.content.bulletins` makes a second run for an already
 published slot a no-op.
 
-#### Step-by-step: trigger `workflow_dispatch` from cron-job.org
+#### Evening Briefing (20:00 Tehran)
 
 [cron-job.org](https://cron-job.org) is free and supports arbitrary custom HTTP headers,
 a custom method and a request body — exactly what the GitHub dispatch API needs. Jobs have
@@ -217,6 +217,27 @@ runs in place.
 6. **Save**, then use **Test run**. GitHub answers `204 No Content` on success; cron-job.org
    shows the status code in the execution history.
 
+#### Morning Briefing (08:00 Tehran)
+
+The morning slot is the mirror image of the evening one: same token, same dispatch URL,
+same method, body and headers — only the title and the schedule time change.
+
+- *Title*: `Middle East News Bot - 08:00 Tehran bulletin`
+- *URL*: the same
+  `https://api.github.com/repos/jkiani89/middle-east-news-bot/actions/workflows/cron.yml/dispatches`
+- *Schedule* tab: *Time zone* **UTC**, *Execution schedule* **every day at 04:30**
+  (= 08:00 Tehran). Optional extra chances inside the 08:00-11:00 Tehran window
+  (04:30-07:30 UTC): add 05:00 and 05:30 UTC.
+- *Advanced* tab: *Request method* **POST**, *Request body* `{"ref":"main"}`, and the same
+  headers as above (`Accept`, `Authorization: Bearer <YOUR_FINE_GRAINED_TOKEN>`,
+  `X-GitHub-Api-Version: 2022-11-28`, `Content-Type: application/json`).
+
+> **Two jobs on the free plan.** cron-job.org does not cap the number of jobs per account
+> (fair use applies), so keep **two independent jobs** — one at **04:30 UTC** and one at
+> **16:30 UTC** — rather than one job with multiple run times. Separate jobs give each slot
+> its own title, history and failure notification, so a broken morning job cannot be confused
+> with a broken evening one.
+
 #### Verification
 
 - In the cron-job.org history the test run must return **204** (a `401`/`403` means the token
@@ -224,9 +245,10 @@ runs in place.
   repository or workflow file name).
 - In **Actions -> Scheduled Batch Runner** a new run must appear with
   **event = `workflow_dispatch`** and actor = the token owner.
-- In that run's log the line `Slot decision: slot=20, ... -> publish=True` (or
-  `run=False (Briefing 20:00 for <date> already published.)`) confirms the bulletin layer
-  was reached. A `publish=False` with `now=…` outside 20:00-23:00 means the job fired too
+- In that run's log the line `Slot decision: slot=20, ... -> publish=True` (evening job) or
+  `slot=8, ... -> publish=True` (morning job), or
+  `run=False (Briefing 20:00/08:00 for <date> already published.)`, confirms the bulletin
+  layer was reached. A `publish=False` with `now=…` outside 20:00-23:00 means the job fired too
   late — check the cron-job.org schedule time zone.
 - `workflow_dispatch` must stay enabled in `.github/workflows/cron.yml`; the dispatch API
   only works for a workflow that declares it, and the workflow file must exist on the `ref`
