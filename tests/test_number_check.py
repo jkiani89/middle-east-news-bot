@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import time
+
 import pytest
 
 from app.ai.number_check import MODEL_BODY_CHAR_LIMIT, check_numbers, extract_numbers
@@ -228,6 +231,39 @@ def test_arabic_spelled_compound_is_unverifiable_and_documented() -> None:
     )
     assert report["reason_codes"]["unverifiable"] == 2
     assert report["blocking"] is False
+
+
+# ── Y-1c: adversarial input must stay linear ───────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "1,234,567 " * 1500,
+        "twenty-three " * 1000,
+        "3bn 2.5m 5k مليونًا " * 700,
+        "12,34.56-78 9,876 " * 800,
+    ],
+    ids=["digits-commas", "hyphens", "mixed-scale", "punctuation"],
+)
+def test_pathological_input_finishes_within_budget(text: str) -> None:
+    body = (text * 2)[:MODEL_BODY_CHAR_LIMIT]
+    assert len(body) == MODEL_BODY_CHAR_LIMIT
+    start = time.perf_counter()
+    report = check_numbers(
+        headline=body[:200],
+        summary=body[200:600],
+        source_title="t",
+        source_body=body,
+        mode="log",
+    )
+    elapsed = time.perf_counter() - start
+
+    assert report["checked_source_chars"] == MODEL_BODY_CHAR_LIMIT
+    assert report["numbers_checked"] > 0
+    assert report["blocking"] in (True, False)
+    json.dumps(report)  # must stay JSON-serialisable for the payload
+    assert elapsed < 1.0, f"check took {elapsed:.2f}s on {len(body)} chars"
 
 
 def test_off_mode_skips_the_check() -> None:
