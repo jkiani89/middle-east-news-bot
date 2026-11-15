@@ -34,6 +34,7 @@ ReasonCode = Literal[
     "scale_mismatch",
     "jalali_calendar",
     "unverifiable",
+    "arabic_dual_possible",
 ]
 # Codes that may park an article for review. Everything else is informational.
 BLOCKING_CODES = frozenset({"not_in_source", "scale_mismatch"})
@@ -45,7 +46,7 @@ _DIACRITICS_RE = re.compile(r"[\u064b-\u0652]")
 _NUMBER_RE = re.compile(r"\d(?:[\d.,]*\d)?")
 _THOUSANDS_RE = re.compile(r"^\d{1,3}(?:[.,]\d{3})+$")
 _DECIMAL_RE = re.compile(r"^\d+[.,]\d{1,2}$")
-_NEXT_WORD_RE = re.compile(r"\s*([^\W\d_]+)")
+_NEXT_WORD_RE = re.compile(r"[\s\u200c\u0640]*([^\W\d_]+)")
 
 _SCALE_WORDS: dict[str, float] = {
     # Persian
@@ -90,6 +91,9 @@ _SCALE_STEMS: tuple[tuple[str, float], ...] = (
 _ARABIC_PLURALS: dict[str, float] = {
     "ملايين": 1_000_000,
     "مليارات": 1_000_000_000,
+    "آلاف": 1_000,
+    "الاف": 1_000,
+    "الآف": 1_000,
 }
 
 _TENS = {
@@ -252,7 +256,7 @@ def _unit_factors(word: str) -> tuple[list[float], bool] | None:
     and the scaled number are valid readings.
     """
     cleaned = _DIACRITICS_RE.sub("", (word or "").strip())
-    folded = cleaned.casefold()
+    folded = _fold_arabic(cleaned).casefold()
     if not folded:
         return None
     if folded in _SCALE_WORDS:
@@ -472,7 +476,12 @@ def _extract(
     for word, value in _WORD_NUMBERS.items():
         if word in alone_words:
             continue
-        pattern = rf"(?<!\w){re.escape(word)}(?!\w)"
+        # «سه»/«دو» that are glued with ZWNJ to another letter («سه‌شنبه»,
+        # «دو‌جانبه») are part of a compound word, not a figure (Y-6 pattern ج).
+        if word in ("سه", "دو"):
+            pattern = rf"(?<!\w){re.escape(word)}(?![\w\u200c])"
+        else:
+            pattern = rf"(?<!\w){re.escape(word)}(?!\w)"
         for word_match in re.finditer(pattern, prepared, re.IGNORECASE):
             if _in_any(word_match.start(), consumed):
                 continue
@@ -489,6 +498,28 @@ def extract_numbers(text: str) -> list[tuple[float, str, set[str]]]:
         for values, token, flags in occurrences
         for value in values
     ]
+
+
+_ARABIC_LETTER_RANGE = ("\u0600", "\u06ff")
+_DUAL_SUFFIXES = ("ان", "ين", "تان", "تين")
+
+
+def _arabic_letter_ratio(text: str) -> float:
+    """Share of Arabic-script letters among all letters (Y-6 pattern الف)."""
+    letters = [ch for ch in (text or "") if ch.isalpha()]
+    if not letters:
+        return 0.0
+    arabic = sum(1 for ch in letters if "\u0600" <= ch <= "\u06ff")
+    return arabic / len(letters)
+
+
+def _has_arabic_dual_token(text: str) -> bool:
+    """Whether the text holds a word with an Arabic dual ending (Y-6 pattern الف)."""
+    for match in _WORD_TOKEN_RE.finditer(text or ""):
+        word = match.group(0)
+        if len(word) >= 4 and word.endswith(_DUAL_SUFFIXES):
+            return True
+    return False
 
 
 def _is_unverifiable(values: list[float], unparsed_units: list[tuple[float, str]]) -> bool:
@@ -588,6 +619,7 @@ def check_numbers(
     source_ambiguous = {value for values, _, flags in source_items if "ambiguous" in flags for value in values}
 
     output_items, _ = _extract(f"{headline or ''}\n{summary or ''}", source_side=False)
+    source_text = f"{source_title or ''}\n{body}"
     reason_codes: dict[str, int] = {}
     matched = 0
     unmatched: list[dict[str, str]] = []
@@ -609,7 +641,14 @@ def check_numbers(
 
         # Report the widest reading of the token: ``1,200`` is reported as 1200.
         key = max(values)
-        if _is_unverifiable(values, unparsed_units):
+        if (
+            len(values) == 1
+            and abs(values[0] - 2.0) < 1e-6
+            and _arabic_letter_ratio(source_text) >= 0.5
+            and _has_arabic_dual_token(source_text)
+        ):
+            code = "arabic_dual_possible"
+        elif _is_unverifiable(values, unparsed_units):
             code: ReasonCode = "unverifiable"
         elif any(_JALALI_RANGE[0] <= value <= _JALALI_RANGE[1] for value in values):
             code = "jalali_calendar"

@@ -515,3 +515,75 @@ def test_arabic_adversarial_corpus_finishes_within_budget() -> None:
     assert report["checked_source_chars"] == MODEL_BODY_CHAR_LIMIT
     json.dumps(report)
     assert elapsed_ms < 1_000, f"check took {elapsed_ms:.0f}ms on back-to-back Arabic numbers"
+
+
+# ── Y-6: remaining false positives ──────────────────────────────────────────
+
+def test_arabic_digit_with_arabic_scale_word_matches() -> None:
+    report = _check("۱۳۰ میلیارد دلار", "گزارش شد.", "130 مليار دولار")
+    assert report["status"] == "clean"
+    assert report["reason_codes"].get("scale_converted") == 1
+
+
+def test_arabic_digit_with_arabic_scale_plural_matches() -> None:
+    report = _check("۳ میلیون نفر", "گزارش شد.", "3 ملايين")
+    assert report["status"] == "clean"
+
+
+def test_arabic_digit_with_arabic_scale_mismatch_stays_blocking() -> None:
+    report = _check("۱۳ میلیارد دلار", "گزارش شد.", "130 مليار")
+    assert report["blocking"] is True
+    assert report["unmatched"][0]["reason_code"] == "scale_mismatch"
+
+
+def test_arabic_scale_word_tolerates_zwnj_and_tatweel() -> None:
+    report = _check("۵ میلیون", "گزارش شد.", "5\u200cمليـون")
+    assert report["status"] == "clean"
+
+
+def test_arabic_dual_token_makes_two_unverifiable() -> None:
+    report = _check("۲ نفر کشته شدند", "جزئیات بیشتری منتشر نشد.", "أعلنت مقتل شهيدان في Gaza")
+    assert report["status"] == "unverifiable"
+    assert report["blocking"] is False
+    assert [item["reason_code"] for item in report["unmatched"]] == ["arabic_dual_possible"]
+
+
+def test_arabic_dual_requires_value_two() -> None:
+    report = _check("۳ نفر کشته شدند", "جزئیات بیشتری منتشر نشد.", "أعلنت مقتل فلسطينيان")
+    assert report["blocking"] is True
+    assert report["unmatched"][0]["reason_code"] == "not_in_source"
+
+
+def test_arabic_dual_requires_value_two_twelve() -> None:
+    report = _check("۱۲ نفر کشته شدند", "جزئیات بیشتری منتشر نشد.", "أعلنت مقتل شهيدان")
+    assert report["blocking"] is True
+    assert report["unmatched"][0]["reason_code"] == "not_in_source"
+
+
+def test_arabic_dual_requires_arabic_source() -> None:
+    report = _check("۲ نفر کشته شدند", "جزئیات بیشتری منتشر نشد.", "Officials reported casualties in the region.")
+    assert report["blocking"] is True
+    assert report["unmatched"][0]["reason_code"] == "not_in_source"
+
+
+def test_arabic_dual_requires_dual_token() -> None:
+    report = _check("۲ نفر کشته شدند", "جزئیات بیشتری منتشر نشد.", "أعلنت الوزارة عن الحادث")
+    assert report["blocking"] is True
+    assert report["unmatched"][0]["reason_code"] == "not_in_source"
+
+
+def test_zwnj_compound_persian_word_is_not_a_number() -> None:
+    numbers = [value for value, _, _ in extract_numbers("سه‌شنبه گذشته")]
+    assert 3.0 not in numbers
+    numbers = [value for value, _, _ in extract_numbers("دو‌جانبه بود")]
+    assert 2.0 not in numbers
+    numbers = [value for value, _, _ in extract_numbers("سه‌بعدی و دو‌جانبه")]
+    assert 3.0 not in numbers
+    assert 2.0 not in numbers
+
+
+def test_spaced_persian_word_still_counts() -> None:
+    numbers = [value for value, _, _ in extract_numbers("سه نفر کشته شدند")]
+    assert 3.0 in numbers
+    numbers = [value for value, _, _ in extract_numbers("دو نفر حاضر بودند")]
+    assert 2.0 in numbers
