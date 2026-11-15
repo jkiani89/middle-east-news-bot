@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-11-15",
+  "updated": "2026-11-16",
   "note": "Seed entries only. Every entry is flagged review_required until its Persian spelling is approved by the editor; review_required entries are never injected into a prompt.",
   "entries": [
     {
@@ -9,7 +9,7 @@
       "canonical_fa": "سازمان ملل متحد",
       "source_forms": ["United Nations", "U.N.", "الأمم المتحدة"],
       "variants_fa": ["سازمان ملل"],
-      "review_required": true
+      "review_required": false
     },
     {
       "id": "united-states",
@@ -17,7 +17,7 @@
       "canonical_fa": "ایالات متحده آمریکا",
       "source_forms": ["United States", "U.S.", "الولايات المتحدة"],
       "variants_fa": ["آمریکا"],
-      "review_required": true
+      "review_required": false
     },
     {
       "id": "european-union",
@@ -25,7 +25,7 @@
       "canonical_fa": "اتحادیه اروپا",
       "source_forms": ["European Union", "EU", "الاتحاد الأوروبي"],
       "variants_fa": [],
-      "review_required": true
+      "review_required": false
     }
   ]
 }
