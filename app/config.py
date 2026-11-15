@@ -1,6 +1,7 @@
 import os
 import re
 import ssl
+from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import field_validator
@@ -93,6 +94,10 @@ class Settings(BaseSettings):
     immediate_publish_only_new_events: bool = True
     immediate_publish_max_per_run: int = 5
     immediate_publish_min_importance: int = 3
+    # Phase Y-1: deterministic check that numbers in the Persian output are grounded in
+    # the text the model actually saw. "log" records findings in ai_payload only;
+    # "flag" parks the article for review instead of publishing it.
+    number_check_mode: Literal["off", "log", "flag"] = "log"
     immediate_publish_delay_seconds: float = 2.0
     immediate_publish_dry_run: bool = False
     min_importance: int = 2
