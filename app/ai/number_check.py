@@ -186,12 +186,6 @@ _ARABIC_PARTS: dict[str, tuple[str, float]] = {
     **{word: ("part", value) for word, value in _ARABIC_HUNDREDS.items()},
     **{word: ("scale", value) for word, value in _ARABIC_SCALES.items()},
 }
-# Tokens that only look like an Arabic number («عشرات», «العشرين»): the run is not
-# summed, so the old lenient fallback stays in place for them.
-_ARABIC_NUMBERISH_PREFIXES = (
-    "عشر", "مئ", "ملي", "الف", "ثلاث", "اربع", "خمس", "سبع", "ثمان", "تسع", "اثن", "ثنت",
-    "وحد", "احد", "صفر",
-)
 _WORD_TOKEN_RE = re.compile(r"[^\W\d_]+")
 # Words inside one Arabic number are separated by spaces, ZWNJ, tatweel, or a
 # glued conjunction «و» («ثلاثة وعشرون»).
@@ -300,6 +294,11 @@ def _fold_arabic(word: str) -> str:
     return _DIACRITICS_RE.sub("", word or "").strip().translate(_ALEF_FOLD)
 
 
+def _without_article(folded: str) -> str:
+    """Drop the Arabic definite article: «العشرين» -> «عشرين»."""
+    return folded[2:] if folded.startswith("ال") and len(folded) > 2 else folded
+
+
 def _in_any(position: int, spans: list[tuple[int, int]]) -> bool:
     """Whether a position falls inside one of the spans, in O(log n).
 
@@ -338,31 +337,20 @@ def _arabic_part(token: str, *, source_side: bool) -> tuple[str, float] | None:
     part = _ARABIC_PARTS.get(folded)
     if part is None and folded.startswith("و"):
         part = _ARABIC_PARTS.get(folded[1:])  # glued conjunction: «وعشرون»
-    return part
-
-
-def _looks_arabic_numberish(token: str) -> bool:
-    folded = _fold_arabic(token)
-    if folded.startswith("ال"):
-        folded = folded[2:]
-    if folded in _ARABIC_PARTS:
-        return True
-    return folded.startswith(_ARABIC_NUMBERISH_PREFIXES)
+    return part or _ARABIC_PARTS.get(_without_article(folded))
 
 
 def _arabic_word_numbers(
     prepared: str, consumed: list[tuple[int, int]], *, source_side: bool
-) -> tuple[list[tuple[float, str]], list[tuple[int, int]], bool]:
+) -> tuple[list[tuple[float, str]], list[tuple[int, int]]]:
     """Parse Arabic spelled-out numbers into single values (Y-5).
 
-    Returns the parsed occurrences, the spans they occupy, and whether the source
-    holds an Arabic number we could not fully parse -- in that case the previous
-    lenient ``unverifiable`` fallback applies instead of a fabricated figure.
+    A token outside the lexicon is treated as ordinary text, never as a lenient
+    wildcard: only a number we can name may cover an output figure (Y-5 review).
     """
     tokens = list(_WORD_TOKEN_RE.finditer(prepared))
     items: list[tuple[float, str]] = []
     spans: list[tuple[int, int]] = []
-    fuzzy = False
     index = 0
     while index < len(tokens):
         first = tokens[index]
@@ -384,8 +372,6 @@ def _arabic_word_numbers(
             end = token_match.end()
             cursor += 1
         if not parts:
-            if _looks_arabic_numberish(first.group(0)):
-                fuzzy = True
             index += 1
             continue
         # A scale word with no number before it is not a figure («میلیارد» alone).
@@ -398,7 +384,7 @@ def _arabic_word_numbers(
         items.append((round(value, 6), prepared[start:end]))
         spans.append((start, end))
         index = cursor
-    return items, spans, fuzzy
+    return items, spans
 
 
 def _compound_word_numbers(prepared: str) -> tuple[list[tuple[float, str]], list[tuple[int, int]]]:
@@ -428,9 +414,8 @@ def _extract(
 ) -> tuple[
     list[tuple[list[float], str, set[str]]],
     list[tuple[float, str]],
-    bool,
 ]:
-    """Return (occurrences, unparsed_units, has_unparsed_arabic).
+    """Return (occurrences, unparsed_units).
 
     ``source_side`` keeps the source lenient: bare «یک»/«واحد» and bare scale words
     still count as source numbers there, they are only dropped from the output.
@@ -475,9 +460,7 @@ def _extract(
             occurrences.append(([round(value * factor, 6) for value in readings], token, set(flags)))
 
     consumed.sort()  # _in_any() bisects this list
-    arabic_items, arabic_spans, fuzzy_arabic = _arabic_word_numbers(
-        prepared, consumed, source_side=source_side
-    )
+    arabic_items, arabic_spans = _arabic_word_numbers(prepared, consumed, source_side=source_side)
     for value, token in arabic_items:
         occurrences.append(([value], token, {"word"}))
     consumed.extend(arabic_spans)
@@ -495,12 +478,12 @@ def _extract(
                 continue
             occurrences.append(([float(value)], word, {"word"}))
 
-    return occurrences, unparsed_units, fuzzy_arabic
+    return occurrences, unparsed_units
 
 
 def extract_numbers(text: str) -> list[tuple[float, str, set[str]]]:
     """Return ``(value, raw token, flags)`` for every reading of every number."""
-    occurrences, _, _ = _extract(text)
+    occurrences, _ = _extract(text)
     return [
         (value, token, set(flags))
         for values, token, flags in occurrences
@@ -508,18 +491,20 @@ def extract_numbers(text: str) -> list[tuple[float, str, set[str]]]:
     ]
 
 
-def _is_unverifiable(
-    values: list[float], unparsed_units: list[tuple[float, str]], fuzzy_arabic: bool
-) -> bool:
-    """Whether an unmatched number could come from a source token we could not parse."""
+def _is_unverifiable(values: list[float], unparsed_units: list[tuple[float, str]]) -> bool:
+    """Whether an unmatched number could come from a source token we could not parse.
+
+    Only the unit-based reading applies (``3 lakh``). There is no text-wide fallback:
+    an unmatched figure is ``unverifiable`` only when a source token *of that value*
+    could have produced it, so an unrelated word in the article can never excuse it
+    (Y-5 review).
+    """
     for prefix, _unit in unparsed_units:
         for guess in _SCALE_GUESSES:
             candidate = round(prefix * guess, 6)
             if any(abs(value - candidate) < 1e-6 for value in values):
                 return True
-    # An Arabic number we could not sum («عشرات», «العشرين») leaves small numbers
-    # alone instead of calling them fabricated (documented limitation).
-    return fuzzy_arabic and any(0 <= value <= 9_999 for value in values)
+    return False
 
 
 ERROR_MESSAGE_MAX_CHARS = 200
@@ -591,9 +576,7 @@ def check_numbers(
     if mode == "off":
         return base
 
-    source_items, unparsed_units, fuzzy_arabic = _extract(
-        f"{source_title or ''}\n{body}", source_side=True
-    )
+    source_items, unparsed_units = _extract(f"{source_title or ''}\n{body}", source_side=True)
     source_plain = {
         value
         for values, _, flags in source_items
@@ -604,7 +587,7 @@ def check_numbers(
     source_words = {value for values, _, flags in source_items if "word" in flags for value in values}
     source_ambiguous = {value for values, _, flags in source_items if "ambiguous" in flags for value in values}
 
-    output_items, _, _ = _extract(f"{headline or ''}\n{summary or ''}", source_side=False)
+    output_items, _ = _extract(f"{headline or ''}\n{summary or ''}", source_side=False)
     reason_codes: dict[str, int] = {}
     matched = 0
     unmatched: list[dict[str, str]] = []
@@ -626,7 +609,7 @@ def check_numbers(
 
         # Report the widest reading of the token: ``1,200`` is reported as 1200.
         key = max(values)
-        if _is_unverifiable(values, unparsed_units, fuzzy_arabic):
+        if _is_unverifiable(values, unparsed_units):
             code: ReasonCode = "unverifiable"
         elif any(_JALALI_RANGE[0] <= value <= _JALALI_RANGE[1] for value in values):
             code = "jalali_calendar"

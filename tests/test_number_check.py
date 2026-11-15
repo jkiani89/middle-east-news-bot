@@ -395,3 +395,123 @@ def test_number_check_stays_local_and_needs_no_model_call(monkeypatch: pytest.Mo
         "Aid agencies said 3,000,000 people were displaced.",
     )
     assert report["status"] == "clean", report["unmatched"]
+
+
+# ── Y-5 review: no text-wide fuzzy fallback ───────────────────────────────────
+
+
+def test_parsable_arabic_source_does_not_excuse_a_different_output_number() -> None:
+    report = _check(
+        "۸ نفر کشته شدند",
+        "جزئیات بیشتری منتشر نشد.",
+        "أعلنت السلطات مقتل ثلاثة أشخاص.",
+    )
+    assert [item["reason_code"] for item in report["unmatched"]] == ["not_in_source"]
+    assert report["unmatched"][0]["value"] == "8"
+    assert report["blocking"] is True
+    assert report["status"] == "mismatch"
+
+
+def test_dual_arabic_source_does_not_excuse_a_different_output_number() -> None:
+    report = _check(
+        "۱۲ نفر کشته شدند",
+        "جزئیات بیشتری منتشر نشد.",
+        "مقتل اثنين من المدنيين.",
+    )
+    assert [item["reason_code"] for item in report["unmatched"]] == ["not_in_source"]
+    assert report["blocking"] is True
+
+
+def test_unparsed_arabic_token_cannot_excuse_an_unrelated_number() -> None:
+    """«عشرات» is not a figure, and must not turn 8 into a non-blocking finding."""
+    report = _check(
+        "۸ نفر کشته شدند",
+        "جزئیات بیشتری منتشر نشد.",
+        "شهدت المنطقة عشرات الغارات خلال الأسبوع الماضي.",
+    )
+    assert [item["reason_code"] for item in report["unmatched"]] == ["not_in_source"]
+    assert report["blocking"] is True
+    assert report["status"] == "mismatch"
+
+
+def test_arabic_definite_article_is_parsed_not_guessed() -> None:
+    assert {value for value, _, _ in extract_numbers("العشرين")} == {20.0}
+    assert {value for value, _, _ in extract_numbers("المئة")} == {100.0}
+
+
+# ── Y-5 review: Arabic corpora must stay linear ──────────────────────────────
+
+_ARABIC_FILLER = (
+    "أعلنت وزارة الخارجية أن المحادثات استمرت في العاصمة وسط إجراءات أمنية مشددة",
+    "وقال مسؤول محلي إن الفرق الطبية نقلت المصابين إلى المستشفيات القريبة",
+    "وأشار بيان صادر عن الأمم المتحدة إلى أن الوضع الإنساني تدهور خلال الأسبوع الماضي",
+    "من جهته أكد المتحدث باسم الحكومة أن اللجان الفنية واصلت اجتماعاتها في مقر الوزارة",
+)
+_ARABIC_NUMERIC_WORDS = (
+    "خمسة عشر",
+    "مئة وثلاثين",
+    "ثلاثة وعشرون",
+    "خمسة وعشرون",
+    "مئة",
+    "ثلاثة",
+)
+
+
+def _arabic_news_corpus() -> tuple[str, int]:
+    """~2500 words of Arabic news copy with ~50 spelled-out numbers scattered in."""
+    sentences: list[str] = []
+    numeric = 0
+    index = 0
+    while len(" ".join(sentences)) < MODEL_BODY_CHAR_LIMIT:
+        sentence = _ARABIC_FILLER[index % len(_ARABIC_FILLER)]
+        if index % 4 == 0:
+            sentence = f"{_ARABIC_NUMERIC_WORDS[index % len(_ARABIC_NUMERIC_WORDS)]} {sentence}"
+            numeric += 1
+        sentences.append(sentence)
+        index += 1
+    return " ".join(sentences)[:MODEL_BODY_CHAR_LIMIT], numeric
+
+
+def _arabic_adversarial_corpus() -> str:
+    """Arabic number words back to back, with the glued conjunction «و»."""
+    return ("خمسة عشر مئة وثلاثين ثلاثة وعشرون مئة ألف " * 600)[:MODEL_BODY_CHAR_LIMIT]
+
+
+def test_arabic_news_corpus_finishes_within_budget() -> None:
+    body, numeric = _arabic_news_corpus()
+    assert len(body) == MODEL_BODY_CHAR_LIMIT
+    assert 2_000 <= len(body.split()) <= 3_200
+    assert 40 <= numeric <= 60
+
+    start = time.perf_counter()
+    report = check_numbers(
+        headline=body[:200],
+        summary=body[200:600],
+        source_title="t",
+        source_body=body,
+        mode="log",
+    )
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    assert report["checked_source_chars"] == MODEL_BODY_CHAR_LIMIT
+    json.dumps(report)
+    assert elapsed_ms < 1_000, f"check took {elapsed_ms:.0f}ms on Arabic news corpus"
+
+
+def test_arabic_adversarial_corpus_finishes_within_budget() -> None:
+    body = _arabic_adversarial_corpus()
+    assert len(body) == MODEL_BODY_CHAR_LIMIT
+
+    start = time.perf_counter()
+    report = check_numbers(
+        headline=body[:200],
+        summary=body[200:600],
+        source_title="t",
+        source_body=body,
+        mode="log",
+    )
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    assert report["checked_source_chars"] == MODEL_BODY_CHAR_LIMIT
+    json.dumps(report)
+    assert elapsed_ms < 1_000, f"check took {elapsed_ms:.0f}ms on back-to-back Arabic numbers"
