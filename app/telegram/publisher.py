@@ -675,6 +675,106 @@ async def publish_immediate_analysis(
             await bot.session.close()
 
 
+FLAG_REASON_LABELS = {
+    "injection_detected": "تلاش برای تزریق پرامپت در متن منبع",
+    "number_mismatch": "عدد بدون پشتوانه در متن فارسی",
+    "other": "دلیل دیگر (بازبینی دستی)",
+}
+MAX_FLAG_HEADLINE_CHARS = 80
+MAX_FLAG_NUMBERS = 5
+
+
+def _truncate(text: str, limit: int) -> str:
+    cleaned = " ".join((text or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 1].rstrip() + "…"
+
+
+def format_flag_alert(entries: list[dict[str, Any]], total: int, max_items: int = 5) -> str:
+    """Format one admin alert for articles parked for review (Phase Z)."""
+    shown = entries[:max(0, max_items)]
+    lines = [
+        "🚩 <b>هشدار تحریریه: مقاله‌های پارک‌شده</b>",
+        "<i>این موارد در همین اجرا به بازبینی انسانی سپرده شدند و منتشر نشدند.</i>",
+        "",
+    ]
+    for index, entry in enumerate(shown, 1):
+        reason = FLAG_REASON_LABELS.get(entry.get("reason", "other"), FLAG_REASON_LABELS["other"])
+        lines.append(f"{index}. <b>#{entry.get('article_id', '?')}</b> — {esc(reason)}")
+        headline = _truncate(entry.get("headline_fa") or "", MAX_FLAG_HEADLINE_CHARS)
+        lines.append(f"   ▫️ تیتر: {esc(headline)}")
+        numbers = [str(value) for value in (entry.get("numbers") or [])][:MAX_FLAG_NUMBERS]
+        if numbers:
+            lines.append(f"   ▫️ عددهای بدون پشتوانه: {esc('، '.join(numbers))}")
+        source = esc(entry.get("source_name") or "منبع نامشخص")
+        url = entry.get("source_url") or ""
+        if url:
+            lines.append(f"   ▫️ منبع: <a href=\"{esc(url)}\">{source}</a>")
+        else:
+            lines.append(f"   ▫️ منبع: {source}")
+        lines.append("")
+    remaining = total - len(shown)
+    if remaining > 0:
+        lines.append(f"… و {remaining} مورد دیگر در همین اجرا پارک شد.")
+    return "\n".join(lines).strip()
+
+
+async def publish_flag_alert(
+    entries: list[dict[str, Any]],
+    total: int | None = None,
+    bot: Bot | None = None,
+    dry_run: bool | None = None,
+    chat_id: str | int | None = None,
+) -> list[dict[str, Any]]:
+    """Send at most one admin message per run about articles parked for review.
+
+    Only the entries passed in (this run's flagged articles) are reported; older
+    parked rows are never re-announced. ``flag_alert_enabled=False`` or a dry run
+    sends nothing. Telegram failures are logged and swallowed so the batch keeps
+    its normal course.
+    """
+    if not settings.flag_alert_enabled or not entries:
+        return []
+    total_count = total if total is not None else len(entries)
+    effective_dry_run = settings.immediate_publish_dry_run if dry_run is None else dry_run
+    target = str(chat_id or settings.telegram_admin_chat_id or "")
+    text = format_flag_alert(entries, total_count, max_items=settings.flag_alert_max_per_run)
+
+    if effective_dry_run:
+        logger.info(
+            "TELEGRAM FLAG ALERT [DRY RUN] target=%s shown=%d total=%d",
+            target or "(unset)",
+            min(len(entries), settings.flag_alert_max_per_run),
+            total_count,
+        )
+        return [{"chat_id": target, "message_id": 3000, "type": "flag_alert_dry_run"}]
+    if not target:
+        logger.warning("Flag alert skipped: TELEGRAM_ADMIN_CHAT_ID is not configured.")
+        return []
+
+    own_bot = False
+    if bot is None:
+        bot = Bot(
+            settings.telegram_bot_token,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
+        own_bot = True
+
+    sent: list[dict[str, Any]] = []
+    try:
+        for chunk in split_text(text, limit=3900):
+            msg = await send_telegram_message_resilient(bot=bot, chat_id=target, text=chunk)
+            sent.append({"chat_id": target, "message_id": msg.message_id, "type": "flag_alert"})
+        return sent
+    except Exception:  # noqa: BLE001 - a failed alert must never break a batch
+        logger.exception("Flag alert delivery failed; the batch continues.")
+        return sent
+    finally:
+        if own_bot:
+            await bot.session.close()
+
+
 async def _run_cli_dry_run() -> None:
     parser = argparse.ArgumentParser(description="Telegram Publisher - Middle East News Bot")
     parser.add_argument("--dry-run", action="store_true", help="Perform dry run without calling Telegram API")

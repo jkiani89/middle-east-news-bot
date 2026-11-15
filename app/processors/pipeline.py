@@ -18,7 +18,11 @@ from app.editorial.perspectives import load_orientations, orientation_for
 from app.editorial.regions import has_middle_east_nexus, is_primary_actor
 from app.editorial.topics import match_primary_topic
 from app.processors.event_matcher import EventMatcher
-from app.telegram.publisher import ImmediateAnalysis, publish_immediate_analysis
+from app.telegram.publisher import (
+    ImmediateAnalysis,
+    publish_flag_alert,
+    publish_immediate_analysis,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -363,6 +367,8 @@ async def process_collected_articles(
     processed_count = 0
     consecutive_failures = 0
     immediate_published = 0
+    # Phase Z: this run's parked articles, for a single admin alert at the end.
+    flag_alerts: list[dict[str, object]] = []
 
     # Cache source names to minimize DB roundtrips
     sources_stmt = select(Source.id, Source.name)
@@ -456,6 +462,16 @@ async def process_collected_articles(
                 article.id,
             )
             article.status = "flagged_for_review"
+            flag_alerts.append(
+                {
+                    "article_id": article.id,
+                    "reason": "injection_detected",
+                    "headline_fa": result.headline_fa,
+                    "source_name": source_name,
+                    "source_url": article.original_url,
+                    "numbers": [],
+                }
+            )
             # Intelligence is preserved in DB, but blocked from automatic publishing
             event = Event(
                 title=f"[FLAGGED] {result.event_title}",
@@ -489,6 +505,16 @@ async def process_collected_articles(
                 ", ".join(item["value"] for item in number_check["unmatched"]),
             )
             article.status = "flagged_for_review"
+            flag_alerts.append(
+                {
+                    "article_id": article.id,
+                    "reason": "number_mismatch",
+                    "headline_fa": result.headline_fa,
+                    "source_name": source_name,
+                    "source_url": article.original_url,
+                    "numbers": [item["value"] for item in number_check["unmatched"]],
+                }
+            )
             # Intelligence is preserved like the injection path, but the event is parked
             # with status='flagged' so EventMatcher never merges a later article into it.
             event = Event(
@@ -628,6 +654,12 @@ async def process_collected_articles(
                     settings.immediate_publish_max_per_run,
                     article.id,
                 )
+
+    if flag_alerts:
+        try:
+            await publish_flag_alert(flag_alerts, total=len(flag_alerts))
+        except Exception:  # noqa: BLE001 - the alert is a convenience, never a gate
+            logger.exception("Failed to send the flag alert; the batch continues.")
 
     logger.info("Successfully processed %d articles via %s.", processed_count, ai_provider.model_name)
     return processed_count
