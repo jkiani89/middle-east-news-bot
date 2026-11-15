@@ -19,8 +19,16 @@ logger = logging.getLogger(__name__)
 
 
 class AIProviderError(Exception):
-    """Base exception for AI provider operations."""
-    pass
+    """Base exception for AI provider operations.
+
+    ``raw_length`` carries the size of the raw model text when the failure came from
+    unparseable JSON, so callers can refuse an expensive repair round-trip without
+    needing the raw body itself (Phase Y-2).
+    """
+
+    def __init__(self, message: str, *, raw_length: int = 0) -> None:
+        super().__init__(message)
+        self.raw_length = raw_length
 
 
 class AIRateLimitError(AIProviderError):
@@ -414,7 +422,9 @@ class GeminiProvider(BaseAIProvider):
             return json.loads(cleaned)
         except json.JSONDecodeError as exc:
             logger.error("Failed to parse JSON response from Gemini: %s (Raw text: %.200s)", exc, raw_text)
-            raise AIProviderError(f"Invalid JSON returned by Gemini: {exc}") from exc
+            raise AIProviderError(
+                f"Invalid JSON returned by Gemini: {exc}", raw_length=len(raw_text)
+            ) from exc
 
 
 DEFAULT_VALID_CANNED: dict[str, Any] = {

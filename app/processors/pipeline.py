@@ -7,6 +7,7 @@ from sqlalchemy import and_, distinct, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.number_check import safe_check_numbers
 from app.ai.provider import BaseAIProvider, get_ai_provider, is_retryable_ai_error
 from app.ai.summarizer import PROMPT_VERSION, analyze_article, analyze_perspectives
 from app.collectors.rss_collector import fetch_article_full_text, fetch_feed
@@ -421,6 +422,21 @@ async def process_collected_articles(
         payload_dict = result.model_dump(mode="json")
         payload_dict["model_name"] = ai_provider.model_name
 
+        # Phase Y-1: every number in the Persian output must be grounded in the exact
+        # text the model saw (title + body truncated by the prompt builder). A checker
+        # failure is contained (Y-1b) so one odd article cannot abort the batch.
+        number_check = safe_check_numbers(
+            headline=result.headline_fa,
+            summary=result.summary_fa,
+            source_title=article.title or "",
+            source_body=article.original_text or "",
+            mode=settings.number_check_mode,
+        )
+        payload_dict["number_check"] = number_check
+        if result.prompt_meta:
+            payload_dict["normalization"] = result.prompt_meta.get("normalization")
+            payload_dict["glossary"] = result.prompt_meta.get("glossary")
+
         # The channel now covers several briefings, not only the Middle East: a story
         # is accepted when it is the primary subject of a configured topic. Without a
         # topic it falls back to the audited regional rule below, unchanged.
@@ -460,6 +476,45 @@ async def process_collected_articles(
                     summary_fa=result.summary_fa,
                     details_fa={"source": source_name, "url": article.original_url, "flag": "injection_detected"},
                     verification_status="disputed",
+                    model_name=ai_provider.model_name,
+                    prompt_version=PROMPT_VERSION,
+                )
+            )
+        elif settings.number_check_mode == "flag" and number_check["blocking"]:
+            logger.warning(
+                "Number grounding check failed for article ID %d (%d ungrounded number(s): %s); "
+                "status set to 'flagged_for_review' and automatic publishing is blocked.",
+                article.id,
+                len(number_check["unmatched"]),
+                ", ".join(item["value"] for item in number_check["unmatched"]),
+            )
+            article.status = "flagged_for_review"
+            # Intelligence is preserved like the injection path, but the event is parked
+            # with status='flagged' so EventMatcher never merges a later article into it.
+            event = Event(
+                title=f"[FLAGGED: NUM] {result.event_title}",
+                event_type=result.categories[0] if result.categories else "GEN",
+                countries=result.countries,
+                actors=result.actors,
+                location=result.location,
+                importance=result.importance,
+                status="flagged",
+            )
+            session.add(event)
+            await session.flush()
+            session.add(ArticleEvent(article_id=article.id, event_id=event.id, match_type="initial", confidence=0.50))
+            session.add(
+                Summary(
+                    event_id=event.id,
+                    headline_fa=result.headline_fa,
+                    summary_fa=result.summary_fa,
+                    details_fa={
+                        "source": source_name,
+                        "url": article.original_url,
+                        "flag": "number_mismatch",
+                        "number_check": number_check,
+                    },
+                    verification_status="unconfirmed",
                     model_name=ai_provider.model_name,
                     prompt_version=PROMPT_VERSION,
                 )
