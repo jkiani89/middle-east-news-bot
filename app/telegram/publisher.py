@@ -713,6 +713,29 @@ def _source_domain(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+def _defang_host(value: str) -> str:
+    """Render a URL or bare host inert: no scheme, every dot as ``[.]``.
+
+    Injection reports must never let Telegram auto-link the attacker's domain, and
+    the source *name* can itself be a URL or a bare host, so both go through here.
+    """
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return ""
+    try:
+        parts = urlparse(cleaned)
+    except ValueError:
+        return cleaned.replace(".", "[.]")
+    if parts.netloc:
+        cleaned = parts.netloc
+    elif parts.scheme and parts.path:
+        cleaned = parts.path
+    cleaned = cleaned.split("/")[0].split("?")[0].split("#")[0].lstrip("@")
+    if cleaned.startswith("www."):
+        cleaned = cleaned[4:]
+    return cleaned.replace(".", "[.]")
+
+
 def format_flag_alert(entries: list[dict[str, Any]], total: int, max_items: int = 5) -> str:
     """Format one admin alert for articles parked for review (Phase Z)."""
     shown = entries[:max(0, max_items)]
@@ -744,14 +767,19 @@ def format_flag_alert(entries: list[dict[str, Any]], total: int, max_items: int 
                 + (f" ({esc(domain)})" if domain else "")
             )
         else:
-            # Defang the host for injection reports so Telegram does not turn the
-            # attacker's domain into a clickable link in the admin chat.
-            display_domain = domain.replace(".", "[.]") if reason_code == "injection_detected" else domain
-            lines.append(
-                f"   ▫️ منبع: {source} ({esc(display_domain)})"
-                if display_domain
-                else f"   ▫️ منبع: {source}"
-            )
+            # Injection reports stay link-free: defang both the host from the URL and
+            # the source name (which can itself be a URL or a bare domain), so no part
+            # of this line is auto-linked by Telegram.
+            if reason_code == "injection_detected":
+                display_source = esc(_defang_host(entry.get("source_name") or "منبع نامشخص"), quote=True)
+                display_domain = esc(_defang_host(domain))
+            else:
+                display_source = source
+                display_domain = esc(domain)
+            if display_domain and display_domain != display_source:
+                lines.append(f"   ▫️ منبع: {display_source} ({display_domain})")
+            else:
+                lines.append(f"   ▫️ منبع: {display_source}")
         lines.append("")
     remaining = total - len(shown)
     if remaining > 0:

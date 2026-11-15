@@ -123,11 +123,13 @@ docker compose down -v
 ```
 
 ### ۴.۲. نصب بسته‌ها
+همان نسخه و همان دستور نصب محیط تولید (`Dockerfile`، `.github/workflows/ci.yml` و `cron.yml`):
 ```powershell
-pip install -r requirements.txt -c constraints.txt
-pip install -r requirements-dev.txt -c constraints.txt
+python -m pip install --upgrade pip
+pip install --no-deps "aiogram==3.22.0"
+pip install -r requirements-dev.txt
 ```
-> **نکته:** فایل `constraints.txt` حاوی نگارش‌های دقیق و آزموده‌شده کل وابستگی‌ها در محیط ویندوز با پایتون ۳.۱۵ است تا از بروز ناسازگاری ناشی از انتشار نسخه‌های جدید جلوگیری شود.
+> **چرا `--no-deps`:** متادیتای `aiogram 3.22.0` وابستگی‌های `pydantic<2.12` و `aiohttp<3.13` را اعلام می‌کند، اما این پروژه به `pydantic>=2.14` (الزام `google-genai`) و `aiohttp 3.14.x` برای Python 3.15 نیاز دارد. نصب معمولی aiogram این دو را downgrade می‌کند و `google-genai` را می‌شکند؛ پس aiogram با `--no-deps` نصب می‌شود و زیروابستگی‌هایش (`aiofiles`، `aiohttp`، `certifi`، `magic-filter`، `typing-extensions`) در `requirements.txt` اعلام شده‌اند. `requirements-dev.txt` خودش `requirements.txt` را شامل می‌شود.
 
 ### ۴.۳. پیکربندی فایل `.env`
 یک کپی از `.env.example` با نام `.env` بسازید:
