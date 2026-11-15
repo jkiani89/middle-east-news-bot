@@ -43,6 +43,27 @@ def test_real_glossary_file_loads_in_ci() -> None:
     assert glossary.usable_entries() == ()
 
 
+def test_content_sha_tracks_the_file_contents() -> None:
+    first = load_glossary()
+    assert len(first.content_sha) == 12
+    payload = json.loads(DEFAULT_GLOSSARY_PATH.read_text(encoding="utf-8"))
+    payload["entries"][0]["canonical_fa"] += " (ویرایش)"
+    # Same version, edited entry: the fingerprint must differ.
+    from app.editorial.glossary import parse_glossary
+
+    edited = parse_glossary(payload, DEFAULT_GLOSSARY_PATH)
+    from app.editorial.glossary import _content_sha
+
+    assert _content_sha(edited) != first.content_sha
+
+
+def test_prompt_metadata_carries_the_content_sha(tmp_path: Path) -> None:
+    path = _write_glossary(tmp_path, [ENTRY])
+    _, meta = glossary_for_prompt("Hezbollah", path=path)
+    assert len(meta["content_sha"]) == 12
+    assert meta["entries"] == ["hezbollah"]
+
+
 def test_missing_file_is_tolerated_without_entries(tmp_path: Path) -> None:
     glossary = load_glossary(tmp_path / "absent.json")
     assert glossary.entries == ()

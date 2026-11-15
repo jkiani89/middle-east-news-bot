@@ -5,7 +5,7 @@ import json
 import logging
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
 
 from app.ai.number_check import MODEL_BODY_CHAR_LIMIT
 from app.ai.persian_text import ARABIC_ORTHOGRAPHY_LETTERS, normalize_pair
@@ -140,9 +140,15 @@ class NewsAnalysis(BaseModel):
         default="unconfirmed",
         description="Verification rating adhering strictly to the 5 editorial policy statuses."
     )
-    # Phase Y-3 diagnostics (glossary + orthography normalisation). Excluded from
-    # model_dump so it never enters the model-facing JSON payload.
-    prompt_meta: dict[str, Any] | None = Field(default=None, exclude=True, repr=False)
+    # Phase Y-3 diagnostics (glossary + orthography normalisation). A private
+    # attribute, so it is neither part of the JSON schema (PROMPT_VERSION stays
+    # stable) nor of model_dump/the model-facing payload.
+    _prompt_meta: dict[str, Any] = PrivateAttr(default_factory=dict)
+
+    @property
+    def prompt_meta(self) -> dict[str, Any]:
+        """Glossary/orthography diagnostics attached by ``analyze_article``."""
+        return self._prompt_meta
 
     @field_validator("headline_fa", "summary_fa")
     @classmethod
@@ -587,8 +593,8 @@ async def analyze_article(
         repaired_data, normalization_meta = _normalize_model_payload(repaired_data)
         analysis = NewsAnalysis.model_validate(repaired_data)
 
-    # Phase Y-3 diagnostics; excluded from model_dump, recorded by the pipeline.
-    analysis.prompt_meta = {**prompt_meta, "normalization": normalization_meta}
+    # Phase Y-3 diagnostics; private attribute, recorded by the pipeline.
+    analysis._prompt_meta = {**prompt_meta, "normalization": normalization_meta}
 
     if analysis.is_injection_attempt:
         logger.warning(

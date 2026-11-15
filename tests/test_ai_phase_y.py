@@ -10,7 +10,9 @@ from pydantic import ValidationError
 from app.ai.provider import AIProviderError, BaseAIProvider
 from app.ai.summarizer import (
     EDITORIAL_SYSTEM_PROMPT,
+    PROMPT_VERSION,
     SCHEMA_REPAIR_RAW_MAX_CHARS,
+    NewsAnalysis,
     analyze_article,
 )
 
@@ -27,6 +29,23 @@ VALID = {
     "importance": 3,
     "verification_status": "unconfirmed",
 }
+
+
+def test_prompt_meta_is_private_and_prompt_version_is_stable() -> None:
+    """prompt_meta must not reach the JSON schema or the model-facing dump."""
+    assert PROMPT_VERSION == "v2-e7572f94"
+    assert "prompt_meta" not in NewsAnalysis.model_json_schema()["properties"]
+
+    analysis = NewsAnalysis(
+        is_relevant=True,
+        event_title="e",
+        headline_fa="تیتر",
+        summary_fa="خلاصه",
+    )
+    analysis._prompt_meta = {"glossary": {"version": 3}}
+    assert "prompt_meta" not in analysis.model_dump(mode="json")
+    assert "_prompt_meta" not in analysis.model_dump(mode="json")
+    assert analysis.prompt_meta == {"glossary": {"version": 3}}
 
 
 class _SequenceProvider(BaseAIProvider):

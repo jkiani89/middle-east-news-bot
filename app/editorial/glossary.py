@@ -10,6 +10,7 @@ An invalid file is never ignored silently: the loader raises
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -46,9 +47,30 @@ class GlossaryEntry:
 class Glossary:
     version: int
     entries: tuple[GlossaryEntry, ...]
+    content_sha: str = ""
 
     def usable_entries(self) -> tuple[GlossaryEntry, ...]:
         return tuple(entry for entry in self.entries if not entry.review_required)
+
+
+def _content_sha(glossary: Glossary) -> str:
+    """Fingerprint of the file contents, so an edit is visible even if version is stale."""
+    payload = json.dumps(
+        [
+            {
+                "id": entry.id,
+                "kind": entry.kind,
+                "canonical_fa": entry.canonical_fa,
+                "source_forms": list(entry.source_forms),
+                "variants_fa": list(entry.variants_fa),
+                "review_required": entry.review_required,
+            }
+            for entry in glossary.entries
+        ],
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
 def _normalize(text: str) -> str:
@@ -154,6 +176,11 @@ def load_glossary(path: Path | str | None = None) -> Glossary:
         raise GlossaryError(f"{resolved}: cannot read glossary file ({exc})") from exc
 
     glossary = parse_glossary(payload, resolved)
+    glossary = Glossary(
+        version=glossary.version,
+        entries=glossary.entries,
+        content_sha=_content_sha(glossary),
+    )
     _CACHE[key] = (stat.st_mtime, stat.st_size, glossary)
     return glossary
 
@@ -214,11 +241,13 @@ def glossary_for_prompt(*texts: str, path: Path | str | None = None) -> tuple[st
     if not entries:
         return "", {
             "version": glossary.version,
+            "content_sha": glossary.content_sha,
             "entries": [],
             "review_required_skipped": sum(1 for entry in glossary.entries if entry.review_required),
         }
     meta = {
         "version": glossary.version,
+        "content_sha": glossary.content_sha,
         "entries": [entry.id for entry in entries],
         "review_required_skipped": sum(1 for entry in glossary.entries if entry.review_required),
     }

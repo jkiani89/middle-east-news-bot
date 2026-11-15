@@ -128,6 +128,108 @@ def test_jalali_year_is_reported_but_never_blocks() -> None:
     assert report["blocking"] is False
 
 
+# ── Y-4: full parsing before anything is labelled unverifiable ─────────────────
+
+
+def test_hyphenated_spelled_number_is_parsed() -> None:
+    report = _check(
+        "۲۳ نفر کشته شدند",
+        "منابع از کشته شدن ۲۳ نفر خبر دادند.",
+        "Twenty-three people were killed, officials said.",
+    )
+    assert report["status"] == "clean", report["unmatched"]
+    assert report["reason_codes"].get("word_number_source") == 2
+
+
+def test_spelled_number_with_and_is_parsed() -> None:
+    report = _check(
+        "۲۳ نفر کشته شدند",
+        "منابع از کشته شدن ۲۳ نفر خبر دادند.",
+        "Twenty three people were killed.",
+    )
+    assert report["status"] == "clean", report["unmatched"]
+
+
+def test_persian_spelled_number_is_parsed() -> None:
+    report = _check(
+        "۲۳ نفر کشته شدند",
+        "منابع از کشته شدن ۲۳ نفر خبر دادند.",
+        "منابع گفتند بیست و سه نفر کشته شدند.",
+    )
+    assert report["status"] == "clean", report["unmatched"]
+
+
+def test_attached_billion_unit_is_parsed() -> None:
+    report = _check(
+        "۳ میلیارد دلار خسارت",
+        "خسارت ۳ میلیارد دلار برآورد شد.",
+        "Damage was estimated at 3bn dollars.",
+    )
+    assert report["status"] == "clean", report["unmatched"]
+    assert report["reason_codes"].get("scale_converted") == 2
+
+
+def test_attached_m_unit_keeps_both_readings() -> None:
+    for output in ("۲٫۵ میلیون", "۲٫۵"):
+        report = _check(
+            output,
+            "برآوردها منتشر شد.",
+            "The fund is worth 2.5m dollars.",
+        )
+        assert report["status"] == "clean", (output, report["unmatched"])
+
+
+def test_arabic_inflected_scale_word_is_parsed() -> None:
+    report = _check(
+        "۳ میلیون آواره",
+        "گزارش‌ها از آوارگی گسترده خبر می‌دهند.",
+        "أعلنت الأمم المتحدة نزوح 3 مليونًا من المدنيين.",
+    )
+    assert report["status"] == "clean", report["unmatched"]
+
+
+def test_unparsed_unit_only_makes_its_own_number_unverifiable() -> None:
+    report = _check(
+        "۳۰۰ هزار بشکه و ۷۷ کشته",
+        "جزئیات بیشتری منتشر نشد.",
+        "Output reached 3 lakh barrels, while 3bn dollars were pledged.",
+    )
+    codes = [item["reason_code"] for item in report["unmatched"]]
+    assert "unverifiable" in codes
+    assert codes.count("not_in_source") == 1
+    assert report["blocking"] is True
+
+
+def test_fabricated_number_next_to_parsed_unit_still_blocks() -> None:
+    report = _check(
+        "۷۷ نفر کشته شدند",
+        "منابع از کشته شدن ۷۷ نفر خبر دادند.",
+        "Damage was estimated at 3bn dollars.",
+    )
+    assert report["blocking"] is True
+    assert report["reason_codes"]["not_in_source"] == 2
+
+
+def test_unverifiable_never_blocks() -> None:
+    report = _check(
+        "۳۰۰ هزار بشکه صادر شد",
+        "صادرات ادامه دارد.",
+        "Output reached 3 lakh barrels.",
+    )
+    assert report["reason_codes"]["unverifiable"] == 1
+    assert report["blocking"] is False
+
+
+def test_arabic_spelled_compound_is_unverifiable_and_documented() -> None:
+    report = _check(
+        "۲۳ نفر کشته شدند",
+        "منابع از کشته شدن ۲۳ نفر خبر دادند.",
+        "أعلنت السلطات مقتل ثلاثة وعشرون شخصا.",
+    )
+    assert report["reason_codes"]["unverifiable"] == 2
+    assert report["blocking"] is False
+
+
 def test_off_mode_skips_the_check() -> None:
     report = _check("۱۲ نفر", "۱۲ نفر", "no numbers", mode="off")
     assert report["status"] == "skipped"
