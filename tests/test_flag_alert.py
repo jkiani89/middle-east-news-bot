@@ -343,3 +343,22 @@ async def test_uncommitted_article_is_not_reported(monkeypatch: pytest.MonkeyPat
     # The article whose commit failed (and any later one) must never appear in an alert.
     for entries in alert_calls:
         assert 2 not in {entry["article_id"] for entry in entries}
+
+
+def test_number_mismatch_gets_clickable_link() -> None:
+    text = format_flag_alert([_entry(1, numbers=["12"])], total=1, max_items=5)
+    assert '<a href="https://example.com/1">Source 1</a>' in text
+
+
+def test_clickable_link_escapes_url() -> None:
+    entry = _entry(1, numbers=["12"])
+    entry["source_url"] = 'https://example.com/a"b&c<d'
+    text = format_flag_alert([entry], total=1, max_items=5)
+    assert 'href="https://example.com/a&quot;b&amp;c&lt;d"' in text
+
+
+def test_javascript_url_is_not_linked() -> None:
+    entry = _entry(1, reason="number_mismatch", numbers=["12"])
+    entry["source_url"] = "javascript:alert(1)"
+    text = format_flag_alert([entry], total=1, max_items=5)
+    assert "<a href" not in text

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import logging
 import re
 import tempfile
@@ -48,11 +49,14 @@ class MockPublishRefusedError(RuntimeError):
     pass
 
 
-def esc(s: Any) -> str:
+def esc(s: Any, quote: bool = False) -> str:
     """Sanitize HTML special characters for Telegram HTML parse mode."""
     if s is None:
         return ""
-    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    text = str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    if quote:
+        text = text.replace('"', "&quot;").replace("'", "&#x27;")
+    return text
 
 
 def get_tag_name(tag_str: str) -> str:
@@ -692,6 +696,14 @@ def _truncate(text: str, limit: int) -> str:
     return cleaned[: limit - 1].rstrip() + "…"
 
 
+def _is_http_url(url: str) -> bool:
+    try:
+        scheme = urlparse(url).scheme.lower()
+    except ValueError:
+        return False
+    return scheme in {"http", "https"}
+
+
 def _source_domain(url: str) -> str:
     """Bare host for the alert, so a hostile URL is never clickable there."""
     try:
@@ -721,9 +733,18 @@ def format_flag_alert(entries: list[dict[str, Any]], total: int, max_items: int 
             numbers = [str(value) for value in (entry.get("numbers") or [])][:MAX_FLAG_NUMBERS]
             if numbers:
                 lines.append(f"   ▫️ عددهای بدون پشتوانه: {esc('، '.join(numbers))}")
-        source = esc(entry.get("source_name") or "منبع نامشخص")
-        domain = _source_domain(entry.get("source_url") or "")
-        lines.append(f"   ▫️ منبع: {source} ({esc(domain)})" if domain else f"   ▫️ منبع: {source}")
+        source = esc(entry.get("source_name") or "منبع نامشخص", quote=True)
+        url = entry.get("source_url") or ""
+        domain = _source_domain(url)
+        # Only number_mismatch (and other non-injection) entries may expose a clickable
+        # link, and only for http(s) URLs. Injection reports stay link-free.
+        if reason_code != "injection_detected" and _is_http_url(url):
+            lines.append(
+                f"   ▫️ منبع: <a href=\"{html.escape(url, quote=True)}\">{source}</a>"
+                + (f" ({esc(domain)})" if domain else "")
+            )
+        else:
+            lines.append(f"   ▫️ منبع: {source} ({esc(domain)})" if domain else f"   ▫️ منبع: {source}")
         lines.append("")
     remaining = total - len(shown)
     if remaining > 0:
