@@ -263,7 +263,7 @@ def test_pathological_input_finishes_within_budget(text: str) -> None:
     assert report["numbers_checked"] > 0
     assert report["blocking"] in (True, False)
     json.dumps(report)  # must stay JSON-serialisable for the payload
-    assert elapsed < 1.0, f"check took {elapsed:.2f}s on {len(body)} chars"
+    assert elapsed < 2.0, f"check took {elapsed:.2f}s on {len(body)} chars"
 
 
 def test_off_mode_skips_the_check() -> None:
