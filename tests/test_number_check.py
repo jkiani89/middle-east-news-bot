@@ -223,13 +223,15 @@ def test_unverifiable_never_blocks() -> None:
     assert report["blocking"] is False
 
 
-def test_arabic_spelled_compound_is_unverifiable_and_documented() -> None:
+def test_arabic_spelled_compound_is_summed() -> None:
+    """Y-5 changed this: «ثلاثة وعشرون» is now summed instead of unverifiable."""
     report = _check(
         "۲۳ نفر کشته شدند",
         "منابع از کشته شدن ۲۳ نفر خبر دادند.",
         "أعلنت السلطات مقتل ثلاثة وعشرون شخصا.",
     )
-    assert report["reason_codes"]["unverifiable"] == 2
+    assert report["status"] == "clean", report["unmatched"]
+    assert report["reason_codes"].get("word_number_source") == 2
     assert report["blocking"] is False
 
 
@@ -276,3 +278,240 @@ def test_off_mode_skips_the_check() -> None:
 def test_extract_numbers_exposes_both_readings_of_thousands_separator() -> None:
     values = {value for value, _, _ in extract_numbers("1,200 and 1,200,000")}
     assert {1200.0, 1.2, 1_200_000.0} <= values
+
+
+# ── Y-5: ambiguous words are only numbers in a numeric phrase ──────────────────
+
+
+def test_bare_ambiguous_word_is_not_a_number() -> None:
+    report = _check(
+        "یک نفر در حمله زخمی شد",
+        "منابع محلی از زخمی شدن یک نفر خبر دادند.",
+        "Local sources said one person was wounded in the attack.",
+    )
+    assert report["numbers_checked"] == 0, report["unmatched"]
+    assert report["status"] == "clean"
+
+
+def test_ambiguous_word_before_a_scale_word_is_a_number() -> None:
+    report = _check(
+        "یک میلیون نفر آواره شدند",
+        "گزارش‌ها از آوارگی گسترده خبر می‌دهند.",
+        "Aid agencies said 1,000,000 people were displaced.",
+    )
+    assert report["status"] == "clean", report["unmatched"]
+    assert report["numbers_checked"] == 1
+    assert report["matched"] == 1
+
+
+@pytest.mark.parametrize("word", ["نه", "واحد"])
+def test_bare_no_and_unit_words_are_ignored(word: str) -> None:
+    report = _check(
+        f"{word} مورد گزارش شد",
+        "جزئیات بیشتری منتشر نشد.",
+        "No further details were released.",
+    )
+    assert report["numbers_checked"] == 0, report["unmatched"]
+
+
+def test_bare_scale_word_is_ignored() -> None:
+    report = _check(
+        "میلیارد در بودجه گم شد",
+        "جزئیات بیشتری منتشر نشد.",
+        "No further details were released.",
+    )
+    assert report["numbers_checked"] == 0, report["unmatched"]
+
+
+# ── Y-5: Arabic spelled-out numbers in the source ─────────────────────────────
+
+
+def test_arabic_unit_word_in_source_matches_digit_output() -> None:
+    report = _check(
+        "۳ کشته در حمله",
+        "منابع از کشته شدن ۳ نفر خبر دادند.",
+        "أعلنت السلطات مقتل ثلاثة أشخاص في الغارة.",
+    )
+    assert report["status"] == "clean", report["unmatched"]
+    assert report["reason_codes"].get("word_number_source") == 2
+
+
+def test_arabic_teen_compound_is_parsed() -> None:
+    assert {value for value, _, _ in extract_numbers("خمسة عشر")} == {15.0}
+    report = _check(
+        "۱۵ کشته در حمله",
+        "منابع از کشته شدن ۱۵ نفر خبر دادند.",
+        "أعلنت السلطات مقتل خمسة عشر شخصا.",
+    )
+    assert report["status"] == "clean", report["unmatched"]
+
+
+def test_arabic_hundred_and_tens_compound_is_parsed() -> None:
+    assert {value for value, _, _ in extract_numbers("مئة وثلاثين")} == {130.0}
+    report = _check(
+        "۱۳۰ کشته در حمله",
+        "منابع از کشته شدن ۱۳۰ نفر خبر دادند.",
+        "أعلنت السلطات مقتل مئة وثلاثين شخصا.",
+    )
+    assert report["status"] == "clean", report["unmatched"]
+
+
+def test_digit_output_without_source_number_still_blocks() -> None:
+    report = _check(
+        "۱۳۰ نفر کشته شدند",
+        "جزئیات بیشتری منتشر نشد.",
+        "Officials said many people were killed.",
+    )
+    assert [item["reason_code"] for item in report["unmatched"]] == ["not_in_source"]
+    assert report["blocking"] is True
+    assert report["status"] == "mismatch"
+
+
+# ── Y-5: status separates a real mismatch from an informational finding ───────
+
+
+def test_jalali_only_article_is_unverifiable_not_mismatch() -> None:
+    report = _check(
+        "در سال ۱۴۰۴ این توافق امضا شد",
+        "این توافق در سال ۱۴۰۴ نهایی شد.",
+        "The agreement was signed in 2025, officials said.",
+    )
+    assert report["reason_codes"]["jalali_calendar"] == 2
+    assert report["status"] == "unverifiable"
+    assert report["status"] != "mismatch"
+    assert report["blocking"] is False
+
+
+def test_number_check_stays_local_and_needs_no_model_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    import socket
+
+    def _no_network(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the number check must not make a model or network call")
+
+    monkeypatch.setattr(socket, "socket", _no_network)
+    report = _check(
+        "۳ میلیون نفر آواره شدند",
+        "سازمان‌های امدادی از آوارگی گسترده خبر دادند.",
+        "Aid agencies said 3,000,000 people were displaced.",
+    )
+    assert report["status"] == "clean", report["unmatched"]
+
+
+# ── Y-5 review: no text-wide fuzzy fallback ───────────────────────────────────
+
+
+def test_parsable_arabic_source_does_not_excuse_a_different_output_number() -> None:
+    report = _check(
+        "۸ نفر کشته شدند",
+        "جزئیات بیشتری منتشر نشد.",
+        "أعلنت السلطات مقتل ثلاثة أشخاص.",
+    )
+    assert [item["reason_code"] for item in report["unmatched"]] == ["not_in_source"]
+    assert report["unmatched"][0]["value"] == "8"
+    assert report["blocking"] is True
+    assert report["status"] == "mismatch"
+
+
+def test_dual_arabic_source_does_not_excuse_a_different_output_number() -> None:
+    report = _check(
+        "۱۲ نفر کشته شدند",
+        "جزئیات بیشتری منتشر نشد.",
+        "مقتل اثنين من المدنيين.",
+    )
+    assert [item["reason_code"] for item in report["unmatched"]] == ["not_in_source"]
+    assert report["blocking"] is True
+
+
+def test_unparsed_arabic_token_cannot_excuse_an_unrelated_number() -> None:
+    """«عشرات» is not a figure, and must not turn 8 into a non-blocking finding."""
+    report = _check(
+        "۸ نفر کشته شدند",
+        "جزئیات بیشتری منتشر نشد.",
+        "شهدت المنطقة عشرات الغارات خلال الأسبوع الماضي.",
+    )
+    assert [item["reason_code"] for item in report["unmatched"]] == ["not_in_source"]
+    assert report["blocking"] is True
+    assert report["status"] == "mismatch"
+
+
+def test_arabic_definite_article_is_parsed_not_guessed() -> None:
+    assert {value for value, _, _ in extract_numbers("العشرين")} == {20.0}
+    assert {value for value, _, _ in extract_numbers("المئة")} == {100.0}
+
+
+# ── Y-5 review: Arabic corpora must stay linear ──────────────────────────────
+
+_ARABIC_FILLER = (
+    "أعلنت وزارة الخارجية أن المحادثات استمرت في العاصمة وسط إجراءات أمنية مشددة",
+    "وقال مسؤول محلي إن الفرق الطبية نقلت المصابين إلى المستشفيات القريبة",
+    "وأشار بيان صادر عن الأمم المتحدة إلى أن الوضع الإنساني تدهور خلال الأسبوع الماضي",
+    "من جهته أكد المتحدث باسم الحكومة أن اللجان الفنية واصلت اجتماعاتها في مقر الوزارة",
+)
+_ARABIC_NUMERIC_WORDS = (
+    "خمسة عشر",
+    "مئة وثلاثين",
+    "ثلاثة وعشرون",
+    "خمسة وعشرون",
+    "مئة",
+    "ثلاثة",
+)
+
+
+def _arabic_news_corpus() -> tuple[str, int]:
+    """~2500 words of Arabic news copy with ~50 spelled-out numbers scattered in."""
+    sentences: list[str] = []
+    numeric = 0
+    index = 0
+    while len(" ".join(sentences)) < MODEL_BODY_CHAR_LIMIT:
+        sentence = _ARABIC_FILLER[index % len(_ARABIC_FILLER)]
+        if index % 4 == 0:
+            sentence = f"{_ARABIC_NUMERIC_WORDS[index % len(_ARABIC_NUMERIC_WORDS)]} {sentence}"
+            numeric += 1
+        sentences.append(sentence)
+        index += 1
+    return " ".join(sentences)[:MODEL_BODY_CHAR_LIMIT], numeric
+
+
+def _arabic_adversarial_corpus() -> str:
+    """Arabic number words back to back, with the glued conjunction «و»."""
+    return ("خمسة عشر مئة وثلاثين ثلاثة وعشرون مئة ألف " * 600)[:MODEL_BODY_CHAR_LIMIT]
+
+
+def test_arabic_news_corpus_finishes_within_budget() -> None:
+    body, numeric = _arabic_news_corpus()
+    assert len(body) == MODEL_BODY_CHAR_LIMIT
+    assert 2_000 <= len(body.split()) <= 3_200
+    assert 40 <= numeric <= 60
+
+    start = time.perf_counter()
+    report = check_numbers(
+        headline=body[:200],
+        summary=body[200:600],
+        source_title="t",
+        source_body=body,
+        mode="log",
+    )
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    assert report["checked_source_chars"] == MODEL_BODY_CHAR_LIMIT
+    json.dumps(report)
+    assert elapsed_ms < 1_000, f"check took {elapsed_ms:.0f}ms on Arabic news corpus"
+
+
+def test_arabic_adversarial_corpus_finishes_within_budget() -> None:
+    body = _arabic_adversarial_corpus()
+    assert len(body) == MODEL_BODY_CHAR_LIMIT
+
+    start = time.perf_counter()
+    report = check_numbers(
+        headline=body[:200],
+        summary=body[200:600],
+        source_title="t",
+        source_body=body,
+        mode="log",
+    )
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    assert report["checked_source_chars"] == MODEL_BODY_CHAR_LIMIT
+    json.dumps(report)
+    assert elapsed_ms < 1_000, f"check took {elapsed_ms:.0f}ms on back-to-back Arabic numbers"

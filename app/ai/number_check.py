@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+from bisect import bisect_right
 from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
@@ -125,11 +126,70 @@ _WORD_NUMBERS: dict[str, float] = {
     "hundred": 100, "thousand": 1_000, "million": 1_000_000, "billion": 1_000_000_000,
 }
 
-_ARABIC_WORD_NUMBERS = frozenset(
-    "واحد اثنان اثنين ثلاثة ثلاث أربعة أربع خمسة خمس ستة ست سبعة سبع ثمانية "
-    "تسعة تسع عشرة عشر عشرون ثلاثون أربعون خمسون ستون سبعون ثمانون تسعون "
-    "مئة مائة مئتان".split()
+# ── Y-5: ambiguous Persian words, bare scales, and Arabic spelled-out numbers ──
+
+# «یک» (one), «نه» (no / nine) and «واحد» (unit / one) are ordinary words far more
+# often than they are figures, and a scale word with no number before it
+# («میلیارد») carries no value at all. Each counts only when it sits immediately
+# before a scale word or «درصد». Documented limitation: a plain "یک نفر کشته شد"
+# is no longer checked (see docs/DEVELOPMENT_LOG.md, phase Y-5).
+_AMBIGUOUS_ALONE: dict[str, int] = {"یک": 1, "نه": 9, "واحد": 1}
+_PERCENT_WORD = "درصد"
+_AMBIGUOUS_TAILS = (_PERCENT_WORD, *_SCALE_WORDS.keys())
+_AMBIGUOUS_RE = re.compile(
+    rf"(?<!\w)(?P<word>{'|'.join(map(re.escape, _AMBIGUOUS_ALONE))})(?:[\s\u200c]+)"
+    rf"(?P<tail>{'|'.join(map(re.escape, sorted(_AMBIGUOUS_TAILS, key=len, reverse=True)))})(?!\w)"
 )
+
+# Arabic spelled-out numbers. Keys are folded by :func:`_fold_arabic`, so «ثلاثة»
+# and «ثلاثه» resolve to the same entry; feminine and short forms are listed.
+_ALEF_FOLD = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا", "ة": "ه", "ى": "ي", "ـ": ""})
+_ARABIC_UNITS: dict[str, float] = {
+    "صفر": 0,
+    "واحد": 1, "واحده": 1, "احد": 1, "احدي": 1,
+    "اثنان": 2, "اثنين": 2, "اثنتان": 2, "اثنتين": 2, "ثنتان": 2, "ثنتين": 2,
+    "ثلاثه": 3, "ثلاث": 3,
+    "اربعه": 4, "اربع": 4,
+    "خمسه": 5, "خمس": 5,
+    "سته": 6, "ست": 6,
+    "سبعه": 7, "سبع": 7,
+    "ثمانيه": 8, "ثمان": 8, "ثماني": 8,
+    "تسعه": 9, "تسع": 9,
+    "عشره": 10, "عشر": 10,
+}
+_ARABIC_TENS: dict[str, float] = {
+    "عشرون": 20, "عشرين": 20,
+    "ثلاثون": 30, "ثلاثين": 30,
+    "اربعون": 40, "اربعين": 40,
+    "خمسون": 50, "خمسين": 50,
+    "ستون": 60, "ستين": 60,
+    "سبعون": 70, "سبعين": 70,
+    "ثمانون": 80, "ثمانين": 80,
+    "تسعون": 90, "تسعين": 90,
+}
+_ARABIC_HUNDREDS: dict[str, float] = {
+    "مئه": 100, "مائه": 100, "مئتان": 200, "مئتين": 200, "مئتا": 200, "مئتي": 200,
+    "ثلاثمئه": 300, "ثلاثمائه": 300, "اربعمئه": 400, "خمسمئه": 500,
+    "ستمئه": 600, "سبعمئه": 700, "ثمانمئه": 800, "ثمانمائه": 800, "تسعمئه": 900,
+}
+_ARABIC_SCALES: dict[str, float] = {
+    "الف": 1_000, "الفان": 2_000, "الفين": 2_000, "الاف": 1_000,
+    "مليون": 1_000_000, "مليونان": 2_000_000, "مليونين": 2_000_000, "ملايين": 1_000_000,
+    "مليار": 1_000_000_000, "ملياران": 2_000_000_000, "مليارين": 2_000_000_000,
+    "مليارات": 1_000_000_000,
+}
+# (kind, value): "part" words are added together, "scale" words multiply what is
+# accumulated so far -- «مئة ألف» is 100 * 1000 and «خمسة عشر» is 5 + 10.
+_ARABIC_PARTS: dict[str, tuple[str, float]] = {
+    **{word: ("part", value) for word, value in _ARABIC_UNITS.items()},
+    **{word: ("part", value) for word, value in _ARABIC_TENS.items()},
+    **{word: ("part", value) for word, value in _ARABIC_HUNDREDS.items()},
+    **{word: ("scale", value) for word, value in _ARABIC_SCALES.items()},
+}
+_WORD_TOKEN_RE = re.compile(r"[^\W\d_]+")
+# Words inside one Arabic number are separated by spaces, ZWNJ, tatweel, or a
+# glued conjunction «و» («ثلاثة وعشرون»).
+_ARABIC_JOIN_RE = re.compile(r"[\s\u200c\u0640]*(?:و[\s\u200c\u0640]*)?")
 
 _JALALI_RANGE = (1300.0, 1499.0)
 # Which scale an unreadable unit might mean. The South-Asian lakh/crore are included
@@ -229,6 +289,104 @@ def _scale_after(prepared: str, end: int) -> tuple[list[float] | None, tuple[int
     return factors, (match.start(1), match.end(1)), ambiguous
 
 
+def _fold_arabic(word: str) -> str:
+    """Strip diacritics and unify alef/ta-marbuta/alef-maqsura for lexicon lookups."""
+    return _DIACRITICS_RE.sub("", word or "").strip().translate(_ALEF_FOLD)
+
+
+def _without_article(folded: str) -> str:
+    """Drop the Arabic definite article: «العشرين» -> «عشرين»."""
+    return folded[2:] if folded.startswith("ال") and len(folded) > 2 else folded
+
+
+def _in_any(position: int, spans: list[tuple[int, int]]) -> bool:
+    """Whether a position falls inside one of the spans, in O(log n).
+
+    ``spans`` must be sorted by start: pathological input produces thousands of
+    them, and a linear scan per token made the check quadratic (Y-5).
+    """
+    index = bisect_right(spans, (position, float("inf"))) - 1
+    return index >= 0 and spans[index][1] > position
+
+
+def _ambiguous_scaled_words(
+    prepared: str,
+) -> tuple[list[tuple[list[float], str, set[str]]], list[tuple[int, int]]]:
+    """«یک میلیون» / «نه درصد» -- an ambiguous word that *is* a number here."""
+    found: list[tuple[list[float], str, set[str]]] = []
+    spans: list[tuple[int, int]] = []
+    for match in _AMBIGUOUS_RE.finditer(prepared):
+        value = float(_AMBIGUOUS_ALONE[match.group("word")])
+        tail = match.group("tail")
+        if tail == _PERCENT_WORD:
+            found.append(([value], match.group(0), {"word"}))
+        else:
+            found.append(
+                ([round(value * float(_SCALE_WORDS[tail]), 6)], match.group(0), {"word", "scaled"})
+            )
+        spans.append((match.start(), match.end()))
+    return found, spans
+
+
+def _arabic_part(token: str, *, source_side: bool) -> tuple[str, float] | None:
+    """Lexicon entry for one Arabic number word, or None when it is not one."""
+    folded = _fold_arabic(token)
+    if not source_side and folded in _AMBIGUOUS_ALONE:
+        # On the output side «واحد» alone is the ordinary word "unit".
+        return None
+    part = _ARABIC_PARTS.get(folded)
+    if part is None and folded.startswith("و"):
+        part = _ARABIC_PARTS.get(folded[1:])  # glued conjunction: «وعشرون»
+    return part or _ARABIC_PARTS.get(_without_article(folded))
+
+
+def _arabic_word_numbers(
+    prepared: str, consumed: list[tuple[int, int]], *, source_side: bool
+) -> tuple[list[tuple[float, str]], list[tuple[int, int]]]:
+    """Parse Arabic spelled-out numbers into single values (Y-5).
+
+    A token outside the lexicon is treated as ordinary text, never as a lenient
+    wildcard: only a number we can name may cover an output figure (Y-5 review).
+    """
+    tokens = list(_WORD_TOKEN_RE.finditer(prepared))
+    items: list[tuple[float, str]] = []
+    spans: list[tuple[int, int]] = []
+    index = 0
+    while index < len(tokens):
+        first = tokens[index]
+        if _in_any(first.start(), consumed):
+            index += 1
+            continue
+        parts: list[tuple[str, float]] = []
+        start = first.start()
+        end = first.end()
+        cursor = index
+        while cursor < len(tokens):
+            token_match = tokens[cursor]
+            if parts and not _ARABIC_JOIN_RE.fullmatch(prepared[end:token_match.start()]):
+                break
+            part = _arabic_part(token_match.group(0), source_side=source_side)
+            if part is None:
+                break
+            parts.append(part)
+            end = token_match.end()
+            cursor += 1
+        if not parts:
+            index += 1
+            continue
+        # A scale word with no number before it is not a figure («میلیارد» alone).
+        if len(parts) == 1 and parts[0][0] == "scale" and not source_side:
+            index = cursor
+            continue
+        value = 0.0
+        for kind, part_value in parts:
+            value = (value or 1.0) * part_value if kind == "scale" else value + part_value
+        items.append((round(value, 6), prepared[start:end]))
+        spans.append((start, end))
+        index = cursor
+    return items, spans
+
+
 def _compound_word_numbers(prepared: str) -> tuple[list[tuple[float, str]], list[tuple[int, int]]]:
     """Parse ``twenty-three`` / «بیست و سه» into a single value.
 
@@ -251,20 +409,17 @@ def _compound_word_numbers(prepared: str) -> tuple[list[tuple[float, str]], list
     return found, spans
 
 
-def _arabic_compound_spans(prepared: str) -> list[tuple[int, int]]:
-    """Spans of Arabic word-number pairs (``ثلاثة وعشرون``) we do not arithmetic yet."""
-    words = "|".join(re.escape(word) for word in _ARABIC_WORD_NUMBERS)
-    # Arabic attaches the conjunction: «ثلاثة وعشرون», not «ثلاثة و عشرون».
-    pattern = re.compile(rf"(?<!\w)(?:{words})(?:\s+و?\s*(?:{words}))+(?!\w)")
-    return [(match.start(), match.end()) for match in pattern.finditer(prepared)]
-
-
-def _extract(text: str) -> tuple[
+def _extract(
+    text: str, *, source_side: bool = False
+) -> tuple[
     list[tuple[list[float], str, set[str]]],
     list[tuple[float, str]],
-    bool,
 ]:
-    """Return (occurrences, unparsed_units, has_arabic_compound)."""
+    """Return (occurrences, unparsed_units).
+
+    ``source_side`` keeps the source lenient: bare «یک»/«واحد» and bare scale words
+    still count as source numbers there, they are only dropped from the output.
+    """
     prepared = _prepare(text)
     occurrences: list[tuple[list[float], str, set[str]]] = []
     unparsed_units: list[tuple[float, str]] = []
@@ -275,8 +430,9 @@ def _extract(text: str) -> tuple[
         occurrences.append(([value], token, {"word"}))
     consumed.extend(compound_spans)
 
-    arabic_spans = _arabic_compound_spans(prepared)
-    consumed.extend(arabic_spans)
+    scaled_words, scaled_spans = _ambiguous_scaled_words(prepared)
+    occurrences.extend(scaled_words)
+    consumed.extend(scaled_spans)
 
     for match in _NUMBER_RE.finditer(prepared):
         token = match.group(0)
@@ -303,19 +459,31 @@ def _extract(text: str) -> tuple[
         for factor in factors or [1.0]:
             occurrences.append(([round(value * factor, 6) for value in readings], token, set(flags)))
 
+    consumed.sort()  # _in_any() bisects this list
+    arabic_items, arabic_spans = _arabic_word_numbers(prepared, consumed, source_side=source_side)
+    for value, token in arabic_items:
+        occurrences.append(([value], token, {"word"}))
+    consumed.extend(arabic_spans)
+    consumed.sort()
+
+    # Words that are only numbers in a numeric phrase (see _AMBIGUOUS_ALONE) and
+    # bare scale words never count on their own in the Persian output.
+    alone_words = set() if source_side else _AMBIGUOUS_ALONE.keys() | _SCALE_WORDS.keys()
     for word, value in _WORD_NUMBERS.items():
+        if word in alone_words:
+            continue
         pattern = rf"(?<!\w){re.escape(word)}(?!\w)"
         for word_match in re.finditer(pattern, prepared, re.IGNORECASE):
-            if any(start <= word_match.start() and word_match.end() <= end for start, end in consumed):
+            if _in_any(word_match.start(), consumed):
                 continue
             occurrences.append(([float(value)], word, {"word"}))
 
-    return occurrences, unparsed_units, bool(arabic_spans)
+    return occurrences, unparsed_units
 
 
 def extract_numbers(text: str) -> list[tuple[float, str, set[str]]]:
     """Return ``(value, raw token, flags)`` for every reading of every number."""
-    occurrences, _, _ = _extract(text)
+    occurrences, _ = _extract(text)
     return [
         (value, token, set(flags))
         for values, token, flags in occurrences
@@ -323,18 +491,20 @@ def extract_numbers(text: str) -> list[tuple[float, str, set[str]]]:
     ]
 
 
-def _is_unverifiable(
-    values: list[float], unparsed_units: list[tuple[float, str]], arabic_compound: bool
-) -> bool:
-    """Whether an unmatched number could come from a source token we could not parse."""
+def _is_unverifiable(values: list[float], unparsed_units: list[tuple[float, str]]) -> bool:
+    """Whether an unmatched number could come from a source token we could not parse.
+
+    Only the unit-based reading applies (``3 lakh``). There is no text-wide fallback:
+    an unmatched figure is ``unverifiable`` only when a source token *of that value*
+    could have produced it, so an unrelated word in the article can never excuse it
+    (Y-5 review).
+    """
     for prefix, _unit in unparsed_units:
         for guess in _SCALE_GUESSES:
             candidate = round(prefix * guess, 6)
             if any(abs(value - candidate) < 1e-6 for value in values):
                 return True
-    # Arabic spelled-out compounds are not summed yet; leave small numbers alone
-    # instead of calling them fabricated (documented limitation).
-    return arabic_compound and any(0 <= value <= 9_999 for value in values)
+    return False
 
 
 ERROR_MESSAGE_MAX_CHARS = 200
@@ -406,7 +576,7 @@ def check_numbers(
     if mode == "off":
         return base
 
-    source_items, unparsed_units, arabic_compound = _extract(f"{source_title or ''}\n{body}")
+    source_items, unparsed_units = _extract(f"{source_title or ''}\n{body}", source_side=True)
     source_plain = {
         value
         for values, _, flags in source_items
@@ -417,7 +587,7 @@ def check_numbers(
     source_words = {value for values, _, flags in source_items if "word" in flags for value in values}
     source_ambiguous = {value for values, _, flags in source_items if "ambiguous" in flags for value in values}
 
-    output_items, _, _ = _extract(f"{headline or ''}\n{summary or ''}")
+    output_items, _ = _extract(f"{headline or ''}\n{summary or ''}", source_side=False)
     reason_codes: dict[str, int] = {}
     matched = 0
     unmatched: list[dict[str, str]] = []
@@ -439,7 +609,7 @@ def check_numbers(
 
         # Report the widest reading of the token: ``1,200`` is reported as 1200.
         key = max(values)
-        if _is_unverifiable(values, unparsed_units, arabic_compound):
+        if _is_unverifiable(values, unparsed_units):
             code: ReasonCode = "unverifiable"
         elif any(_JALALI_RANGE[0] <= value <= _JALALI_RANGE[1] for value in values):
             code = "jalali_calendar"
@@ -451,12 +621,21 @@ def check_numbers(
         unmatched.append({"value": _fmt(key), "reason_code": code, "token": token})
 
     blocking = any(item["reason_code"] in BLOCKING_CODES for item in unmatched)
+    # Y-5: "mismatch" is reserved for a real disagreement with the source. An article
+    # whose only findings are informational (jalali_calendar, unverifiable) is
+    # "unverifiable" instead, so it no longer pollutes the mismatch statistics.
+    if not unmatched:
+        status = "clean"
+    elif blocking:
+        status = "mismatch"
+    else:
+        status = "unverifiable"
     return {
         **base,
         "numbers_checked": len(output_items),
         "matched": matched,
         "unmatched": unmatched,
         "reason_codes": reason_codes,
-        "status": "mismatch" if unmatched else "clean",
+        "status": status,
         "blocking": blocking,
     }
