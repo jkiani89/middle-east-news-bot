@@ -1280,7 +1280,7 @@ thread داخلی SDK با `wait_for` لغو نمی‌شود و در پس‌زم
 - کارایی روی ۱۶KB: میانه ۲۳٫۶ms برای متن بدون نام منطقه‌ای (اسکن کامل) و ۸٫۷ms با برخورد زودهنگام.
 
 ### تست‌ها
-`tests/test_queue_freshness.py` (۱۳ تست Y-9)، `tests/test_prefilter.py` (۵ تست Y-11)، چهار تست Y-10 در `tests/test_run_once.py`، تست پیش‌فیلتر بدون فراخوانی اضافی در `tests/test_number_flag.py`، و به‌روزرسانی `test_config` (پیش‌فرض‌های ۶/۲۴) و assertion ترتیب در `test_pipeline_resilience`.
+`tests/test_queue_freshness.py` (۱۱ تست Y-9)، `tests/test_prefilter.py` (۵ تست Y-11)، پنج تست Y-10 در `tests/test_run_once.py`، تست پیش‌فیلتر بدون فراخوانی اضافی در `tests/test_number_flag.py` — در کل ۲۲ تست جدید، و به‌روزرسانی `test_config` (پیش‌فرض‌های ۶/۲۴) و assertion ترتیب در `test_pipeline_resilience`.
 
 ### نتایج (خام)
 - محلی (بدون Postgres): `494 passed, 17 skipped, 3 warnings` — ۱۷ skip همان تست‌های PostgreSQL است که در CI اجرا می‌شوند.
