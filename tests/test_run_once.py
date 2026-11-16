@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
@@ -10,6 +10,7 @@ import pytest
 
 from app.config import settings
 from app.database.models import DailyReport
+from app.reports.daily_report import report_window, slot_report_date
 from scripts.run_once import run_batch_pipeline, should_run_daily_report
 
 
@@ -113,9 +114,9 @@ async def test_should_run_daily_report_inside_catch_up_window():
 
 @pytest.mark.asyncio
 async def test_should_run_daily_report_after_catch_up_window():
-    """Three hours after the slot the latch closes: 11:05 for the 08:00 slot is late."""
+    """Six hours after the slot the latch closes: 14:05 for the 08:00 slot is late."""
     tz = ZoneInfo("Asia/Tehran")
-    too_late = datetime(2026, 11, 14, 11, 5, tzinfo=tz)
+    too_late = datetime(2026, 11, 14, 14, 5, tzinfo=tz)
 
     with (
         patch("scripts.run_once.local_now", return_value=too_late),
@@ -198,6 +199,105 @@ async def test_should_run_daily_report_skips_a_slot_in_flight(slot_table):
         should_run, reason = await should_run_daily_report(slot_hour=8)
         assert should_run is False
         assert "in flight" in reason
+
+
+# --- Phase Y-10: a late run belongs to the slot's own day -------------------
+
+
+@pytest.mark.asyncio
+async def test_late_evening_run_publishes_yesterdays_slot():
+    """00:42 Tehran is 4h42 after yesterday's 20:00 slot, so that slot still ships."""
+    tz = ZoneInfo("Asia/Tehran")
+    late = datetime(2026, 11, 16, 0, 42, tzinfo=tz)
+
+    with (
+        patch("scripts.run_once.local_now", return_value=late),
+        patch("scripts.run_once.SessionLocal") as mock_session_local,
+    ):
+        mock_session = AsyncMock()
+        mock_session.scalar.return_value = None
+        mock_session_local.return_value.__aenter__.return_value = mock_session
+
+        should_run, reason = await should_run_daily_report(slot_hour=20)
+
+    assert should_run is True
+    assert "matches" in reason
+    # The bulletin, its window and its claim key all belong to 2026-11-15.
+    assert slot_report_date(20, late) == date(2026, 11, 15)
+    _day, start, end = report_window(slot_report_date(20, late), 20)
+    assert end == datetime(2026, 11, 15, 20, 0, tzinfo=tz)
+    assert start == datetime(2026, 11, 15, 8, 0, tzinfo=tz)
+
+
+@pytest.mark.asyncio
+async def test_same_late_run_is_outside_a_three_hour_grace():
+    """With grace=3 the 00:42 run is too late for yesterday's 20:00 slot."""
+    tz = ZoneInfo("Asia/Tehran")
+    late = datetime(2026, 11, 16, 0, 42, tzinfo=tz)
+
+    with (
+        patch("scripts.run_once.local_now", return_value=late),
+        patch.object(settings, "slot_grace_hours", 3),
+        patch("scripts.run_once.SessionLocal") as mock_session_local,
+    ):
+        mock_session = AsyncMock()
+        mock_session.scalar.return_value = None
+        mock_session_local.return_value.__aenter__.return_value = mock_session
+
+        should_run, reason = await should_run_daily_report(slot_hour=20)
+
+    assert should_run is False
+    assert "outside" in reason
+
+
+@pytest.mark.asyncio
+async def test_morning_slot_still_uses_today():
+    tz = ZoneInfo("Asia/Tehran")
+    morning = datetime(2026, 11, 14, 9, 30, tzinfo=tz)
+
+    with (
+        patch("scripts.run_once.local_now", return_value=morning),
+        patch("scripts.run_once.SessionLocal") as mock_session_local,
+    ):
+        mock_session = AsyncMock()
+        mock_session.scalar.return_value = None
+        mock_session_local.return_value.__aenter__.return_value = mock_session
+
+        should_run, _reason = await should_run_daily_report(slot_hour=8)
+
+    assert should_run is True
+    assert slot_report_date(8, morning) == date(2026, 11, 14)
+
+
+@pytest.mark.asyncio
+async def test_previous_day_published_slot_is_not_claimed_again(slot_table):
+    """Reproduces the bug: the dedup key must be yesterday's slot, not today's."""
+    tz = ZoneInfo("Asia/Tehran")
+    late = datetime(2026, 11, 16, 0, 42, tzinfo=tz)
+    slot_table[(date(2026, 11, 15), 20)] = {
+        "status": "published",
+        "claimed_at": None,
+        "message_ids": [7],
+    }
+
+    with (
+        patch("scripts.run_once.local_now", return_value=late),
+        patch("scripts.run_once.SessionLocal") as mock_session_local,
+    ):
+        mock_session = AsyncMock()
+        mock_session.scalar.return_value = None
+        mock_session_local.return_value.__aenter__.return_value = mock_session
+
+        should_run, reason = await should_run_daily_report(slot_hour=20)
+
+    assert should_run is False
+    assert "already published" in reason
+
+
+def test_evening_slot_belongs_to_its_own_day_on_consecutive_days():
+    tz = ZoneInfo("Asia/Tehran")
+    assert slot_report_date(20, datetime(2026, 11, 16, 0, 42, tzinfo=tz)) == date(2026, 11, 15)
+    assert slot_report_date(20, datetime(2026, 11, 17, 0, 42, tzinfo=tz)) == date(2026, 11, 16)
 
 
 @pytest.mark.asyncio

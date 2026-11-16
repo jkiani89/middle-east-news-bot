@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_, distinct, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -10,12 +10,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.number_check import safe_check_numbers
 from app.ai.persian_lint import lint_persian_output
 from app.ai.provider import BaseAIProvider, get_ai_provider, is_retryable_ai_error
-from app.ai.summarizer import PROMPT_VERSION, analyze_article, analyze_perspectives
+from app.ai.summarizer import (
+    MODEL_BODY_CHAR_LIMIT,
+    PROMPT_VERSION,
+    analyze_article,
+    analyze_perspectives,
+)
 from app.collectors.rss_collector import fetch_article_full_text, fetch_feed
 from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, ArticleEvent, Event, JobLog, Source, Summary
 from app.editorial.perspectives import load_orientations, orientation_for
+from app.editorial.prefilter import prefilter_analysis
 from app.editorial.regions import has_middle_east_nexus, is_primary_actor
 from app.editorial.topics import match_primary_topic
 from app.processors.event_matcher import EventMatcher
@@ -256,6 +262,72 @@ async def _publish_immediate_safely(analysis: ImmediateAnalysis, admin_only: boo
         return False
 
 
+def article_age_hours(
+    published_at: datetime | None,
+    collected_at: datetime | None = None,
+    now: datetime | None = None,
+) -> float:
+    """Age of an article in hours, from publication time when it is known (Phase Y-9).
+
+    ``COALESCE(published_at, collected_at)`` is the reference: a stale publication
+    date keeps governing even when the row was collected minutes ago (a feed that
+    re-serves week-old stories), while a future ``published_at`` (a broken feed
+    clock) counts as age 0 instead of a negative age.
+    """
+    moment = now or datetime.now(UTC)
+    reference = published_at or collected_at
+    if reference is None:
+        return 0.0
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=UTC)
+    return max(0.0, (moment - reference).total_seconds() / 3600.0)
+
+
+def article_reference_at():
+    """SQL reference timestamp for freshness: publication time, else collection time."""
+    return func.coalesce(Article.published_at, Article.collected_at)
+
+
+def freshness_cutoff(now: datetime | None = None) -> datetime:
+    """The oldest reference timestamp still worth an AI call."""
+    return (now or datetime.now(UTC)) - timedelta(hours=settings.article_max_age_hours)
+
+
+async def expire_stale_collected(
+    session: AsyncSession,
+    *,
+    now: datetime | None = None,
+    dry_run: bool = False,
+) -> tuple[int, float | None]:
+    """Park collected articles past the age limit as ``expired`` (one statement).
+
+    Returns ``(expired_count, oldest_age_hours)``. The write is a single UPDATE of
+    ``status`` only, so it is reversible and never loses the article. A dry run only
+    measures the queue and writes nothing.
+    """
+    moment = now or datetime.now(UTC)
+    cutoff = freshness_cutoff(moment)
+    reference = article_reference_at()
+
+    oldest = await session.scalar(
+        select(func.max(reference)).where(Article.status == "collected")
+    )
+    oldest_age: float | None = None
+    if isinstance(oldest, datetime):
+        oldest_age = round(article_age_hours(oldest, oldest, moment), 1)
+
+    if dry_run:
+        return 0, oldest_age
+
+    result = await session.execute(
+        update(Article)
+        .where(Article.status == "collected", reference < cutoff)
+        .values(status="expired")
+    )
+    rowcount = getattr(result, "rowcount", 0)
+    return (rowcount if isinstance(rowcount, int) and rowcount > 0 else 0), oldest_age
+
+
 def build_processing_query(limit: int):
     """Select articles eligible for AI analysis.
 
@@ -263,7 +335,12 @@ def build_processing_query(limit: int):
     articles that still have attempts left (``failed`` with
     ``attempt_count < ai_max_attempts``). Articles that exhausted their
     attempts are never selected again.
+
+    Phase Y-9: only articles within ``article_max_age_hours`` qualify, and the queue
+    drains newest-first, so a backlog cannot keep feeding stale stories into the
+    bulletin while today's news waits behind it.
     """
+    reference = article_reference_at()
     return (
         select(Article)
         .where(
@@ -273,12 +350,12 @@ def build_processing_query(limit: int):
                     Article.status == "failed",
                     Article.attempt_count < settings.ai_max_attempts,
                 ),
-            )
+            ),
+            reference >= freshness_cutoff(),
         )
         .order_by(
             Article.attempt_count.asc(),
-            Article.last_attempt_at.asc().nullsfirst(),
-            Article.collected_at.asc(),
+            reference.desc(),
         )
         .limit(limit)
     )
@@ -335,6 +412,7 @@ async def process_collected_articles(
     session: AsyncSession,
     limit: int = 50,
     provider: BaseAIProvider | None = None,
+    queue_stats: dict[str, object] | None = None,
 ) -> int:
     """Process unanalyzed articles from database with AI Provider.
 
@@ -354,6 +432,21 @@ async def process_collected_articles(
     """
     global _circuit_breaker_tripped
     _circuit_breaker_tripped = False
+
+    # Phase Y-9 (A4): drain the stale tail of the queue before selecting anything. A
+    # dry run performs the same measurement but writes nothing.
+    expired_now, oldest_age = await expire_stale_collected(
+        session, dry_run=settings.immediate_publish_dry_run
+    )
+    if queue_stats is not None:
+        queue_stats["expired_now"] = expired_now
+        queue_stats["oldest_age_h"] = oldest_age
+    if expired_now:
+        logger.info(
+            "Expired %d collected article(s) older than %d hours; they will not reach the model.",
+            expired_now,
+            settings.article_max_age_hours,
+        )
 
     res = await session.scalars(build_processing_query(limit))
     articles_list = res.all() if hasattr(res, "all") else list(res)
@@ -387,6 +480,11 @@ async def process_collected_articles(
         immediate_admin_only = False
 
         await _hydrate_article_body(article)
+        # Phase Y-11: cheap, log-only relevance check over exactly the text the model
+        # is about to see. It never rejects, changes a status or adds a model call.
+        prefilter = prefilter_analysis(
+            article.title or "", (article.original_text or "")[:MODEL_BODY_CHAR_LIMIT]
+        )
 
         try:
             result = await analyze_article(
@@ -445,6 +543,7 @@ async def process_collected_articles(
         payload_dict["persian_lint"] = lint_persian_output(
             result.headline_fa, result.summary_fa
         )
+        payload_dict["prefilter"] = prefilter
         if result.prompt_meta:
             payload_dict["normalization"] = result.prompt_meta.get("normalization")
             payload_dict["glossary"] = result.prompt_meta.get("glossary")
@@ -701,6 +800,9 @@ async def collect_new_articles(session: AsyncSession) -> int:
                 logger.debug("Skipping duplicate article: %s (%s)", item["title"], item["canonical_url"])
                 continue
 
+            # Phase Y-9 (A2): a story past the age limit is stored as 'expired' rather
+            # than skipped, so the dedup indexes refuse to insert it on the next run.
+            insert_age = article_age_hours(item.get("published_at"))
             article = Article(
                 source_id=source.id,
                 title=item["title"],
@@ -711,7 +813,7 @@ async def collect_new_articles(session: AsyncSession) -> int:
                 published_at=item["published_at"],
                 content_hash=item["content_hash"],
                 text_source=item.get("text_source", "rss_summary"),
-                status="collected",
+                status="expired" if insert_age > settings.article_max_age_hours else "collected",
             )
             try:
                 async with session.begin_nested():
@@ -735,10 +837,28 @@ async def collect_and_process(provider: BaseAIProvider | None = None):
         session.add(log)
         await session.flush()
         try:
-            await collect_new_articles(session)
+            inserted = await collect_new_articles(session)
 
             # Process collected articles adhering strictly to status filtering
-            count = await process_collected_articles(session, limit=settings.max_articles_per_batch, provider=provider)
+            queue_stats: dict[str, object] = {}
+            count = await process_collected_articles(
+                session,
+                limit=settings.max_articles_per_batch,
+                provider=provider,
+                queue_stats=queue_stats,
+            )
+            # Phase Y-9 (A5): one line per run makes the queue measurable.
+            pending = await session.scalar(
+                select(func.count(Article.id)).where(Article.status == "collected")
+            )
+            oldest_age = queue_stats.get("oldest_age_h")
+            logger.info(
+                "Queue: inserted=%d collected=%d expired_now=%d oldest_age_h=%s",
+                inserted,
+                pending if isinstance(pending, int) else 0,
+                queue_stats.get("expired_now", 0),
+                f"{oldest_age:.1f}" if isinstance(oldest_age, (int, float)) else "—",
+            )
             if last_batch_stopped_by_circuit_breaker():
                 log.status = "stopped_unavailable"
             else:

@@ -1254,3 +1254,34 @@ thread داخلی SDK با `wait_for` لغو نمی‌شود و در پس‌زم
 ### نتایج (خام)
 - محلی (Python 3.12، بدون Postgres): `472 passed, 17 skipped, 3 warnings` (17 skip همان تست‌های نیازمند PostgreSQL است؛ CI آن‌ها را اجرا می‌کند).
 - `ruff check` روی فایل‌های تغییرکرده: `All checks passed!`.
+
+---
+
+## [2026-11-16] تازگی صف، تاریخ نوبت و پیش‌فیلتر فقط‌لاگ (Phases Y-9, Y-10, Y-11)
+
+داده تولید نشان داد پردازش ~۶۲۸ مقاله عقب است، انتخاب «قدیمی‌ترین‌اول» بود و بولتن ۱۶ نوامبر خبر ۱۴ نوامبر داشت. هر سه تغییر بدون مایگریشن، وابستگی جدید یا فراخوانی خارجی انجام شد.
+
+### Y-9 — تازگی صف
+- `ARTICLE_MAX_AGE_HOURS` (پیش‌فرض ۲۴) در `app/config.py` و نگاشت `vars.ARTICLE_MAX_AGE_HOURS || '24'` در `cron.yml`.
+- عمر = `COALESCE(published_at, collected_at)` نسبت به اکنون. `published_at` آینده (ساعت خراب فید) عمر ۰ می‌دهد و `published_at` قدیمی با `collected_at` تازه هم همان قدیمی را ملاک می‌گیرد؛ هر دو تست شده‌اند.
+- هنگام درج، خبر قدیمی‌تر از حد با `status='expired'` **ذخیره** می‌شود (نه رد) تا dedup دوباره درجش نکند. تأیید شد `status` هیچ `CHECK`/`Enum` ندارد (فقط `String(30)`؛ جست‌وجوی `CheckConstraint` در `alembic/versions` و `models.py` خالی بود).
+- `build_processing_query`: فیلتر تازگی + ترتیب `attempt_count ASC, COALESCE(published_at, collected_at) DESC`؛ شرط retry و `ai_max_attempts` دست‌نخورده.
+- `expire_stale_collected`: یک `UPDATE` واحد روی `status` برای `collected`های کهنه، در ابتدای هر اجرای پردازش؛ در dry-run فقط اندازه‌گیری می‌کند و نمی‌نویسد. لاگ هر اجرا: `Queue: inserted=… collected=… expired_now=… oldest_age_h=…`.
+- ترتیب جدید یعنی retryها (attempt_count ≥ ۱) پس از مقالات تازه می‌آیند؛ همان رفتار قبلی نسبت به تلاش‌ها، ولی اگر ورودی روزانه از ۳۰ بیشتر بماند، مقالهٔ failedِ تازه تا پایان عمرش دوباره تلاش نمی‌شود — محدودیت ثبت‌شده.
+
+### Y-10 — تاریخ نوبت و جبران دیرکرد
+- `latest_slot_start`/`slot_report_date` در `daily_report.py`: نوبتی که دیروز شروع شده، تاریخ دیروز را می‌گیرد. `report_window` بدون تاریخ صریح از همین تابع استفاده می‌کند، و `should_run_daily_report` برای `report_date`، کلید `bulletin_slots` و dedup همان تاریخ را به کار می‌برد.
+- `SLOT_GRACE_HOURS` پیش‌فرض ۳→۶ (config و `cron.yml` با `vars.SLOT_GRACE_HOURS || '6'`)؛ کلمپ ۱..۱۱ دست‌نخورده.
+- تست بازتولید باگ: نوبت ۲۰ منتشرشده در ۱۵ نوامبر، اجرای ۰۰:۴۲ روز ۱۶ نباید دوباره claim شود؛ با کد قبلی کلید روز ۱۶ بررسی می‌شد.
+
+### Y-11 — پیش‌فیلتر فقط‌لاگ
+- `app/editorial/prefilter.py`: بررسی واژگانی عنوان+متن (همان برش ۱۶٬۰۰۰ نویسه‌ای مدل) روی کشورها/شهرها/آبراه‌های `regions.py` و کشورها/بازیگران/مکان‌های `topics.json`. نتیجه در `ai_payload['prefilter']` = `{would_reject, reason}`؛ هیچ رد، تغییر وضعیت یا فراخوانی مدل اضافه‌ای ندارد.
+- `docs/sql/prefilter_stats.sql`: ماتریس `would_reject` در برابر `is_relevant` واقعی مدل + نرخ منفی کاذب.
+- کارایی روی ۱۶KB: میانه ۲۳٫۶ms برای متن بدون نام منطقه‌ای (اسکن کامل) و ۸٫۷ms با برخورد زودهنگام.
+
+### تست‌ها
+`tests/test_queue_freshness.py` (۱۳ تست Y-9)، `tests/test_prefilter.py` (۵ تست Y-11)، چهار تست Y-10 در `tests/test_run_once.py`، تست پیش‌فیلتر بدون فراخوانی اضافی در `tests/test_number_flag.py`، و به‌روزرسانی `test_config` (پیش‌فرض‌های ۶/۲۴) و assertion ترتیب در `test_pipeline_resilience`.
+
+### نتایج (خام)
+- محلی (بدون Postgres): `494 passed, 17 skipped, 3 warnings` — ۱۷ skip همان تست‌های PostgreSQL است که در CI اجرا می‌شوند.
+- `ruff check app scripts tests`: `All checks passed!`.

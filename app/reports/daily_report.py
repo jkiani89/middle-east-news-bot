@@ -125,6 +125,25 @@ def current_slot_hour(now: datetime | None = None) -> int:
     return due[-1] if due else slots[-1]
 
 
+def latest_slot_start(now: datetime, slot_hour: int) -> datetime:
+    """The most recent start of ``slot_hour`` at or before ``now`` (Phase Y-10).
+
+    A run that catches up at 00:42 for the 20:00 slot belongs to *yesterday's* slot:
+    its window is 08:00-20:00 of the previous day, and its report_date must say so.
+    """
+    start = now.replace(hour=slot_hour, minute=0, second=0, microsecond=0)
+    if start > now:
+        start -= timedelta(days=1)
+    return start
+
+
+def slot_report_date(slot_hour: int, now: datetime | None = None) -> date:
+    """The report date a briefing slot belongs to, using the most recent start."""
+    tz = ZoneInfo(settings.timezone)
+    moment = now or datetime.now(tz)
+    return latest_slot_start(moment, slot_hour).date()
+
+
 def report_window(
     report_date: date | None = None,
     slot_hour: int | None = None,
@@ -138,7 +157,11 @@ def report_window(
     """
     tz = ZoneInfo(settings.timezone)
     if report_date is None:
-        report_date = datetime.now(tz).date()
+        # Phase Y-10: without an explicit date, a slot's window belongs to the day
+        # the slot actually started, not to the calendar day of this late run.
+        report_date = (
+            slot_report_date(slot_hour) if slot_hour is not None else datetime.now(tz).date()
+        )
 
     if slot_hour is None:
         end_hour = settings.daily_report_hour

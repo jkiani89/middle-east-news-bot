@@ -68,8 +68,11 @@ jobs:
       # Publish the briefing of the slot that just came due (08:00/20:00 Tehran). A slot
       # stays publishable for SLOT_GRACE_HOURS after it starts, so a late run still ships it.
       SCHEDULED_BRIEFINGS: 'true'
-      SLOT_GRACE_HOURS: '3'
+      SLOT_GRACE_HOURS: ${{ vars.SLOT_GRACE_HOURS || '6' }}
       REPORT_SLOTS: '8,20'
+      # Phase Y-9: articles older than this many hours are stored as 'expired' and
+      # never sent to the model, so the queue cannot grow without bound.
+      ARTICLE_MAX_AGE_HOURS: ${{ vars.ARTICLE_MAX_AGE_HOURS || '24' }}
       # A manual run usually happens after the slot's window closed; naming the slot
       # lets it report on that slot's window instead of the one that is now due.
       REPORT_SLOT_HOUR: ${{ inputs.slot_hour }}

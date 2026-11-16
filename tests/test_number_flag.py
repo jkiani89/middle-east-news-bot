@@ -230,6 +230,40 @@ async def test_number_check_does_not_add_model_calls(monkeypatch: pytest.MonkeyP
     assert provider.calls_by_purpose["schema_repair"] == 0
 
 
+@pytest.mark.asyncio
+async def test_prefilter_is_recorded_without_changing_the_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Y-11: the cheap check is stored in ai_payload and costs no extra model call."""
+    analysis = _analysis(GROUNDED_HEADLINE, GROUNDED_SUMMARY)
+    monkeypatch.setattr(pipeline, "_hydrate_article_body", AsyncMock(return_value=None))
+    monkeypatch.setattr(pipeline, "_count_event_sources", AsyncMock(return_value=1))
+    monkeypatch.setattr(pipeline, "_refresh_event_perspectives", AsyncMock(return_value=None))
+    monkeypatch.setattr(pipeline, "_publish_immediate_safely", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        pipeline,
+        "EventMatcher",
+        lambda: SimpleNamespace(
+            match_or_create_event=AsyncMock(
+                return_value=SimpleNamespace(
+                    event_id=10, is_new_event=True, match_type="initial", confidence=0.9
+                )
+            )
+        ),
+    )
+    provider = MockAIProvider(canned_response=analysis.model_dump(mode="json"))
+    article = _article()
+
+    await pipeline.process_collected_articles(FakeSession([article]), provider=provider)
+
+    assert article.status == "summarized"
+    assert article.ai_payload["prefilter"] == {
+        "would_reject": True,
+        "reason": "no_regional_mention",
+    }
+    assert provider.calls_by_purpose["analysis"] == 1
+
+
 def _patch_checker_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the numeric checker raise, as a malformed input would."""
 
