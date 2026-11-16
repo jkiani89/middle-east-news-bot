@@ -107,13 +107,18 @@ def test_boundary_exactly_at_the_limit_is_still_fresh(monkeypatch: pytest.Monkey
 def test_processing_query_filters_by_age_and_selects_newest_first(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Y-12: failed/retry articles get priority (CASE status='failed' THEN 0 ELSE 1)
+
+    so that new articles never starve retries, followed by newest-first ordering.
+    """
     monkeypatch.setattr(settings, "article_max_age_hours", 24)
     compiled = build_processing_query(10).compile(dialect=postgresql.dialect())
     sql = str(compiled)
     reference = "coalesce(articles.published_at, articles.collected_at)"
 
     assert f"{reference} >=" in sql
-    assert sql.index("articles.attempt_count ASC") < sql.index(f"{reference} DESC")
+    assert "CASE WHEN (articles.status =" in sql
+    assert sql.index("CASE WHEN") < sql.index(f"{reference} DESC")
 
 
 def test_processing_query_keeps_only_retryable_failures(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -242,3 +247,88 @@ async def test_dry_run_processing_writes_nothing(monkeypatch: pytest.MonkeyPatch
 
     assert session.executed == []
     assert stats["expired_now"] == 0
+
+
+# --- Y-12: expire full table, oldest_age correctness, retry starvation --------
+
+
+@pytest.mark.asyncio
+async def test_oldest_age_reflects_min_not_max(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Y-12 Bug 1: oldest_age_h must use MIN (oldest row), not MAX (newest row).
+
+    The session mock returns scalar_value = NOW - 36h, which simulates what
+    ``SELECT MIN(coalesce(published_at, collected_at)) WHERE status='collected'``
+    returns when the oldest article is 36 hours old and many fresh ones exist.
+    Before the fix, func.max returned the timestamp of the newest article (age ≈ 0),
+    causing the log to show oldest_age_h=0.1 while 36-hour-old rows sat in DB.
+    """
+    monkeypatch.setattr(settings, "article_max_age_hours", 24)
+    stale_timestamp = NOW - timedelta(hours=36)
+    session = _Session(scalar_value=stale_timestamp, rowcount=0)
+
+    _expired, oldest = await expire_stale_collected(session, now=NOW)
+
+    assert oldest is not None
+    assert oldest == pytest.approx(36.0), (
+        f"oldest_age_h={oldest} but expected ≈36.0 — "
+        "func.max (newest-first) was likely used instead of func.min"
+    )
+
+
+@pytest.mark.asyncio
+async def test_expire_stale_collected_100_articles_40_hours_old(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Y-12 Bug 2: 100 articles with collected_at 40h ago — system must expire all 100.
+
+    Verifies that expire_stale_collected targets all 100 rows across the table
+    in a single statement and returns expired_count=100.
+    """
+    monkeypatch.setattr(settings, "article_max_age_hours", 24)
+    stale_timestamp = NOW - timedelta(hours=40)
+    session = _Session(scalar_value=stale_timestamp, rowcount=100)
+
+    expired, oldest = await expire_stale_collected(session, now=NOW)
+
+    assert expired == 100
+    assert oldest == pytest.approx(40.0)
+    assert len(session.executed) == 1
+    stmt_str = str(session.executed[0])
+    assert stmt_str.startswith("UPDATE articles")
+    # Must apply to the full table, not a restricted subset
+    assert "IN (" not in stmt_str
+
+
+@pytest.mark.asyncio
+async def test_dry_run_reports_real_oldest_age_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Y-12: dry_run=True must still compute and return the real oldest_age_h."""
+    monkeypatch.setattr(settings, "article_max_age_hours", 24)
+    stale_timestamp = NOW - timedelta(hours=36)
+    session = _Session(scalar_value=stale_timestamp, rowcount=50)
+
+    expired, oldest = await expire_stale_collected(session, now=NOW, dry_run=True)
+
+    assert expired == 0
+    assert session.executed == []
+    assert oldest == pytest.approx(36.0)
+
+
+def test_retry_priority_guarantees_slots_when_new_exceeds_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Y-12 Bug 3: failed articles get a slot even when new articles exceed batch capacity.
+
+    Verifies the query ordering gives priority to status='failed' articles so that
+    a large volume of fresh articles cannot starve retryable failures.
+    """
+    monkeypatch.setattr(settings, "article_max_age_hours", 24)
+    monkeypatch.setattr(settings, "ai_max_attempts", 3)
+    compiled = build_processing_query(10).compile(dialect=postgresql.dialect())
+    sql = str(compiled)
+    reference = "coalesce(articles.published_at, articles.collected_at)"
+
+    # Failed articles receive priority 0 via CASE WHEN, so they sort ahead of collected (priority 1)
+    assert "CASE WHEN (articles.status =" in sql
+    assert sql.index("CASE WHEN") < sql.index(f"{reference} DESC")

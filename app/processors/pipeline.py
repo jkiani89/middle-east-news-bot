@@ -3,7 +3,7 @@ import logging
 import time
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, distinct, func, or_, select, update
+from sqlalchemy import and_, case, distinct, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -304,13 +304,21 @@ async def expire_stale_collected(
     Returns ``(expired_count, oldest_age_hours)``. The write is a single UPDATE of
     ``status`` only, so it is reversible and never loses the article. A dry run only
     measures the queue and writes nothing.
+
+    Y-12: ``oldest_age_h`` now reflects the *oldest* (minimum reference timestamp)
+    row across the full ``articles`` table where ``status='collected'``, not the
+    newest. ``func.min`` gives us the article furthest back in time; ``func.max``
+    would give the most-recently-collected row (age ≈ 0), which is the bug that
+    caused the log to show ``oldest_age_h=0.1`` while 36-hour-old rows sat in the DB.
     """
     moment = now or datetime.now(UTC)
     cutoff = freshness_cutoff(moment)
     reference = article_reference_at()
 
+    # Y-12 fix: MIN of the reference timestamp across the whole collected queue
+    # gives the article that has been waiting longest (highest age).
     oldest = await session.scalar(
-        select(func.max(reference)).where(Article.status == "collected")
+        select(func.min(reference)).where(Article.status == "collected")
     )
     oldest_age: float | None = None
     if isinstance(oldest, datetime):
@@ -331,14 +339,18 @@ async def expire_stale_collected(
 def build_processing_query(limit: int):
     """Select articles eligible for AI analysis.
 
-    Fresh articles (``collected``) come first, followed by transiently failed
-    articles that still have attempts left (``failed`` with
-    ``attempt_count < ai_max_attempts``). Articles that exhausted their
-    attempts are never selected again.
+    Y-12: Gives failed/retry articles priority over fresh articles to prevent
+    Retry Starvation.
 
-    Phase Y-9: only articles within ``article_max_age_hours`` qualify, and the queue
-    drains newest-first, so a backlog cannot keep feeding stale stories into the
-    bulletin while today's news waits behind it.
+    When new articles (``collected``, ``attempt_count=0``) exceed batch capacity,
+    a simple ``attempt_count ASC`` sort puts all new articles first and starves
+    transiently failed articles (``failed``, ``attempt_count >= 1``) until they
+    age out and expire.
+
+    By ordering with ``CASE WHEN status = 'failed' THEN 0 ELSE 1 END ASC``,
+    any retryable failed articles are served first before fresh articles fill
+    the remainder of the batch, guaranteeing slots for retries.
+    Within each group, articles drain newest-first via ``reference DESC``.
     """
     reference = article_reference_at()
     return (
@@ -354,7 +366,7 @@ def build_processing_query(limit: int):
             reference >= freshness_cutoff(),
         )
         .order_by(
-            Article.attempt_count.asc(),
+            case((Article.status == "failed", 0), else_=1).asc(),
             reference.desc(),
         )
         .limit(limit)
