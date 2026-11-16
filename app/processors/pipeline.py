@@ -749,6 +749,10 @@ async def process_collected_articles(
                     result, source_name, article.original_url
                 )
                 immediate_analysis.verification_status = verification_status
+                if content_quality:
+                    immediate_analysis.content_quality = content_quality.get("status", "full_text")
+                    immediate_analysis.content_quality_fa = content_quality.get("label_fa", "متن کامل")
+                    immediate_analysis.is_insufficient = content_quality.get("is_insufficient", False)
                 # High-impact single-source stories go to the admin chat only (fake-news guard).
                 immediate_admin_only = result.importance >= 4 and source_count < 2
 

@@ -550,6 +550,9 @@ class ImmediateAnalysis:
     category: str | None = None
     countries: list[str] = field(default_factory=list)
     actors: list[str] = field(default_factory=list)
+    content_quality: str = "full_text"
+    content_quality_fa: str = "متن کامل"
+    is_insufficient: bool = False
 
     @classmethod
     def from_analysis_result(cls, result: Any, source_name: str, source_url: str) -> ImmediateAnalysis:
@@ -590,6 +593,8 @@ def format_immediate_analysis(analysis: ImmediateAnalysis) -> str:
         "",
         f"✅ راستی‌آزمایی: {esc(verification_fa)}",
     ]
+    if analysis.is_insufficient:
+        lines.append(f"⚠️ کیفیت محتوا: <b>{esc(analysis.content_quality_fa)}</b> (گزارش اولیه / نیازمند تکمیل جزئیات)")
     if analysis.source_url:
         lines.append(f"🔗 منبع: <a href=\"{esc(analysis.source_url)}\">{esc(analysis.source_name)}</a>")
     else:

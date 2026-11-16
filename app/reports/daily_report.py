@@ -653,6 +653,8 @@ def format_persian_daily_report(
                 lines.append(f"   ▫️ درجه اهمیت: {stars} ({importance}/5) | حوزه: {cat} [{event_type}]")
                 lines.append(f"   ▫️ جغرافیا و بازیگران: {geo} | {acts}")
                 lines.append(f"   ▫️ خلاصه گزیده: {summary_txt}")
+                if item.get("is_insufficient"):
+                    lines.append(f"   ▫️ کیفیت محتوا: ⚠️ {item.get('content_quality_fa', 'اطلاعات ناکافی')} (گزارش اولیه / نیازمند تکمیل جزئیات)")
                 lines.extend(perspective_lines(item, as_html=False))
                 lines.append(f"   ▫️ راستی‌آزمایی: {verification}")
                 lines.append(f"   ▫️ منبع اصلی: {primary_src} ⟵ {primary_u}")
@@ -717,6 +719,8 @@ def format_persian_daily_report(
                 else:
                     lines.append(f"  • {headline} ({stars})")
                     lines.append(f"    - خلاصه: {summary_txt}")
+                    if item.get("is_insufficient"):
+                        lines.append(f"    - کیفیت محتوا: ⚠️ {item.get('content_quality_fa', 'اطلاعات ناکافی')}")
                     lines.extend(perspective_lines(item, as_html=False))
                     lines.append(f"    - راستی‌آزمایی: {verification} | منبع: {primary_src}")
                     if primary_u:
