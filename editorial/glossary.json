@@ -26,6 +26,38 @@
       "source_forms": ["European Union", "EU", "الاتحاد الأوروبي"],
       "variants_fa": [],
       "review_required": false
+    },
+    {
+      "id": "vladimir-putin",
+      "kind": "person",
+      "canonical_fa": "ولادیمیر پوتین",
+      "source_forms": ["Putin", "Vladimir Putin", "بوتين", "بوتن", "فلاديمير بوتين", "فلادیمیر بوتین"],
+      "variants_fa": ["پوتین"],
+      "review_required": false
+    },
+    {
+      "id": "xi-jinping",
+      "kind": "person",
+      "canonical_fa": "شی جین‌پینگ",
+      "source_forms": ["Xi Jinping", "شي جين بينغ", "شي جينبينغ", "شی جین پینگ", "شی جینپینگ"],
+      "variants_fa": ["شی جینپینگ"],
+      "review_required": false
+    },
+    {
+      "id": "shenzhen",
+      "kind": "place",
+      "canonical_fa": "شنژن",
+      "source_forms": ["Shenzhen", "شنجن", "شنزن"],
+      "variants_fa": [],
+      "review_required": false
+    },
+    {
+      "id": "apec",
+      "kind": "organization",
+      "canonical_fa": "اپک",
+      "source_forms": ["APEC", "أبيك", "ابيك"],
+      "variants_fa": [],
+      "review_required": false
     }
   ]
 }
