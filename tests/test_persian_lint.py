@@ -24,3 +24,15 @@ def test_clean_persian_text_records_no_finding() -> None:
     assert report["findings"] == []
     assert report["blocking"] is False
     assert report["watchlist"] == list(SUSPECT_WORDS)
+
+
+def test_tahjir_is_in_watchlist_and_recorded() -> None:
+    """Y-12 language polish: 'تهجیر' (Arabic displaced/displacement) is flagged in log."""
+    assert "تهجیر" in SUSPECT_WORDS
+    report = lint_persian_output(
+        "گزارش عملیات در کرانه باختری",
+        "این اقدام منجر به تهجیر هزاران فلسطینی شده است.",
+    )
+    assert report["mode"] == "log"
+    assert report["blocking"] is False
+    assert any(item["word"] == "تهجیر" and item["count"] == 1 for item in report["findings"])

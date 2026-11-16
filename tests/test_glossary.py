@@ -189,3 +189,53 @@ def test_block_respects_the_character_cap(tmp_path: Path) -> None:
 
 def test_build_block_is_empty_without_entries() -> None:
     assert build_glossary_block([]).startswith("راهنمای املای نام‌ها")
+
+
+# --- Language Polish & Bulletin Consistency -----------------------------------
+
+
+def test_approved_leaders_and_places_injected_only_when_mentioned() -> None:
+    """Verifies approved glossary entries are injected only when source forms match."""
+    glossary = load_glossary()
+
+    # Mentioning Putin in various forms (Latin, Persian, Arabic transliterations)
+    assert [e.id for e in match_entries(glossary, "Statement by Vladimir Putin today")] == ["vladimir-putin"]
+    assert [e.id for e in match_entries(glossary, "التقى بوتين بنظيره")] == ["vladimir-putin"]
+    assert [e.id for e in match_entries(glossary, "دیدار با فلادیمیر بوتین")] == ["vladimir-putin"]
+    assert [e.id for e in match_entries(glossary, "تصريحات بوتن الأخيرة")] == ["vladimir-putin"]
+
+    # Mentioning Xi Jinping in various forms
+    assert [e.id for e in match_entries(glossary, "Xi Jinping addressed the forum")] == ["xi-jinping"]
+    assert [e.id for e in match_entries(glossary, "أجرى شي جين بينغ محادثات")] == ["xi-jinping"]
+    assert [e.id for e in match_entries(glossary, "سخنرانی شی جین پینگ در پکن")] == ["xi-jinping"]
+
+    # Mentioning Shenzhen in various forms
+    assert [e.id for e in match_entries(glossary, "Conference held in Shenzhen")] == ["shenzhen"]
+    assert [e.id for e in match_entries(glossary, "في مدينة شنجن الصينية")] == ["shenzhen"]
+    assert [e.id for e in match_entries(glossary, "شهر شنزن")] == ["shenzhen"]
+
+    # Mentioning APEC in various forms
+    assert [e.id for e in match_entries(glossary, "Leaders summit at APEC")] == ["apec"]
+    assert [e.id for e in match_entries(glossary, "قمة منتدى أبيك")] == ["apec"]
+
+    # Clean text with no mention of these names injects nothing
+    assert match_entries(glossary, "گزارش وضعیت آب و هوای تهران و بغداد") == []
+
+
+def test_arabic_clitics_on_approved_names() -> None:
+    """Attached Arabic conjunctions/prepositions (والـ, بالـ, و, ب) match correctly."""
+    glossary = load_glossary()
+
+    # Putin with Arabic clitics
+    assert [e.id for e in match_entries(glossary, "وصرح والبوتين في المؤتمر")] == ["vladimir-putin"]
+    assert [e.id for e in match_entries(glossary, "والتقى بالبوتين في موسكو")] == ["vladimir-putin"]
+    assert [e.id for e in match_entries(glossary, "موقف وبوتن واضح")] == ["vladimir-putin"]
+
+    # APEC with clitics
+    assert [e.id for e in match_entries(glossary, "المشاركة بالأبيك")] == ["apec"]
+    assert [e.id for e in match_entries(glossary, "والأبيك منتدى اقتصادي")] == ["apec"]
+
+
+def test_max_entries_limit_remains_12() -> None:
+    """The 12-entry cap per prompt must be strictly preserved."""
+    assert MAX_ENTRIES_PER_PROMPT == 12
