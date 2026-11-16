@@ -84,6 +84,22 @@ def normalize_letters(text: str) -> str:
     return (text or "").translate(_TO_PERSIAN)
 
 
+def normalize_structured_field(text: str) -> str:
+    """Letter-only rewrite for stored names, places and event titles (Phase Y-8).
+
+    The same mapping the headline/summary pass uses (ي→ی, ك→ک, ى→ی) is applied to
+    fields that are saved verbatim, so one actor does not appear with Arabic letters
+    in ``actors`` and Persian letters in the summary. Nothing else changes: Latin
+    names and «ة» stay exactly as the model wrote them.
+    """
+    return normalize_letters(text)
+
+
+def normalize_structured_list(values: list[str]) -> list[str]:
+    """Apply :func:`normalize_structured_field` to every entry of a structured list."""
+    return [normalize_structured_field(str(value)) for value in values or []]
+
+
 def normalize_pair(headline: str, summary: str) -> tuple[str, str, dict]:
     """Decide for headline+summary together, then normalise both or neither.
 

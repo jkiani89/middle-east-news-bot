@@ -1225,3 +1225,32 @@ thread داخلی SDK با `wait_for` لغو نمی‌شود و در پس‌زم
 - محلی (Python 3.12، بدون Postgres): `455 passed, 17 skipped, 3 warnings`.
 - `ruff check app tests scripts/dev_only/replay_number_check.py`: `All checks passed!`.
 - کارایی (۱۶٬۰۰۰ نویسه، میانهٔ ۷ اجرا): خبر عربی ۴۸ms (۲۶۶۱ واژه)، چسبیده/مثنی‌سنگین ۵۰ms (۱۹۰۵ واژه)، سخت‌ترین حالت پشت‌سرهم ۵۷ms (۳۰۴۸ واژه)؛ سقف تست ۱۰۰۰ms.
+
+---
+
+## [2026-11-16] کیفیت بولتن: نرمال‌سازی نام‌های ساختاریافته، برچسب پوشش و دیده‌بان واژگان (Phase Y-8)
+
+بازخورد بولتن ۲۰۲۶/۱۱/۱۶ سه ایراد کم‌ریسک نشان داد؛ هر سه بدون دست‌زدن به `EDITORIAL_SYSTEM_PROMPT` و `PROMPT_VERSION` (R-09) انجام شد.
+
+### ۱) نرمال‌سازی نام‌های ساختاریافته (پیش از ذخیره)
+- `app/ai/persian_text.py`: `normalize_structured_field` / `normalize_structured_list` همان نگاشت حروفی تیتر/خلاصه (ي→ی، ك→ک، ى→ی) را اعمال می‌کنند؛ «ة» و نام‌های لاتین دست‌نخورده می‌مانند.
+- `app/ai/summarizer.py`: `_normalize_structured_names` بلافاصله پس از اعتبارسنجی مدل روی `event_title`، `countries`، `actors` و `location` اجرا می‌شود، پس `Event` و `ai_payload` از همان ابتدا مقدار نرمال‌شده می‌گیرند؛ نیازی به تغییر EventMatcher یا مسیرهای flag نبود.
+- نمونه‌های واقعی: «ماركو روبيو»→«مارکو روبیو»، «آل ثاني»→«آل ثانی»، «نضال أبو زيد»→«نضال أبو زید»؛ `Marco Rubio` بدون تغییر.
+
+### ۲) برچسب «بی‌واکنش» از formatter می‌آمد
+- بررسی: عبارت در `app/reports/daily_report.py` (`perspective_lines`) و `app/reports/pdf_report.py` (`_perspective_blocks`) ساخته می‌شد، نه در `PERSPECTIVES_SYSTEM_PROMPT`. پرامپت فقط `silent_parties_fa` را از مدل می‌گیرد و دربارهٔ «واکنش» داوری نمی‌کند.
+- بنابراین برچسب هر دو خروجی به «پوشش‌نشده در منابع پایش‌شده» تغییر کرد؛ هیچ‌جا ادعا نمی‌شود طرف واکنشی نداشته است. متن `PERSPECTIVES_SYSTEM_PROMPT` و `PROMPT_VERSION` تغییر نکرد.
+
+### ۳) دیده‌بان فقط‌لاگ
+- `app/ai/persian_lint.py`: فهرست `SUSPECT_WORDS` (مسرح، مظله، تقویض، انتقای، سریال) و `lint_persian_output` که فقط شمارش را برمی‌گرداند (`mode="log"`, `blocking=False`).
+- `app/processors/pipeline.py`: نتیجه در `ai_payload["persian_lint"]` کنار `number_check` ثبت می‌شود؛ هیچ وضعیت، پرچم یا مسدودسازی تغییر نمی‌کند و فراخوانی مدل اضافه نمی‌شود. یک هفته دادهٔ این فیلد مبنای تصمیم برای تغییر پرامپت اصلی است.
+
+### تست‌های جدید
+- `tests/test_ai_phase_y.py`: `test_structured_field_rewrites_arabic_letters_only` و `test_structured_names_are_normalised_before_saving` (خروجی `analyze_article` با provider ساختگی).
+- `tests/test_persian_lint.py`: ثبت واژه از فهرست با `blocking=False` و نبود یافته در متن تمیز.
+- `tests/test_number_flag.py`: `test_persian_lint_is_recorded_without_blocking` (مقاله `summarized` می‌ماند و منتشر می‌شود) و `test_persian_lint_stays_quiet_on_clean_output`.
+- `tests/test_perspectives.py`: assertion برچسب به متن جدید به‌روزرسانی شد (رفتار خواسته‌شده تغییر کرده بود، نه تست برای فرار از شکست).
+
+### نتایج (خام)
+- محلی (Python 3.12، بدون Postgres): `472 passed, 17 skipped, 3 warnings` (17 skip همان تست‌های نیازمند PostgreSQL است؛ CI آن‌ها را اجرا می‌کند).
+- `ruff check` روی فایل‌های تغییرکرده: `All checks passed!`.

@@ -179,6 +179,33 @@ async def test_grounded_numbers_stay_clean(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_persian_lint_is_recorded_without_blocking(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase Y-8: a watchlist word is logged in ai_payload and the article still publishes."""
+    article, _, publish = await _run(
+        monkeypatch,
+        mode="log",
+        analysis=_analysis(
+            GROUNDED_HEADLINE,
+            "در این گزارش «مسرح عملیات» و «مظله امنیتی» توصیف شده است.",
+        ),
+    )
+    assert article.status == "summarized"
+    lint = article.ai_payload["persian_lint"]
+    assert lint["mode"] == "log"
+    assert lint["blocking"] is False
+    assert {item["word"] for item in lint["findings"]} == {"مسرح", "مظله"}
+    publish.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_persian_lint_stays_quiet_on_clean_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    article, _, _ = await _run(
+        monkeypatch, mode="log", analysis=_analysis(GROUNDED_HEADLINE, GROUNDED_SUMMARY)
+    )
+    assert article.ai_payload["persian_lint"]["findings"] == []
+
+
+@pytest.mark.asyncio
 async def test_number_check_does_not_add_model_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     """Acceptance Y-1.7: the check is local, so the model is still called once per article."""
     analysis = _analysis(GROUNDED_HEADLINE, GROUNDED_SUMMARY)

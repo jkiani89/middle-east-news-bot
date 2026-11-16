@@ -8,7 +8,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
 
 from app.ai.number_check import MODEL_BODY_CHAR_LIMIT
-from app.ai.persian_text import ARABIC_ORTHOGRAPHY_LETTERS, normalize_pair
+from app.ai.persian_text import (
+    ARABIC_ORTHOGRAPHY_LETTERS,
+    normalize_pair,
+    normalize_structured_field,
+    normalize_structured_list,
+)
 from app.ai.provider import AIProviderError, BaseAIProvider, get_ai_provider
 from app.editorial.glossary import glossary_for_prompt
 
@@ -536,6 +541,28 @@ def _build_schema_repair_prompt(data: Any, exc: BaseException) -> str:
     )
 
 
+def _normalize_structured_names(analysis: NewsAnalysis) -> NewsAnalysis:
+    """Apply the headline/summary letter rewrite to the names saved with the event.
+
+    Phase Y-8: ``event_title``, ``countries``, ``actors`` and ``location`` are stored
+    as the model wrote them, so an Arabic-orthography proper noun (ي/ك/ى) survived
+    there while the summary already showed it in Persian letters. Only letters are
+    rewritten; Latin names and «ة» are untouched.
+    """
+    return analysis.model_copy(
+        update={
+            "event_title": normalize_structured_field(analysis.event_title),
+            "countries": normalize_structured_list(analysis.countries),
+            "actors": normalize_structured_list(analysis.actors),
+            "location": (
+                normalize_structured_field(analysis.location)
+                if analysis.location
+                else analysis.location
+            ),
+        }
+    )
+
+
 async def analyze_article(
     title: str,
     body: str,
@@ -592,6 +619,10 @@ async def analyze_article(
         )
         repaired_data, normalization_meta = _normalize_model_payload(repaired_data)
         analysis = NewsAnalysis.model_validate(repaired_data)
+
+    # Phase Y-8: the structured names are saved as-is, so they get the same letter
+    # rewrite the headline/summary already received.
+    analysis = _normalize_structured_names(analysis)
 
     # Phase Y-3 diagnostics; private attribute, recorded by the pipeline.
     analysis._prompt_meta = {**prompt_meta, "normalization": normalization_meta}

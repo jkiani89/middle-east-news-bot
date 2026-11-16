@@ -491,8 +491,10 @@ def perspective_lines(item: dict[str, Any], as_html: bool = True) -> list[str]:
     silent = [str(s).strip() for s in item.get("silent_parties_fa") or [] if str(s).strip()]
     if silent:
         joined = "، ".join(silent)
-        lines.append(f"      🔇 <b>بی‌واکنش:</b> {esc(joined)}" if as_html
-                     else f"      🔇 بی‌واکنش: {joined}")
+        lines.append(
+            f"      🔇 <b>پوشش‌نشده در منابع پایش‌شده:</b> {esc(joined)}" if as_html
+            else f"      🔇 پوشش‌نشده در منابع پایش‌شده: {joined}"
+        )
     return lines
 
 

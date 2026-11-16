@@ -7,6 +7,7 @@ from typing import Any, Literal
 import pytest
 from pydantic import ValidationError
 
+from app.ai.persian_text import normalize_structured_field
 from app.ai.provider import AIProviderError, BaseAIProvider
 from app.ai.summarizer import (
     EDITORIAL_SYSTEM_PROMPT,
@@ -175,6 +176,37 @@ async def test_untranslated_arabic_paragraph_is_still_rejected() -> None:
 
 
 # The trap the editor asked for: one Persian-specific letter must not rescue Arabic copy.
+def test_structured_field_rewrites_arabic_letters_only() -> None:
+    """Phase Y-8: the saved-name pass touches ي/ك/ى and nothing else."""
+    assert normalize_structured_field("ماركو روبيو") == "مارکو روبیو"
+    assert normalize_structured_field("آل ثاني") == "آل ثانی"
+    # Latin names, the Arabic «ة» and ordinary Persian text stay untouched.
+    assert normalize_structured_field("Marco Rubio") == "Marco Rubio"
+    assert normalize_structured_field("حماسة") == "حماسة"
+    # A name that carries Arabic ي is rewritten exactly like the Latin-free examples.
+    assert normalize_structured_field("نضال أبو زيد") == "نضال أبو زید"
+
+
+@pytest.mark.asyncio
+async def test_structured_names_are_normalised_before_saving() -> None:
+    """Phase Y-8: actors/countries/location/event_title get the letter rewrite."""
+    payload = {
+        **VALID,
+        "event_title": "لقاء ماركو روبيو مع آل ثاني",
+        "countries": ["قطر", "الولايات المتحدة"],
+        "actors": ["ماركو روبيو", "آل ثاني", "Marco Rubio"],
+        "location": "الدوحة",
+    }
+    provider = _SequenceProvider([payload])
+
+    analysis = await analyze_article("Title", "Body", "Source", provider=provider)
+
+    assert analysis.event_title == "لقاء مارکو روبیو مع آل ثانی"
+    assert analysis.actors == ["مارکو روبیو", "آل ثانی", "Marco Rubio"]
+    assert analysis.countries == ["قطر", "الولایات المتحدة"]
+    assert analysis.location == "الدوحة"
+
+
 @pytest.mark.asyncio
 async def test_arabic_paragraph_with_a_single_persian_letter_stays_rejected() -> None:
     arabic_with_ge = {
