@@ -23,7 +23,8 @@ def test_settings_default_values():
     assert settings.max_articles_per_batch == 30
     assert settings.min_importance == 2
     assert settings.min_summary_len_for_full_text == 800
-    assert settings.slot_grace_hours == 3
+    assert settings.slot_grace_hours == 6
+    assert settings.article_max_age_hours == 24
     assert settings.require_full_text_for_ai is True
 
 

@@ -36,7 +36,12 @@ from app.config import settings  # noqa: E402
 from app.database.connection import SessionLocal  # noqa: E402
 from app.database.models import DailyReport  # noqa: E402
 from app.processors.pipeline import collect_and_process  # noqa: E402
-from app.reports.daily_report import current_slot_hour, slot_label, slot_status  # noqa: E402
+from app.reports.daily_report import (  # noqa: E402
+    current_slot_hour,
+    latest_slot_start,
+    slot_label,
+    slot_status,
+)
 from app.scheduler.jobs import (  # noqa: E402
     cleanup_gemini_request_log,
     daily_report,
@@ -73,7 +78,6 @@ async def should_run_daily_report(
     """
     tz = ZoneInfo(settings.timezone)
     now_tz = local_now(tz)
-    today_date = now_tz.date()
     # A caller that names only the slot must still get that slot: falling back to the
     # legacy daily hour would silently check the 08:00 window for every slot.
     if target_hour is not None:
@@ -83,23 +87,28 @@ async def should_run_daily_report(
     else:
         effective_hour = settings.daily_report_hour
 
+    # Phase Y-10: a slot that started yesterday keeps yesterday's report_date for the
+    # claim, the window and the dedup check, so its bulletin is not mistaken for today's.
+    slot_start = latest_slot_start(now_tz, effective_hour) if slot_hour is not None else None
+    target_date = slot_start.date() if slot_start is not None else now_tz.date()
+
     async with SessionLocal() as session:
         db_report = await session.scalar(
-            select(DailyReport).where(DailyReport.report_date == today_date)
+            select(DailyReport).where(DailyReport.report_date == target_date)
         )
 
         if slot_hour is not None:
             label = slot_label(slot_hour)
             bulletins = (db_report.content or {}).get("bulletins", {}) if db_report else {}
             record = bulletins.get(label) or {}
-            state = await slot_status(session, today_date, slot_hour) or {}
+            state = await slot_status(session, target_date, slot_hour) or {}
             if state.get("status") == "published" or (
                 record.get("status") == "published" and record.get("message_ids")
             ):
-                return False, f"Briefing {label} for {today_date} already published."
+                return False, f"Briefing {label} for {target_date} already published."
             if state.get("status") == "in_flight":
                 return False, (
-                    f"Briefing {label} for {today_date} is in flight in another run "
+                    f"Briefing {label} for {target_date} is in flight in another run "
                     f"(claimed at {state.get('claimed_at')})."
                 )
 
@@ -110,7 +119,7 @@ async def should_run_daily_report(
             and bool(db_report.telegram_message_ids)
         ):
             msg_count = len(db_report.telegram_message_ids)
-            return False, f"Daily report for {today_date} already published ({msg_count} messages)."
+            return False, f"Daily report for {target_date} already published ({msg_count} messages)."
 
     if force:
         return True, "Forced via argument or environment variable."
@@ -129,10 +138,16 @@ async def should_run_daily_report(
         carry_hour = (window_end - 24 * 60) // 60
         window_label = f"{start_label} - {carry_hour:02d}:{window_end % 60:02d} (+1d)"
 
-    # Modulo keeps a window that crosses midnight working instead of silently ending at
-    # 24:00: with a 5-hour grace the 20:00 slot stays open until 01:00 next day.
-    minutes_since_window = (now_minutes - window_start) % (24 * 60)
-    inside_window = minutes_since_window < grace_hours * 60
+    # Phase Y-10: measure from the slot's real start, so a window that crosses
+    # midnight stays open for the slot that began yesterday (00:42 is 4h42 after
+    # yesterday's 20:00, not 20h42 before today's).
+    if slot_start is not None:
+        minutes_since_window = (now_tz - slot_start).total_seconds() / 60
+        inside_window = 0 <= minutes_since_window < grace_hours * 60
+    else:
+        # Modulo keeps a window that crosses midnight working instead of ending at 24:00.
+        minutes_since_window = (now_minutes - window_start) % (24 * 60)
+        inside_window = minutes_since_window < grace_hours * 60
 
     logger.info(
         "Slot decision: slot=%s, now=%s, grace=%sh -> publish=%s",

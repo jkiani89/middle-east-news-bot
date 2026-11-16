@@ -85,7 +85,12 @@ class Settings(BaseSettings):
     report_slots: str = "8,20"
     # A scheduled GitHub run can start late or be dropped entirely, so a slot stays
     # publishable for this many hours after its start instead of only during that hour.
-    slot_grace_hours: int = 3
+    # Phase Y-10: six hours covers a dropped 20:00 run plus the next collection cycle,
+    # and the window still closes before the following slot (clamped to 1..11).
+    slot_grace_hours: int = 6
+    # Phase Y-9: an article older than this (publication time, else collection time)
+    # is not worth an AI call. It is stored as 'expired' so dedup never re-inserts it.
+    article_max_age_hours: int = 24
     max_articles_per_batch: int = 30
     ai_max_attempts: int = 3  # attempts per article before a transient failure is final
     ai_max_consecutive_failures: int = 5  # stop a batch after this many transient AI errors in a row
