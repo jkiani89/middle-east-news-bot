@@ -391,6 +391,17 @@ async def fetch_report_items(
                 })
                 existing_urls.add(art.original_url)
 
+        cq = details_fa.get("content_quality")
+        if not cq and primary_art:
+            from app.editorial.content_quality import classify_content_quality
+
+            cq = classify_content_quality(
+                primary_art.title, primary_art.original_text, primary_art.text_source
+            )
+        cq_status = (cq or {}).get("status", "full_text")
+        cq_label_fa = (cq or {}).get("label_fa", "متن کامل")
+        cq_insufficient = (cq or {}).get("is_insufficient", False)
+
         item = {
             "event_id": event.id,
             "title": event.title,
@@ -407,6 +418,9 @@ async def fetch_report_items(
             "verification_status_fa": VERIFICATION_LABELS.get(
                 summary.verification_status, "نامشخص"
             ),
+            "content_quality": cq_status,
+            "content_quality_fa": cq_label_fa,
+            "is_insufficient": cq_insufficient,
             # Phase T-2: per-camp claims, kept as stored so the same event reads the
             # same way in the text bulletin and in the PDF.
             "perspectives": [
@@ -615,6 +629,8 @@ def format_persian_daily_report(
                 lines.append(f"   ▫️ درجه اهمیت: {stars} ({importance}/5) | حوزه: <b>{esc(cat)}</b> [{esc(event_type)}]")
                 lines.append(f"   ▫️ جغرافیا و بازیگران: {esc(geo)} | {esc(acts)}")
                 lines.append(f"   ▫️ خلاصه گزیده: {esc(summary_txt)}")
+                if item.get("is_insufficient"):
+                    lines.append(f"   ▫️ کیفیت محتوا: ⚠️ <b>{esc(item.get('content_quality_fa', 'اطلاعات ناکافی'))}</b> (گزارش اولیه / نیازمند تکمیل جزئیات)")
                 lines.extend(perspective_lines(item, as_html=True))
                 lines.append(f"   ▫️ راستی‌آزمایی: {esc(verification)}")
                 if primary_u:
@@ -682,6 +698,8 @@ def format_persian_daily_report(
                 if as_html:
                     lines.append(f"  • <b>{esc(headline)}</b> ({stars})")
                     lines.append(f"    - خلاصه: {esc(summary_txt)}")
+                    if item.get("is_insufficient"):
+                        lines.append(f"    - کیفیت محتوا: ⚠️ <b>{esc(item.get('content_quality_fa', 'اطلاعات ناکافی'))}</b>")
                     lines.extend(perspective_lines(item, as_html=True))
                     if primary_u:
                         lines.append(f"    - راستی‌آزمایی: {esc(verification)} | منبع: <a href=\"{esc(primary_u)}\">{esc(primary_src)}</a>")

@@ -239,3 +239,63 @@ def test_arabic_clitics_on_approved_names() -> None:
 def test_max_entries_limit_remains_12() -> None:
     """The 12-entry cap per prompt must be strictly preserved."""
     assert MAX_ENTRIES_PER_PROMPT == 12
+
+
+def test_similar_words_do_not_falsely_match() -> None:
+    """Verifies that word boundaries prevent false-positive matching on similar words/substrings."""
+    glossary = load_glossary()
+
+    # English words containing 'putin' or 'apec' as substrings
+    assert match_entries(glossary, "The committee is disputing the decision") == []
+    assert match_entries(glossary, "We are inputting the latest figures") == []
+    assert match_entries(glossary, "The primate is an ape in the wild") == []
+    assert match_entries(glossary, "The project operates at full capacity") == []
+    assert match_entries(glossary, "He managed to escape from custody") == []
+
+    # Persian/Arabic words with trailing or leading characters that are not valid clitics
+    assert match_entries(glossary, "کتابی درباره پوتینیسم و مکاتب سیاسی") == []
+    assert match_entries(glossary, "شنوندگان محترم رادیو") == []
+    assert match_entries(glossary, "روستای صبوتین در منطقه کوهستانی") == []
+
+
+def test_invalid_prefixes_do_not_falsely_match() -> None:
+    """Non-clitic letters attached to words must not trigger a match."""
+    glossary = load_glossary()
+
+    # Letters other than و, ب, ل attached as prefix
+    assert match_entries(glossary, "مبوتين") == []
+    assert match_entries(glossary, "تپوتین") == []
+    assert match_entries(glossary, "کاپک") == []
+
+
+def test_unapproved_entries_never_enter_prompt_block(tmp_path: Path) -> None:
+    """Unapproved entries (review_required=True) must never enter the prompt."""
+    from app.editorial.glossary import parse_glossary
+
+    raw_payload = {
+        "version": 1,
+        "entries": [
+            {
+                "id": "approved-leader",
+                "kind": "person",
+                "canonical_fa": "رهبر تأییدشده",
+                "source_forms": ["ApprovedLeader"],
+                "review_required": False,
+            },
+            {
+                "id": "unapproved-leader",
+                "kind": "person",
+                "canonical_fa": "رهبر تأییدنپذیرفته",
+                "source_forms": ["UnapprovedLeader"],
+                "review_required": True,
+            },
+        ],
+    }
+    p = tmp_path / "test_glossary.json"
+    import json
+    p.write_text(json.dumps(raw_payload), encoding="utf-8")
+    loaded = parse_glossary(raw_payload, p)
+
+    matched = match_entries(loaded, "ApprovedLeader and UnapprovedLeader met today")
+    assert [e.id for e in matched] == ["approved-leader"]
+    assert all(not e.review_required for e in matched)
