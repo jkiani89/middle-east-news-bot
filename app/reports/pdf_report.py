@@ -457,7 +457,12 @@ def _perspective_blocks(
         rows.append(
             [
                 Paragraph(_wrap_rtl(silent, styles["persp"], claim_width, pad=6), styles["persp"]),
-                Paragraph(_wrap_rtl("بی‌واکنش", styles["persp_label"], label_width, pad=6), styles["persp_label"]),
+                Paragraph(
+                    _wrap_rtl(
+                        "پوشش‌نشده در منابع پایش‌شده", styles["persp_label"], label_width, pad=6
+                    ),
+                    styles["persp_label"],
+                ),
             ]
         )
 

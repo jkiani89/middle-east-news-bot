@@ -129,7 +129,7 @@ def test_matrix_renders_camps_in_display_order_with_disagreement_and_silence():
     assert "مقایسه روایت‌ها" in lines
     assert lines.index("غربی") < lines.index("روسی") < lines.index("انصارالله")
     assert "نقاط اختلاف" in lines
-    assert "بی‌واکنش" in lines
+    assert "پوشش‌نشده در منابع پایش‌شده" in lines
     assert "هاآرتص" in lines
 
 

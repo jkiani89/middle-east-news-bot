@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.number_check import safe_check_numbers
+from app.ai.persian_lint import lint_persian_output
 from app.ai.provider import BaseAIProvider, get_ai_provider, is_retryable_ai_error
 from app.ai.summarizer import PROMPT_VERSION, analyze_article, analyze_perspectives
 from app.collectors.rss_collector import fetch_article_full_text, fetch_feed
@@ -439,6 +440,11 @@ async def process_collected_articles(
             mode=settings.number_check_mode,
         )
         payload_dict["number_check"] = number_check
+        # Phase Y-8: log-only watchlist for Arabic-flavoured Persian words. It never
+        # changes the status or blocks a publication.
+        payload_dict["persian_lint"] = lint_persian_output(
+            result.headline_fa, result.summary_fa
+        )
         if result.prompt_meta:
             payload_dict["normalization"] = result.prompt_meta.get("normalization")
             payload_dict["glossary"] = result.prompt_meta.get("glossary")
