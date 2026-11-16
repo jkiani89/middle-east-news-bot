@@ -36,3 +36,26 @@ def test_tahjir_is_in_watchlist_and_recorded() -> None:
     assert report["mode"] == "log"
     assert report["blocking"] is False
     assert any(item["word"] == "تهجیر" and item["count"] == 1 for item in report["findings"])
+
+
+def test_location_detection_headline_quote_narrative() -> None:
+    """Verifies that the occurrence location (headline, quote, narrative) is accurately recorded."""
+    # 1. Headline only
+    rep1 = lint_persian_output("مسرح عملیات در شمال", "هیچ اتفاق خاصی نیفتاد.")
+    f1 = next(item for item in rep1["findings"] if item["word"] == "مسرح")
+    assert f1["locations"] == ["headline"]
+
+    # 2. Quote only (inside Persian quotation marks «...»)
+    rep2 = lint_persian_output("عملیات جدید", "سخنگوی ارتش گفت: «تهجیر ساکنان ادامه نخواهد داشت».")
+    f2 = next(item for item in rep2["findings"] if item["word"] == "تهجیر")
+    assert f2["locations"] == ["quote"]
+
+    # 3. Narrative only (in summary outside quotes)
+    rep3 = lint_persian_output("عملیات جدید", "منابع محلی از تهجیر اجباری اهالی منطقه خبر دادند.")
+    f3 = next(item for item in rep3["findings"] if item["word"] == "تهجیر")
+    assert f3["locations"] == ["narrative"]
+
+    # 4. Both headline and quote
+    rep4 = lint_persian_output("سیاست تهجیر در منطقه", "او تأکید کرد: «تهجیر خط قرمز ماست».")
+    f4 = next(item for item in rep4["findings"] if item["word"] == "تهجیر")
+    assert sorted(f4["locations"]) == ["headline", "quote"]

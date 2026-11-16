@@ -11,6 +11,7 @@ editorial prompt is touched.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Words observed in real bulletins that a copy editor would rewrite.
@@ -23,15 +24,47 @@ SUSPECT_WORDS: tuple[str, ...] = (
     "تهجیر",
 )
 
+QUOTE_PATTERN = re.compile(r'[«"“\'](.*?)[»"”\']', re.DOTALL)
+
+
+def _find_locations(word: str, headline: str, summary: str) -> list[str]:
+    """Detect whether a watchlist word occurs in headline, quote, or general narrative."""
+    locations: list[str] = []
+    clean_h = headline or ""
+    clean_s = summary or ""
+
+    # 1. Check headline
+    if word in clean_h:
+        locations.append("headline")
+
+    # 2. Check quotes across summary and headline
+    quotes = QUOTE_PATTERN.findall(clean_h) + QUOTE_PATTERN.findall(clean_s)
+    in_quote = any(word in q for q in quotes)
+    if in_quote:
+        locations.append("quote")
+
+    # 3. Check narrative (summary body outside explicit quotes)
+    summary_sans_quotes = QUOTE_PATTERN.sub(" ", clean_s)
+    if word in summary_sans_quotes:
+        locations.append("narrative")
+
+    return locations
+
 
 def lint_persian_output(headline: str, summary: str) -> dict[str, Any]:
-    """Count watchlist words in one Persian output; report only, never block."""
+    """Count watchlist words in Persian output and report locations; report only, never block."""
     haystack = f"{headline or ''}\n{summary or ''}"
-    findings = [
-        {"word": word, "count": haystack.count(word)}
-        for word in SUSPECT_WORDS
-        if word in haystack
-    ]
+    findings = []
+    for word in SUSPECT_WORDS:
+        if word in haystack:
+            count = haystack.count(word)
+            locs = _find_locations(word, headline, summary)
+            findings.append({
+                "word": word,
+                "count": count,
+                "locations": locs,
+            })
+
     return {
         "mode": "log",
         "blocking": False,

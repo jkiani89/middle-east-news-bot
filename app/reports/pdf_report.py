@@ -511,6 +511,8 @@ def _item_flowables(
     ]
     if item.get("event_type"):
         meta_bits.append(f"کد رویداد: {item['event_type']}")
+    if item.get("is_insufficient"):
+        meta_bits.append(f"کیفیت محتوا: {item.get('content_quality_fa', 'اطلاعات ناکافی')}")
 
     geo_bits = [f"جغرافیا: {geography}"]
     if actors:

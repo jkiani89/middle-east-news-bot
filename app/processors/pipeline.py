@@ -20,6 +20,7 @@ from app.collectors.rss_collector import fetch_article_full_text, fetch_feed
 from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, ArticleEvent, Event, JobLog, Source, Summary
+from app.editorial.content_quality import classify_content_quality
 from app.editorial.perspectives import load_orientations, orientation_for
 from app.editorial.prefilter import prefilter_analysis
 from app.editorial.regions import has_middle_east_nexus, is_primary_actor
@@ -556,6 +557,10 @@ async def process_collected_articles(
             result.headline_fa, result.summary_fa
         )
         payload_dict["prefilter"] = prefilter
+        content_quality = classify_content_quality(
+            article.title, article.original_text, article.text_source
+        )
+        payload_dict["content_quality"] = content_quality
         if result.prompt_meta:
             payload_dict["normalization"] = result.prompt_meta.get("normalization")
             payload_dict["glossary"] = result.prompt_meta.get("glossary")
@@ -727,6 +732,7 @@ async def process_collected_articles(
                             "source": source_name,
                             "url": article.original_url,
                             "topic": topic.key if topic else None,
+                            "content_quality": content_quality,
                             "sources": [{
                                 "source": source_name,
                                 "url": article.original_url,
@@ -755,6 +761,10 @@ async def process_collected_articles(
                     result, source_name, article.original_url
                 )
                 immediate_analysis.verification_status = verification_status
+                if content_quality:
+                    immediate_analysis.content_quality = content_quality.get("status", "full_text")
+                    immediate_analysis.content_quality_fa = content_quality.get("label_fa", "متن کامل")
+                    immediate_analysis.is_insufficient = content_quality.get("is_insufficient", False)
                 # High-impact single-source stories go to the admin chat only (fake-news guard).
                 immediate_admin_only = result.importance >= 4 and source_count < 2
 
