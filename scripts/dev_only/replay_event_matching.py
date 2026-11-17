@@ -255,23 +255,28 @@ def run_sequential_replay(
                 and not ev.is_live_digest
             ]
 
+            # Find single best candidate by similarity score (identical to operational EventMatcher)
             for cand in active_cands:
                 sim = calculate_event_similarity(cand, analysis_data)
-                shared_actor = _has_shared_non_country_entity(
-                    cand.actors, cand.location,
-                    analysis_data.get("actors") or [], analysis_data.get("location")
-                )
-
-                qualifies = sim.total_score >= merge_threshold
-                if require_strict_gate:
-                    gate_passed = shared_actor or (sim.keywords_score >= keyword_threshold_x)
-                    qualifies = qualifies and gate_passed
-
-                if qualifies and sim.total_score > best_score:
+                if sim.total_score > best_score:
                     best_score = sim.total_score
                     best_candidate = cand
                     best_sim_score = sim
-                    best_shared_actor = shared_actor
+
+            # Gate verification on best candidate:
+            # Must meet merge_threshold (0.60). If require_strict_gate is enabled,
+            # must also pass shared_actor or keywords_score >= X.
+            # Rejection does NOT fall back to a lesser candidate.
+            if best_candidate and best_score >= merge_threshold:
+                best_shared_actor = _has_shared_non_country_entity(
+                    best_candidate.actors, best_candidate.location,
+                    analysis_data.get("actors") or [], analysis_data.get("location")
+                )
+                if require_strict_gate:
+                    gate_passed = best_shared_actor or (best_sim_score.keywords_score >= keyword_threshold_x)
+                    if not gate_passed:
+                        best_candidate = None
+                        best_score = 0.0
 
         # 2. Historical Follow-up candidate (>48h and <= follow_up_window_days)
         historical_start = ref_time - timedelta(days=follow_up_window_days)
@@ -290,20 +295,21 @@ def run_sequential_replay(
             ]
             for cand in hist_cands:
                 sim = calculate_event_similarity(cand, analysis_data)
-                shared_actor = _has_shared_non_country_entity(
-                    cand.actors, cand.location,
-                    analysis_data.get("actors") or [], analysis_data.get("location")
-                )
-                qualifies = sim.total_score >= follow_up_threshold
-                if require_strict_gate:
-                    gate_passed = shared_actor or (sim.keywords_score >= keyword_threshold_x)
-                    qualifies = qualifies and gate_passed
-
-                if qualifies and sim.total_score > best_hist_score:
+                if sim.total_score > best_hist_score:
                     best_hist_score = sim.total_score
                     best_hist_event = cand
                     best_hist_sim = sim
-                    best_hist_shared_actor = shared_actor
+
+            if best_hist_event and best_hist_score >= follow_up_threshold:
+                best_hist_shared_actor = _has_shared_non_country_entity(
+                    best_hist_event.actors, best_hist_event.location,
+                    analysis_data.get("actors") or [], analysis_data.get("location")
+                )
+                if require_strict_gate:
+                    gate_passed = best_hist_shared_actor or (best_hist_sim.keywords_score >= keyword_threshold_x)
+                    if not gate_passed:
+                        best_hist_event = None
+                        best_hist_score = 0.0
 
         if best_candidate and best_score >= merge_threshold:
             # Action: Merge into active event

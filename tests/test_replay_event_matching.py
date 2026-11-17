@@ -198,6 +198,58 @@ def test_sequential_replay_strict_gate_splits_unrelated():
     assert decs_p[1]["action"] == "create"
 
 
+def test_candidate_gate_rejection_no_fallback_to_lesser_candidate():
+    """Verify that when the best candidate by total_score fails the strict gate,
+
+    the algorithm does NOT fall back to a lesser candidate that happens to pass the gate.
+    It decisively rejects the merge and creates a new event.
+    """
+    now = datetime.now(UTC)
+    # Event 1: Syria, MIL, Syria, actors=['پلیس'], kw 'تحولات' -> score with art3 = 0.686
+    art1 = ArticleRecord(
+        id=1, source_name="S1", title="Field developments in Damascus", url="http://1",
+        collected_at=now - timedelta(hours=5),
+        ai_payload={
+            "event_title": "تحولات میدانی دمشق",
+            "categories": ["MIL"], "countries": ["سوریه"], "actors": ["پلیس"], "location": "سوریه",
+        },
+        db_event_id=1, is_live_digest=False, is_insufficient_data=False,
+    )
+    # Event 2: Iraq, MIL, actors=['نیروهای ویژه'], location Syria -> score with art3 = 0.670
+    art2 = ArticleRecord(
+        id=2, source_name="S2", title="Counter terrorism op", url="http://2",
+        collected_at=now - timedelta(hours=4),
+        ai_payload={
+            "event_title": "عملیات ضدتروریسم",
+            "categories": ["MIL"], "countries": ["عراق"], "actors": ["نیروهای ویژه"], "location": "سوریه",
+        },
+        db_event_id=2, is_live_digest=False, is_insufficient_data=False,
+    )
+    # Event 3 (Incoming Article):
+    # Matches art1 with higher score (0.686 > 0.670), but fails strict gate (no shared non-country actor, kw < 0.25).
+    # Matches art2 with lower score (0.670 >= 0.60) and shares actor 'نیروهای ویژه'.
+    art3 = ArticleRecord(
+        id=3, source_name="S3", title="New security developments", url="http://3",
+        collected_at=now - timedelta(hours=1),
+        ai_payload={
+            "event_title": "تحولات امنیتی جدید",
+            "categories": ["MIL"], "countries": ["سوریه"], "actors": ["نیروهای ویژه"], "location": "سوریه",
+        },
+        db_event_id=3, is_live_digest=False, is_insufficient_data=False,
+    )
+
+    # In Base rule: art3 merges into event 1 (highest score 0.686 > 0.670 >= 0.60)
+    map_base, evs_base, decs_base = run_sequential_replay([art1, art2, art3], require_strict_gate=False)
+    assert decs_base[2]["action"] == "merge"
+    assert decs_base[2]["event_id"] == evs_base[0].id
+
+    # In Proposed rule: art3 identifies event 1 as primary candidate. When event 1 fails gate,
+    # it does NOT fall back to merge into event 2; it cleanly creates a new event!
+    map_p, evs_p, decs_p = run_sequential_replay([art1, art2, art3], require_strict_gate=True, keyword_threshold_x=0.25)
+    assert decs_p[2]["action"] == "create"
+    assert len(evs_p) == 3
+
+
 def test_chaining_detection_and_metrics():
     now = datetime.now(UTC)
     art1 = ArticleRecord(
