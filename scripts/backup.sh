@@ -54,10 +54,41 @@ else
     docker compose exec -T postgres pg_dump -U "$DB_USER" -Fc "$DB_NAME" > "$TMP_PATH"
 fi
 
+if [ ! -s "$TMP_PATH" ]; then
+    echo "ERROR: pg_dump produced an empty file; refusing to upload it." >&2
+    rm -f "$TMP_PATH"
+    exit 1
+fi
+local_size="$(wc -c < "$TMP_PATH" | tr -d ' ')"
+echo "--- Dump size: ${local_size} bytes ---"
+# Machine-readable identity of this run's artifact, consumed by
+# scripts/migrate_with_backup.sh so the gate verifies this dump and not an older one.
+echo "BACKUP_FILENAME=${FILENAME}"
+echo "BACKUP_SIZE=${local_size}"
+
+# The dump must be readable by pg_restore before it counts as a backup: a truncated or
+# half-written file uploads fine and only fails on the day it is needed.
+echo "--- Validating dump with pg_restore --list ---"
+if ! docker run --rm -i postgres:18-alpine pg_restore --list < "$TMP_PATH" > /dev/null; then
+    echo "ERROR: pg_restore --list rejected ${FILENAME}; refusing to upload an unreadable dump." >&2
+    rm -f "$TMP_PATH"
+    exit 1
+fi
+
 echo "--- Uploading to ${BACKUP_REMOTE}:${BACKUP_BUCKET}/db/${FILENAME} ---"
 rclone copy "$TMP_PATH" "${BACKUP_REMOTE}:${BACKUP_BUCKET}/db/"
 
-# 2. Cleanup local temp file
+# 2. Verify the object landed at the destination with the same size, then clean up.
+#    rclone copy already performs its post-copy checksum check by default (B2 stores
+#    SHA1), so this guards the object's identity/presence; it does not re-download it.
+remote_size="$(rclone size --json "${BACKUP_REMOTE}:${BACKUP_BUCKET}/db/${FILENAME}" | sed -n 's/.*"bytes":\([0-9]*\).*/\1/p')"
+if [ "${remote_size:-}" != "$local_size" ]; then
+    echo "ERROR: uploaded object size (${remote_size:-unknown}) does not match the local dump (${local_size}) at ${BACKUP_REMOTE}:${BACKUP_BUCKET}/db/${FILENAME}." >&2
+    rm -f "$TMP_PATH"
+    exit 1
+fi
+echo "--- Verified remote object: ${BACKUP_REMOTE}:${BACKUP_BUCKET}/db/${FILENAME} (${local_size} bytes) ---"
+
 rm -f "$TMP_PATH"
 echo "--- Local temp file removed ---"
 

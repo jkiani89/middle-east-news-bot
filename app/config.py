@@ -95,6 +95,11 @@ class Settings(BaseSettings):
     ai_max_attempts: int = 3  # attempts per article before a transient failure is final
     ai_max_consecutive_failures: int = 5  # stop a batch after this many transient AI errors in a row
     ai_request_timeout_seconds: int = 30  # hard ceiling for a single model call (SDK retries can hang for minutes)
+    # A perspective matrix sends up to max_perspective_articles excerpts in one prompt and
+    # is structurally slower than single-article analysis, so it gets its own ceiling
+    # instead of the 30-second analysis one that timed out in production.
+    ai_perspectives_timeout_seconds: int = 75
+    ai_perspectives_retries: int = 1  # at most one extra attempt, and only after a timeout
     immediate_publish_enabled: bool = True
     immediate_publish_only_new_events: bool = True
     immediate_publish_max_per_run: int = 5
@@ -145,6 +150,12 @@ class Settings(BaseSettings):
         the next slot and publish the wrong bulletin.
         """
         return min(max(int(value), 1), 11)
+
+    @field_validator("ai_perspectives_retries")
+    @classmethod
+    def _clamp_perspectives_retries(cls, value: int) -> int:
+        """At most one extra attempt: a second retry only doubles latency."""
+        return min(max(int(value), 0), 1)
 
     @field_validator("database_url", mode="before")
     @classmethod
