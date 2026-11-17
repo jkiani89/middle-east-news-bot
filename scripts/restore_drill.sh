@@ -64,11 +64,11 @@ if [ -n "${DATABASE_URL:-}" ]; then
     die "DATABASE_URL is set; the drill refuses to run with a production connection string in the environment"
 fi
 
-TARGET_HOST="${DRILL_PGHOST:-127.0.0.1}"
-TARGET_PORT="${DRILL_PGPORT:-5432}"
-TARGET_DB="${DRILL_PGDATABASE:-$ALLOWED_DB}"
-TARGET_USER="${DRILL_PGUSER:-drill}"
-TARGET_PASSWORD="${DRILL_PGPASSWORD:-drill_password}"
+TARGET_HOST="${DRILL_PGHOST-127.0.0.1}"
+TARGET_PORT="${DRILL_PGPORT-5432}"
+TARGET_DB="${DRILL_PGDATABASE-$ALLOWED_DB}"
+TARGET_USER="${DRILL_PGUSER-drill}"
+TARGET_PASSWORD="${DRILL_PGPASSWORD-drill_password}"
 
 for host in "${PGHOST:-}" "${TARGET_HOST}"; do
     case "$host" in
@@ -79,6 +79,24 @@ done
 
 [ "$TARGET_DB" = "$ALLOWED_DB" ] || die "refusing database '${TARGET_DB}'; only ${ALLOWED_DB} is allowed"
 [ -n "$TARGET_USER" ] || die "DRILL_PGUSER must not be empty"
+[ -n "$TARGET_PASSWORD" ] || die "DRILL_PGPASSWORD must not be empty"
+
+[[ "$TARGET_PORT" =~ ^-?[0-9]+$ ]] || die "DRILL_PGPORT must be numeric, got '${TARGET_PORT}'"
+if [ "$TARGET_PORT" -lt 1 ] || [ "$TARGET_PORT" -gt 65535 ]; then
+    die "DRILL_PGPORT must be between 1 and 65535, got '${TARGET_PORT}'"
+fi
+
+# libpq also reads these; a service file or an override port could silently point the
+# drill at a different server, so they are refused or removed rather than inherited.
+if [ -n "${PGPORT:-}" ] && [ "$PGPORT" != "$TARGET_PORT" ]; then
+    die "PGPORT='${PGPORT}' conflicts with DRILL_PGPORT='${TARGET_PORT}'; refusing to guess a server"
+fi
+for redirect in PGSERVICE PGSERVICEFILE PGPASSFILE PGTARGETSESSIONATTRS; do
+    if [ -n "${!redirect:-}" ]; then
+        die "refusing to run with ${redirect} set; it can redirect libpq away from the local drill database"
+    fi
+done
+unset PGHOST PGPORT PGSERVICE PGSERVICEFILE PGPASSFILE PGDATABASE PGUSER PGPASSWORD PGTARGETSESSIONATTRS
 
 REMOTE="${BACKUP_REMOTE:-b2}"
 [ "$REMOTE" = 'b2' ] || die "refusing remote '${REMOTE}'; this drill only reads from b2"
@@ -108,19 +126,38 @@ psql_query() {
 }
 
 drop_drill_database() {
-    # Best effort: the runner may already be shutting down, and this must never touch B2.
-    psql_query postgres "DROP DATABASE IF EXISTS \"${TARGET_DB}\" WITH (FORCE);" >/dev/null 2>&1 || true
+    # This must never touch B2: it only talks to the loopback drill server.
+    psql_query postgres "DROP DATABASE IF EXISTS \"${TARGET_DB}\" WITH (FORCE);" >/dev/null 2>&1
 }
 
+CLEANUP_STARTED=0
+
+# $1 is the exit status to finish with: $? for EXIT, 130 for INT, 143 for TERM. Signals must
+# never look like success, and a second entry (e.g. INT arriving while the first cleanup is
+# still dropping the database) must not repeat the work.
 cleanup() {
-    status=$?
-    trap - EXIT
-    drop_drill_database
+    status="${1:-$?}"
+    if [ "$CLEANUP_STARTED" -eq 1 ]; then
+        exit "$status"
+    fi
+    CLEANUP_STARTED=1
+
+    if drop_drill_database; then
+        log '--- Cleanup: drill database dropped ---'
+    else
+        log 'ERROR: could not drop the drill database; it lives only on this disposable runner' >&2
+        # A cleanup that did not happen must not be reported as a passing drill.
+        if [ "$status" -eq 0 ]; then
+            status=1
+        fi
+    fi
     rm -rf "$WORKDIR"
-    log "--- Cleanup: drill database dropped, downloaded dump removed from the runner ---"
+    log '--- Cleanup: downloaded dump removed from the runner ---'
     exit "$status"
 }
-trap cleanup EXIT INT TERM
+trap 'cleanup $?' EXIT
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
 
 # ---------------------------------------------------------------------------
 # 4. Readiness of the throwaway server
