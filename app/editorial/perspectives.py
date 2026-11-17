@@ -150,7 +150,7 @@ def group_perspectives(
 
 
 _COMPOUND_SPLIT_RE = re.compile(
-    r"\s*(?:[,،;/|–—\-]|(?:\s+(?:and|&|و)\s+))\s*",
+    r"\s*(?:[,،;/|]|\s+[-–—]\s+|\s+(?:and|&|و)\s+)\s*",
     re.IGNORECASE,
 )
 
@@ -160,8 +160,10 @@ def extract_non_country_entities(article_dict: dict[str, Any]) -> set[str]:
 
     Sovereign countries (regional & global) and strategic waterways/seas are removed.
     Compound locations (e.g. 'Tokyo, Japan', 'Japan and South Korea', 'توکیو، ژاپن',
-    'ژاپن و کره جنوبی', 'قاهره / مصر') are decomposed so that country segments are stripped
-    while specific cities/facilities are retained as matching entities.
+    'قاهره / مصر', 'Beirut - Lebanon') and compound actors (e.g. 'Iran and Houthis',
+    'ایران و انصارالله', 'Iran and Russia') are decomposed so that country segments
+    are stripped while valid non-state actors and specific cities are retained.
+    Hyphenated geographical names (e.g. 'Port-au-Prince', 'Tel-Aviv') are preserved intact.
     Approved glossary spellings are canonicalized so spelling variants (e.g. بوتین / پوتین)
     match as one entity.
     """
@@ -178,13 +180,18 @@ def extract_non_country_entities(article_dict: dict[str, Any]) -> set[str]:
             continue
         if is_country(norm) or is_waterway(norm):
             continue
-        # If actor itself is compound countries (e.g. 'ایران و روسیه', 'US and UK')
+
         parts = [p.strip() for p in _COMPOUND_SPLIT_RE.split(canon) if p.strip()]
-        if len(parts) > 1 and all(
-            is_country(normalize_place(p)) or is_waterway(normalize_place(p)) for p in parts
-        ):
-            continue
-        entities.add(norm)
+        if len(parts) > 1:
+            for part in parts:
+                p_norm = normalize_place(part)
+                if not p_norm or len(p_norm) < 2:
+                    continue
+                if is_country(p_norm) or is_waterway(p_norm):
+                    continue
+                entities.add(p_norm)
+        else:
+            entities.add(norm)
 
     if location:
         canon_loc = canonicalize_approved_names(str(location))
@@ -192,7 +199,7 @@ def extract_non_country_entities(article_dict: dict[str, Any]) -> set[str]:
         if norm_loc and len(norm_loc) >= 2:
             # If the entire location string is a country or waterway, discard it immediately
             if not (is_country(norm_loc) or is_waterway(norm_loc)):
-                # Decompose compound locations (e.g. 'Tokyo, Japan', 'ژاپن و کره جنوبی')
+                # Decompose compound locations (e.g. 'Tokyo, Japan', 'ژاپن و کره جنوبی', 'Port-au-Prince, Haiti')
                 parts = [p.strip() for p in _COMPOUND_SPLIT_RE.split(canon_loc) if p.strip()]
                 if len(parts) > 1:
                     for part in parts:
