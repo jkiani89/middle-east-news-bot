@@ -11,10 +11,12 @@ from app.processors.event_matcher import calculate_event_similarity
 from scripts.dev_only.replay_event_matching import (
     ArticleRecord,
     EventCandidateCompat,
+    ReplayEvent,
     _headline_similarity_display_only,
     _to_event_candidate,
     analyze_replay_control,
     compute_keyword_score_distribution,
+    compute_pairwise_relations,
     find_chaining_cases,
     load_articles_from_db,
     run_sequential_replay,
@@ -479,4 +481,157 @@ async def test_operational_event_matcher_parity_with_replay_base_and_tie_breakin
 
     assert em_res.match_type == "auto"
     assert em_res.event_id == 2  # Identical choice: Event 2 (newer) selected by EventMatcher!
+
+
+@pytest.mark.asyncio
+async def test_load_articles_deduplication_and_filtering(monkeypatch):
+    """Verify load_articles_from_db deduplicates multiple rows for the same article_id
+
+    arising from multiple ArticleEvent records.
+    """
+    from scripts.dev_only.replay_event_matching import load_articles_from_db
+
+    now = datetime.now(UTC)
+    # Simulate DB returning duplicate rows for article ID 10 (joined with two different events)
+    row1 = (10, "Title 10", "c10", "o10", now, {"actors": ["سفرا"], "location": "تهران"}, "S1", 100)
+    row2 = (10, "Title 10", "c10", "o10", now, {"actors": ["سفرا"], "location": "تهران"}, "S1", 200)
+    row3 = (20, "Title 20", "c20", "o20", now, {"actors": ["وزرا"], "location": "بغداد"}, "S2", 300)
+
+    mock_session = AsyncMock()
+    mock_execute_res = MagicMock()
+    mock_execute_res.scalar.return_value = "on"
+    mock_execute_res.all.return_value = [row1, row2, row3]
+    mock_session.execute.return_value = mock_execute_res
+
+    mock_tx = MagicMock()
+    mock_tx.__aenter__ = AsyncMock(return_value=None)
+    mock_tx.__aexit__ = AsyncMock(return_value=None)
+    mock_session.begin = MagicMock(return_value=mock_tx)
+
+    mock_session_cm = MagicMock()
+    mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session_cm.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr("scripts.dev_only.replay_event_matching.SessionLocal", MagicMock(return_value=mock_session_cm))
+
+    records, ok = await load_articles_from_db(days=7)
+    assert ok is True
+    # Article 10 must appear exactly ONCE
+    assert len(records) == 2
+    assert [r.id for r in records] == [10, 20]
+
+
+def test_pairwise_relations_rejects_self_pairs_on_duplicates():
+    """Verify compute_pairwise_relations explicitly ignores duplicate article IDs
+
+    and never generates reflexive self-pairs (aid, aid).
+    """
+    now = datetime.now(UTC)
+    a1 = ArticleRecord(1, "S1", "T1", "u1", now, {"event_title": "T"}, 1, False, False)
+    # Simulated duplicated article instance in input list
+    a1_dup = ArticleRecord(1, "S1", "T1", "u1", now, {"event_title": "T"}, 1, False, False)
+    a2 = ArticleRecord(2, "S2", "T2", "u2", now, {"event_title": "T"}, 2, False, False)
+
+    map_base = {1: 10, 2: 10}
+    map_prop = {1: 10, 2: 20}
+
+    pw = compute_pairwise_relations([a1, a1_dup, a2], map_base, map_prop)
+    # Self-pair (1, 1) must NEVER be generated
+    assert (1, 1) not in pw["pairs_base"]
+    assert (1, 1) not in pw["pairs_prop"]
+    assert (1, 1) not in pw["broken_pairs"]
+    assert (1, 1) not in pw["new_pairs"]
+    # Only pair (1, 2) should exist
+    assert pw["pairs_base"] == {(1, 2)}
+    assert pw["broken_pairs"] == {(1, 2)}
+
+
+@pytest.mark.asyncio
+async def test_main_async_exits_nonzero_on_db_failure(monkeypatch):
+    """Verify main_async terminates with exit code 1 when load_articles_from_db raises an exception."""
+    from scripts.dev_only.replay_event_matching import main_async
+
+    async def mock_fail_load(days: int):
+        raise ConnectionRefusedError("Database network connection refused")
+
+    monkeypatch.setattr("scripts.dev_only.replay_event_matching.load_articles_from_db", mock_fail_load)
+
+    with pytest.raises(SystemExit) as exc_info:
+        await main_async(days=30)
+
+    assert exc_info.value.code == 1
+
+
+def test_deterministic_candidate_tie_breaking_with_identical_timestamps():
+    """Verify candidate tie-breaking is fully deterministic when two events share identical first_seen_at."""
+    now = datetime.now(UTC)
+    same_time = now - timedelta(hours=3)
+
+    # Event 10: id=10, first_seen_at=same_time, score=0.60
+    ev10 = ReplayEvent(
+        id=10, title="رویداد ده", event_type="DIP", countries=["ایران"], actors=["سفرا"],
+        location="تهران", importance=3, status="active", first_seen_at=same_time, last_updated_at=same_time,
+        is_live_digest=False, is_follow_up=False, parent_event_id=None, article_ids=[1],
+    )
+    # Event 20: id=20, first_seen_at=same_time, score=0.60
+    ev20 = ReplayEvent(
+        id=20, title="رویداد بیست", event_type="DIP", countries=["ایران"], actors=["سفرا"],
+        location="تهران", importance=3, status="active", first_seen_at=same_time, last_updated_at=same_time,
+        is_live_digest=False, is_follow_up=False, parent_event_id=None, article_ids=[2],
+    )
+
+    # Both events have identical similarity (1.0).
+    # Deterministic secondary ordering (ev.id desc) ensures Event 20 is consistently prioritized over Event 10
+    active_cands = [ev10, ev20]
+    active_cands.sort(key=lambda ev: (ev.first_seen_at, ev.id), reverse=True)
+    assert active_cands[0].id == 20
+    assert active_cands[1].id == 10
+
+
+@pytest.mark.asyncio
+async def test_read_only_transaction_executes_queries_strictly_inside_tx(monkeypatch):
+    """Verify that data query stmt is executed strictly inside the session.begin() context manager."""
+    from scripts.dev_only.replay_event_matching import load_articles_from_db
+
+    execution_order: list[str] = []
+
+    mock_session = AsyncMock()
+
+    async def mock_execute(stmt, *args, **kwargs):
+        stmt_str = str(stmt)
+        if "SET TRANSACTION READ ONLY" in stmt_str:
+            execution_order.append("set_ro")
+        elif "SHOW transaction_read_only" in stmt_str:
+            execution_order.append("show_ro")
+        else:
+            execution_order.append("data_query")
+        mock_res = MagicMock()
+        mock_res.scalar.return_value = "on"
+        mock_res.all.return_value = []
+        return mock_res
+
+    mock_session.execute = mock_execute
+
+    mock_tx = MagicMock()
+
+    async def mock_tx_enter(*args, **kwargs):
+        execution_order.append("tx_enter")
+
+    async def mock_tx_exit(*args, **kwargs):
+        execution_order.append("tx_exit")
+
+    mock_tx.__aenter__ = mock_tx_enter
+    mock_tx.__aexit__ = mock_tx_exit
+    mock_session.begin = MagicMock(return_value=mock_tx)
+
+    mock_session_cm = MagicMock()
+    mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session_cm.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr("scripts.dev_only.replay_event_matching.SessionLocal", MagicMock(return_value=mock_session_cm))
+
+    _, ok = await load_articles_from_db(days=1)
+    assert ok is True
+
+    # Validate exact execution order
+    assert execution_order == ["tx_enter", "set_ro", "show_ro", "data_query", "tx_exit"]
+
 

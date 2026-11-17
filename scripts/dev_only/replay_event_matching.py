@@ -153,13 +153,15 @@ async def load_articles_from_db(days: int = 7) -> tuple[list[ArticleRecord], boo
                 .outerjoin(ArticleEvent, ArticleEvent.article_id == Article.id)
                 .where(
                     Article.collected_at >= start_utc,
-                    Article.status != "flagged",
+                    Article.status.not_in(["flagged", "flagged_for_review", "rejected", "expired", "failed"]),
+                    Article.ai_payload.is_not(None),
                 )
-                .order_by(Article.collected_at.asc())
+                .order_by(Article.collected_at.asc(), Article.id.asc())
             )
 
             rows = (await session.execute(stmt)).all()
 
+    seen_article_ids: set[int] = set()
     records: list[ArticleRecord] = []
     empty_actor_count = 0
     empty_location_count = 0
@@ -167,6 +169,9 @@ async def load_articles_from_db(days: int = 7) -> tuple[list[ArticleRecord], boo
 
     for r in rows:
         art_id, title, can_u, orig_u, coll_at, p_load, src_name, ev_id = r
+        if art_id in seen_article_ids:
+            continue
+        seen_article_ids.add(art_id)
         payload = p_load if isinstance(p_load, dict) else {}
         url = can_u or orig_u or ""
 
@@ -254,8 +259,8 @@ def run_sequential_replay(
                 and ev.first_seen_at <= window_end
                 and not ev.is_live_digest
             ]
-            # Order by first_seen_at desc for 100% tie-breaking consistency with operational EventMatcher
-            active_cands.sort(key=lambda ev: ev.first_seen_at, reverse=True)
+            # Order by first_seen_at desc, id desc for 100% deterministic tie-breaking
+            active_cands.sort(key=lambda ev: (ev.first_seen_at, ev.id), reverse=True)
 
             # Find single best candidate by similarity score (identical to operational EventMatcher)
             for cand in active_cands:
@@ -295,8 +300,8 @@ def run_sequential_replay(
                 and ev.first_seen_at < window_start
                 and not ev.is_live_digest
             ]
-            # Order by first_seen_at desc for 100% tie-breaking consistency with operational EventMatcher
-            hist_cands.sort(key=lambda ev: ev.first_seen_at, reverse=True)
+            # Order by first_seen_at desc, id desc for 100% deterministic tie-breaking
+            hist_cands.sort(key=lambda ev: (ev.first_seen_at, ev.id), reverse=True)
             for cand in hist_cands:
                 sim = calculate_event_similarity(cand, analysis_data)
                 if sim.total_score > best_hist_score:
@@ -560,6 +565,9 @@ def compute_pairwise_relations(
         ev_prop1 = map_prop.get(aid1)
         for j in range(i + 1, n):
             aid2 = articles[j].id
+            if aid1 == aid2:
+                # Disallow reflexive self-pairs if non-deduplicated articles are passed
+                continue
             ev_base2 = map_base.get(aid2)
             ev_prop2 = map_prop.get(aid2)
 
@@ -578,6 +586,8 @@ def compute_pairwise_relations(
         "broken_pairs_count": len(broken_pairs),
         "new_pairs_count": len(new_pairs),
         "retained_pairs_count": len(retained_pairs),
+        "pairs_base": pairs_base,
+        "pairs_prop": pairs_prop,
         "broken_pairs": broken_pairs,
         "new_pairs": new_pairs,
         "retained_pairs": retained_pairs,
@@ -602,7 +612,7 @@ async def main_async(days: int) -> None:
     except Exception as e:
         print(f"Error loading from database: {e}")
         print("Note: If DATABASE_URL is not set or network is unreachable, please verify connection settings.")
-        return
+        sys.exit(1)
 
     articles_map = {a.id: a for a in articles}
 
