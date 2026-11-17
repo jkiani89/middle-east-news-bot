@@ -6,7 +6,9 @@ name: Inspect Backup Storage (read-only)
 # production storage.
 #
 # The bucket is taken verbatim from B2_BUCKET_NAME; nothing is auto-selected from the
-# buckets the key happens to see.
+# buckets the key happens to see, and other bucket names are never printed. Only this
+# job's own bucket is probed, which needs the listBuckets capability but not
+# listAllBucketNames.
 
 on:
   workflow_dispatch:
@@ -21,6 +23,8 @@ permissions:
 jobs:
   inspect:
     name: Inspect B2 backup bucket
+    # Manual runs can be started from any branch, so restrict execution to main.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -51,18 +55,17 @@ jobs:
           sudo apt-get install -y rclone
           rclone version
 
-      - name: Verify the configured bucket exists and is reachable
+      - name: Verify the configured bucket is reachable
+        # Probe only the bucket named by B2_BUCKET_NAME. Listing b2: would also request
+        # the account's other buckets and can be denied for a bucket-scoped key; the
+        # rclone/B2 error text can name those buckets, so it is not echoed.
         run: |
           set -euo pipefail
-          buckets="$(rclone lsd b2: 2>&1)" || {
-            echo "::error::Cannot list buckets with these credentials; check B2_APPLICATION_KEY_ID/B2_APPLICATION_KEY." >&2
-            echo "$buckets" >&2
-            exit 1
-          }
-          if ! printf '%s\n' "$buckets" | awk '{print $NF}' | grep -Fxq "$B2_BUCKET_NAME"; then
-            echo "::error::Bucket '${B2_BUCKET_NAME}' is not visible to this key; check B2_BUCKET_NAME and the key's bucket scope." >&2
-            echo "Buckets visible to the key:" >&2
-            printf '%s\n' "$buckets" | awk '{print "  " $NF}' >&2
+          target="b2:${B2_BUCKET_NAME}"
+          if ! rclone lsd "$target" >/dev/null 2>/tmp/bucket-probe.err; then
+            echo "::error::Backblaze bucket '${B2_BUCKET_NAME}' is not accessible with these credentials." >&2
+            echo "Either B2_BUCKET_NAME does not match a bucket this key can reach, or the key lacks the listBuckets capability (a bucket-scoped key needs it to confirm the bucket exists)." >&2
+            echo "No other bucket names are shown on purpose; re-check the key's bucket scope and capability in the Backblaze console." >&2
             exit 1
           fi
           echo "Bucket is reachable: ${B2_BUCKET_NAME}"
