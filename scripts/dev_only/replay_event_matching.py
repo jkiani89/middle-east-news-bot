@@ -23,6 +23,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import difflib
+import json
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -525,9 +527,16 @@ def find_chaining_cases(events: list[ReplayEvent], articles_map: dict[int, Artic
 
 
 async def main_async(days: int) -> None:
+    start_time = datetime.now(UTC)
     print("=" * 100)
     print("  PHASE Y-14: EVENT MATCHING REPLAY AND CALIBRATION ANALYSIS (AUDITED)")
     print(f"  Target: Sequential replay over {days} days of collected articles")
+    print(f"  Start Time (UTC): {start_time.isoformat()}")
+    try:
+        git_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        print(f"  Git Commit SHA: {git_sha}")
+    except Exception:
+        print("  Git Commit SHA: unknown")
     print("=" * 100)
 
     try:
@@ -643,13 +652,13 @@ async def main_async(days: int) -> None:
     print(f"{'F1 توافق با دیتابیس (DB Agreement-F1)':<40} | {ctrl_base['f1']:<15.4f} | {results_proposed[0.25]['ctrl']['f1']:<15.4f} | {results_proposed[0.35]['ctrl']['f1']:<15.4f}")
     print("=" * 100)
 
-    # 4. Generate Samples for Manual Review (using X = 0.25)
+    # 4. Generate Samples for Manual Review (using X = 0.25 and X = 0.35)
     print("\n" + "=" * 100)
-    print("  4. SAMPLES FOR MANUAL REVIEW (Proposed Rule X = 0.25)")
+    print("  4. SAMPLES FOR MANUAL REVIEW (Comparing Proposed Rules X=0.25 and X=0.35)")
     print("=" * 100)
 
-    p_eval = results_proposed[0.25]
-    map_p = p_eval["map_p"]
+    map_p25 = results_proposed[0.25]["map_p"]
+    map_p35 = results_proposed[0.35]["map_p"]
 
     broken_pairs: list[dict[str, Any]] = []
     retained_pairs: list[dict[str, Any]] = []
@@ -661,7 +670,19 @@ async def main_async(days: int) -> None:
                 a1 = b_arts[i]
                 a2 = b_arts[j]
                 sim = calculate_event_similarity(_to_event_candidate(a1), a2.ai_payload)
+                # Strictly filter out chaining-only pairs that do not directly qualify under Base threshold
+                if sim.total_score < 0.60:
+                    continue
                 h_sim = _headline_similarity_display_only(a1.title, a2.title)
+                shared_actor = _has_shared_non_country_entity(
+                    a1.ai_payload.get("actors") or [],
+                    a1.ai_payload.get("location"),
+                    a2.ai_payload.get("actors") or [],
+                    a2.ai_payload.get("location"),
+                )
+                reason_detail = (
+                    f"Shared non-country entity: {shared_actor}; Keywords score: {sim.keywords_score:.3f}"
+                )
 
                 pair_info = {
                     "base_ev_id": b_ev.id,
@@ -669,8 +690,13 @@ async def main_async(days: int) -> None:
                     "art2": a2,
                     "sim": sim,
                     "headline_sim": h_sim,
+                    "shared_actor": shared_actor,
+                    "reason_detail": reason_detail,
+                    "decision_base": "merge",
+                    "decision_proposed_x025": "merge" if map_p25[a1.id] == map_p25[a2.id] else "split",
+                    "decision_proposed_x035": "merge" if map_p35[a1.id] == map_p35[a2.id] else "split",
                 }
-                if map_p[a1.id] != map_p[a2.id]:
+                if map_p25[a1.id] != map_p25[a2.id]:
                     broken_pairs.append(pair_info)
                 else:
                     retained_pairs.append(pair_info)
@@ -682,6 +708,50 @@ async def main_async(days: int) -> None:
     retained_sorted = sorted(retained_pairs, key=lambda x: x["sim"].total_score)
     ten_borderline_retained = retained_sorted[:10]
 
+    def _serialize_sample(idx: int, p: dict[str, Any], tag: str) -> dict[str, Any]:
+        a1 = p["art1"]
+        a2 = p["art2"]
+        sim = p["sim"]
+        return {
+            "sample_id": idx,
+            "category": tag,
+            "base_event_id": p["base_ev_id"],
+            "article_1": {
+                "id": a1.id,
+                "title": a1.title,
+                "source_name": a1.source_name,
+                "collected_at": a1.collected_at.isoformat(),
+                "url": a1.url,
+                "actors": a1.ai_payload.get("actors") or [],
+                "location": a1.ai_payload.get("location") or "",
+                "countries": a1.ai_payload.get("countries") or [],
+            },
+            "article_2": {
+                "id": a2.id,
+                "title": a2.title,
+                "source_name": a2.source_name,
+                "collected_at": a2.collected_at.isoformat(),
+                "url": a2.url,
+                "actors": a2.ai_payload.get("actors") or [],
+                "location": a2.ai_payload.get("location") or "",
+                "countries": a2.ai_payload.get("countries") or [],
+            },
+            "similarity_scores": {
+                "countries": sim.countries_score,
+                "actors": sim.actors_score,
+                "category": sim.category_score,
+                "location": sim.location_score,
+                "keywords": sim.keywords_score,
+                "total_score": round(sim.total_score, 4),
+            },
+            "headline_similarity_display_only": round(p["headline_sim"], 4),
+            "shared_non_country_entity": p["shared_actor"],
+            "decision_base_rule": p["decision_base"],
+            "decision_proposed_x025": p["decision_proposed_x025"],
+            "decision_proposed_x035": p["decision_proposed_x035"],
+            "separation_reason": p["reason_detail"],
+        }
+
     def _print_sample_pair(idx: int, p: dict[str, Any], tag: str):
         a1 = p["art1"]
         a2 = p["art2"]
@@ -689,24 +759,47 @@ async def main_async(days: int) -> None:
         h_sim = p["headline_sim"]
         print(f"Sample #{idx} [{tag}] — Base Event #{p['base_ev_id']}")
         print(f"   Article 1 (#{a1.id} - {a1.source_name}): {a1.title[:75]}")
+        print(f"      Published/Collected: {a1.collected_at.isoformat()} | URL: {a1.url}")
         print(f"      Actors: {a1.ai_payload.get('actors') or []} | Loc: {a1.ai_payload.get('location') or '-'}")
         print(f"   Article 2 (#{a2.id} - {a2.source_name}): {a2.title[:75]}")
+        print(f"      Published/Collected: {a2.collected_at.isoformat()} | URL: {a2.url}")
         print(f"      Actors: {a2.ai_payload.get('actors') or []} | Loc: {a2.ai_payload.get('location') or '-'}")
         print(f"   Component Scores: Countries={sim.countries_score} | Actors={sim.actors_score} | Cat={sim.category_score} | Loc={sim.location_score} | KW={sim.keywords_score}")
         print(f"   Total Score: {sim.total_score:.3f} | Headline Sim [display-only]: {h_sim:.3f}")
+        print(f"   Decision Base: {p['decision_base']} | Proposed(X=0.25): {p['decision_proposed_x025']} | Proposed(X=0.35): {p['decision_proposed_x035']}")
+        print(f"   Reason: {p['reason_detail']}")
         print("-" * 90)
 
     print("\n--- [A] 10 Broken Pairs with Lowest Headline Similarity (Likely Correct Separations) ---")
+    samples_serialized = []
     for i, p in enumerate(ten_lowest_broken, 1):
         _print_sample_pair(i, p, "Correct Separation Candidate")
+        samples_serialized.append(_serialize_sample(i, p, "Likely Correct Separation"))
 
     print("\n--- [B] 10 Broken Pairs with Highest Headline Similarity (Risk of Duplicate News) ---")
-    for i, p in enumerate(ten_highest_broken, 1):
+    for i, p in enumerate(ten_highest_broken, 11):
         _print_sample_pair(i, p, "Risk of False Split Candidate")
+        samples_serialized.append(_serialize_sample(i, p, "Risk of False Split"))
 
     print("\n--- [C] 10 Borderline Merged Pairs in Both Rules (Lowest Merge Scores) ---")
-    for i, p in enumerate(ten_borderline_retained, 1):
+    for i, p in enumerate(ten_borderline_retained, 21):
         _print_sample_pair(i, p, "Retained Borderline Merge")
+        samples_serialized.append(_serialize_sample(i, p, "Retained Borderline Merge"))
+
+    # Save to JSON file
+    out_json_path = _project_root / "scripts" / "dev_only" / "replay_samples_30.json"
+    try:
+        with open(out_json_path, "w", encoding="utf-8") as f:
+            json.dump(samples_serialized, f, ensure_ascii=False, indent=2)
+        print(f"\nSaved {len(samples_serialized)} audited sample pairs to {out_json_path}")
+    except Exception as e:
+        print(f"Warning: Could not save JSON samples: {e}")
+
+    end_time = datetime.now(UTC)
+    print("\n" + "=" * 100)
+    print(f"  Replay Execution Finished at (UTC): {end_time.isoformat()}")
+    print(f"  Total Duration: {(end_time - start_time).total_seconds():.2f}s")
+    print("=" * 100)
 
 
 def main() -> None:
