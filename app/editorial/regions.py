@@ -96,8 +96,9 @@ MIDDLE_EAST_WATERWAYS: frozenset[str] = frozenset(
 WORLD_COUNTRIES: frozenset[str] = frozenset(
     {
         # East Asia & Pacific
-        "japan", "south korea", "republic of korea", "north korea", "dprk", "china", "taiwan", "mongolia",
-        "ژاپن", "کره جنوبی", "کره شمالی", "چین", "تایوان", "مغولستان",
+        "japan", "south korea", "republic of korea", "korea", "north korea", "dprk", "china",
+        "peoples republic of china", "people's republic of china", "prc", "taiwan", "mongolia",
+        "ژاپن", "کره جنوبی", "جمهوری کره", "کره", "کره شمالی", "چین", "تایوان", "مغولستان",
         # Southeast Asia
         "vietnam", "thailand", "indonesia", "malaysia", "singapore", "philippines", "myanmar", "burma",
         "cambodia", "laos", "brunei", "east timor", "timor-leste",
