@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
@@ -10,7 +10,7 @@ import pytest
 
 from app.config import settings
 from app.database.models import DailyReport
-from app.reports.daily_report import report_window, slot_report_date
+from app.reports.daily_report import latest_slot_start, report_window, slot_report_date
 from scripts.run_once import run_batch_pipeline, should_run_daily_report
 
 
@@ -177,19 +177,36 @@ async def test_should_run_daily_report_window_crosses_midnight():
 
 
 @pytest.mark.asyncio
-async def test_should_run_daily_report_skips_a_slot_in_flight(slot_table):
-    """A slot claimed by a live run is not started a second time."""
-    tz = ZoneInfo("Asia/Tehran")
-    claim = datetime.now(tz)
-    slot_table[(claim.date(), 8)] = {
+@pytest.mark.parametrize(
+    "moment",
+    [
+        # Inside the 08:00-16:00 catch-up window.
+        datetime(2026, 11, 16, 8, 30, tzinfo=ZoneInfo("Asia/Tehran")),
+        datetime(2026, 11, 16, 13, 59, tzinfo=ZoneInfo("Asia/Tehran")),
+        # Outside the window: before the slot, after it, and past midnight.
+        datetime(2026, 11, 16, 6, 0, tzinfo=ZoneInfo("Asia/Tehran")),
+        datetime(2026, 11, 16, 15, 0, tzinfo=ZoneInfo("Asia/Tehran")),
+        datetime(2026, 11, 16, 0, 30, tzinfo=ZoneInfo("Asia/Tehran")),
+    ],
+    ids=["inside-window", "window-edge", "before-slot", "after-window", "after-midnight"],
+)
+async def test_should_run_daily_report_skips_a_slot_in_flight(slot_table, moment):
+    """A slot claimed by a live run is not started a second time.
+
+    The moment is fixed, so the result no longer depends on the wall clock or the CI
+    timezone; the in-flight row is seeded for the slot day the run actually resolves.
+    """
+    slot_date = latest_slot_start(moment, 8).date()
+    claimed_at = moment - timedelta(minutes=5)
+    slot_table[(slot_date, 8)] = {
         "status": "in_flight",
-        "claimed_at": claim,
+        "claimed_at": claimed_at,
         "message_ids": [],
     }
-    report = DailyReport(report_date=claim.date(), status="generated", content={})
+    report = DailyReport(report_date=slot_date, status="generated", content={})
 
     with (
-        patch("scripts.run_once.local_now", return_value=claim),
+        patch("scripts.run_once.local_now", return_value=moment),
         patch("scripts.run_once.SessionLocal") as mock_session_local,
     ):
         mock_session = AsyncMock()
