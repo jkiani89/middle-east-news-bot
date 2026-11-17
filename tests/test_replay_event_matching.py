@@ -20,6 +20,7 @@ from scripts.dev_only.replay_event_matching import (
     find_chaining_cases,
     load_articles_from_db,
     run_sequential_replay,
+    save_samples_atomically,
 )
 
 
@@ -719,6 +720,96 @@ async def test_production_tie_breaking_non_determinism_documentation():
     # based solely on SQL row order when timestamps and scores are identical!
     assert res_a.event_id == 1
     assert res_b.event_id == 2
+
+
+def test_multi_event_scenario_pairwise_tolerance_vs_partition():
+    """Verify data semantics for multi-event articles:
+
+    Scenario: A -> {E1}, B -> {E1, E2}, C -> {E2}
+    - Definition 1 (At least one shared event): Transitivity FAILS (Tolerance relation, NOT a partition).
+      (A, B) connected, (B, C) connected, but (A, C) disconnected.
+    - Definition 2 (Primary reference event equality): Transitivity HOLDS (Strict Equivalence Partition).
+      (A, B) connected, (B, C) disconnected, (A, C) disconnected.
+    """
+    now = datetime.now(UTC)
+    art_a = ArticleRecord(1, "S", "A", "u1", now, {}, db_event_id=1, is_live_digest=False, is_insufficient_data=False, db_event_ids={1})
+    art_b = ArticleRecord(2, "S", "B", "u2", now, {}, db_event_id=1, is_live_digest=False, is_insufficient_data=False, db_event_ids={1, 2})
+    art_c = ArticleRecord(3, "S", "C", "u3", now, {}, db_event_id=2, is_live_digest=False, is_insufficient_data=False, db_event_ids={2})
+
+    articles = [art_a, art_b, art_c]
+
+    # Replay mapping placing A and B together, C separate: {1: 10, 2: 10, 3: 20}
+    rep_map = {1: 10, 2: 10, 3: 20}
+
+    # 1. Definition 1: Tolerance Relation (use_primary_event_only=False)
+    ctrl_def1 = analyze_replay_control(articles, rep_map, use_primary_event_only=False)
+    # Under Def 1:
+    # same_db(A, B) = True ({1} & {1, 2} != empty)
+    # same_db(B, C) = True ({1, 2} & {2} != empty)
+    # same_db(A, C) = False ({1} & {2} == empty) -> Non-transitive!
+    # DB positive pairs = 2: (A, B) and (B, C)
+    # Replay positive pairs = 1: (A, B)
+    # TP = 1 (A, B), FN = 1 (B, C), FP = 0, TN = 1 (A, C)
+    assert ctrl_def1["tp"] == 1
+    assert ctrl_def1["fn"] == 1
+    assert ctrl_def1["fp"] == 0
+    assert ctrl_def1["tn"] == 1
+
+    # 2. Definition 2: Strict Partition (use_primary_event_only=True)
+    ctrl_def2 = analyze_replay_control(articles, rep_map, use_primary_event_only=True)
+    # Under Def 2:
+    # primary(A)=1, primary(B)=1, primary(C)=2
+    # same_db(A, B) = True (1 == 1)
+    # same_db(B, C) = False (1 != 2)
+    # same_db(A, C) = False (1 != 2) -> Transitive Equivalence Relation!
+    # DB positive pairs = 1: (A, B)
+    # Replay positive pairs = 1: (A, B)
+    # TP = 1 (A, B), FN = 0, FP = 0, TN = 2: (B, C), (A, C)
+    assert ctrl_def2["tp"] == 1
+    assert ctrl_def2["fn"] == 0
+    assert ctrl_def2["fp"] == 0
+    assert ctrl_def2["tn"] == 2
+
+
+def test_save_samples_atomically_robustness_and_failures(tmp_path, monkeypatch):
+    """Verify save_samples_atomically handles success, backup generation,
+
+    and leaves existing valid file untouched on failure during write or replacement.
+    """
+    import json
+
+    target_file = tmp_path / "replay_samples_30.json"
+    initial_data = [{"sample_id": 1, "status": "original_valid"}]
+
+    # 1. Success on initial file creation
+    ok1 = save_samples_atomically(initial_data, target_file, backup_timestamp=1000)
+    assert ok1 is True
+    assert target_file.exists()
+    with open(target_file, encoding="utf-8") as f:
+        assert json.load(f) == initial_data
+
+    # 2. Success on update with backup creation
+    updated_data = [{"sample_id": 1, "status": "updated_valid"}]
+    ok2 = save_samples_atomically(updated_data, target_file, backup_timestamp=2000)
+    assert ok2 is True
+    bak_file = tmp_path / "replay_samples_30.bak_2000.json"
+    assert bak_file.exists()
+    with open(bak_file, encoding="utf-8") as f:
+        assert json.load(f) == initial_data
+    with open(target_file, encoding="utf-8") as f:
+        assert json.load(f) == updated_data
+
+    # 3. Simulated failure during write/fsync: target_file must remain intact
+    def mock_broken_dump(*args, **kwargs):
+        raise OSError("Simulated disk error during serialization")
+
+    monkeypatch.setattr("json.dump", mock_broken_dump)
+    ok3 = save_samples_atomically([{"corrupt": True}], target_file, backup_timestamp=3000)
+    assert ok3 is False
+    # Target file still contains updated_data, NOT corrupted
+    with open(target_file, encoding="utf-8") as f:
+        assert json.load(f) == updated_data
+
 
 
 

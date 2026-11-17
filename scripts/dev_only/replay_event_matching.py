@@ -433,8 +433,16 @@ def run_sequential_replay(
 def analyze_replay_control(
     articles: list[ArticleRecord],
     replay_mapping: dict[int, int],
+    use_primary_event_only: bool = False,
 ) -> dict[str, float]:
-    """Evaluate pairwise clustering metrics (Precision, Recall, F1, FPR, FNR) vs DB grouping."""
+    """Evaluate pairwise clustering metrics (Precision, Recall, F1, FPR, FNR) vs DB grouping.
+
+    Semantics:
+    - If use_primary_event_only=False (default): Definition 1 (At least one shared event).
+      Measures overlap/tolerance relation (Covering). Allows multi-event articles.
+    - If use_primary_event_only=True: Definition 2 (Primary reference event equality).
+      Measures strict Equivalence Relation (Mathematical Partition).
+    """
     valid_articles = [
         a for a in articles
         if (bool(a.db_event_ids) or a.db_event_id is not None) and a.id in replay_mapping
@@ -450,9 +458,12 @@ def analyze_replay_control(
         for j in range(i + 1, n):
             a1 = valid_articles[i]
             a2 = valid_articles[j]
-            e1 = a1.db_event_ids or ({a1.db_event_id} if a1.db_event_id is not None else set())
-            e2 = a2.db_event_ids or ({a2.db_event_id} if a2.db_event_id is not None else set())
-            same_db = bool(e1 & e2)
+            if use_primary_event_only:
+                same_db = (a1.db_event_id is not None and a1.db_event_id == a2.db_event_id)
+            else:
+                e1 = a1.db_event_ids or ({a1.db_event_id} if a1.db_event_id is not None else set())
+                e2 = a2.db_event_ids or ({a2.db_event_id} if a2.db_event_id is not None else set())
+                same_db = bool(e1 & e2)
             same_replay = (replay_mapping[a1.id] == replay_mapping[a2.id])
 
             if same_db and same_replay:
@@ -613,6 +624,44 @@ def compute_pairwise_relations(
         "new_pairs": new_pairs,
         "retained_pairs": retained_pairs,
     }
+
+
+def save_samples_atomically(
+    samples_serialized: list[dict[str, Any]],
+    out_json_path: Path,
+    backup_timestamp: int | None = None,
+) -> bool:
+    """Save serialized samples atomically using temp file, flush, fsync, automated backup, and os.replace."""
+    temp_json_path = out_json_path.with_suffix(".tmp")
+    try:
+        # 1. Write to temporary file with flush and fsync
+        with open(temp_json_path, "w", encoding="utf-8") as f:
+            json.dump(samples_serialized, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+
+        # 2. If a valid previous file exists, create a timestamped backup before replacing
+        if out_json_path.exists():
+            ts = backup_timestamp or int(datetime.now(UTC).timestamp())
+            bak_path = out_json_path.with_suffix(f".bak_{ts}.json")
+            try:
+                shutil.copy2(out_json_path, bak_path)
+                print(f"Backed up previous samples to {bak_path.name}")
+            except Exception as e_bak:
+                print(f"Notice: Could not create backup of previous samples: {e_bak}")
+
+        # 3. Atomically replace temp file into destination
+        os.replace(temp_json_path, out_json_path)
+        print(f"\nSaved {len(samples_serialized)} audited sample pairs atomically to {out_json_path}")
+        return True
+    except Exception as e:
+        if temp_json_path.exists():
+            try:
+                temp_json_path.unlink()
+            except Exception:
+                pass
+        print(f"Warning: Could not save JSON samples: {e}")
+        return False
 
 
 async def main_async(days: int) -> None:
@@ -888,33 +937,11 @@ async def main_async(days: int) -> None:
 
     # Save to JSON file with atomic write and automated backup of existing valid file
     out_json_path = _project_root / "scripts" / "dev_only" / "replay_samples_30.json"
-    temp_json_path = out_json_path.with_suffix(".tmp")
-    try:
-        # 1. Write to temporary file with flush and fsync
-        with open(temp_json_path, "w", encoding="utf-8") as f:
-            json.dump(samples_serialized, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-
-        # 2. If a valid previous file exists, create a timestamped backup before replacing
-        if out_json_path.exists():
-            bak_path = out_json_path.with_suffix(f".bak_{int(start_time.timestamp())}.json")
-            try:
-                shutil.copy2(out_json_path, bak_path)
-                print(f"Backed up previous samples to {bak_path.name}")
-            except Exception as e_bak:
-                print(f"Notice: Could not create backup of previous samples: {e_bak}")
-
-        # 3. Atomically replace temp file into destination
-        os.replace(temp_json_path, out_json_path)
-        print(f"\nSaved {len(samples_serialized)} audited sample pairs atomically to {out_json_path}")
-    except Exception as e:
-        if temp_json_path.exists():
-            try:
-                temp_json_path.unlink()
-            except Exception:
-                pass
-        print(f"Warning: Could not save JSON samples: {e}")
+    save_samples_atomically(
+        samples_serialized,
+        out_json_path,
+        backup_timestamp=int(start_time.timestamp()),
+    )
 
     end_time = datetime.now(UTC)
     print("\n" + "=" * 100)
