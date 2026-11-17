@@ -159,7 +159,9 @@ async def load_articles_from_db(days: int = 7) -> tuple[list[ArticleRecord], boo
             rows = (await session.execute(stmt)).all()
 
     records: list[ArticleRecord] = []
-    insufficient_count = 0
+    empty_actor_count = 0
+    empty_location_count = 0
+    both_empty_count = 0
 
     for r in rows:
         art_id, title, can_u, orig_u, coll_at, p_load, src_name, ev_id = r
@@ -169,13 +171,18 @@ async def load_articles_from_db(days: int = 7) -> tuple[list[ArticleRecord], boo
         # Check live digest
         is_digest = is_live_digest(url, title) or payload.get("is_live_digest") or payload.get("article_kind") == "live_digest"
 
-        # Check insufficient data: no actors and no location
+        # Check empty actors and empty location independently
         actors = payload.get("actors") or []
-        loc = payload.get("location") or ""
-        is_insufficient = (not payload) or (not actors and not loc)
+        loc = str(payload.get("location") or "").strip()
+        has_actors = bool(actors)
+        has_location = bool(loc)
 
-        if is_insufficient:
-            insufficient_count += 1
+        if not has_actors:
+            empty_actor_count += 1
+        if not has_location:
+            empty_location_count += 1
+        if not has_actors and not has_location:
+            both_empty_count += 1
 
         rec = ArticleRecord(
             id=art_id,
@@ -186,11 +193,15 @@ async def load_articles_from_db(days: int = 7) -> tuple[list[ArticleRecord], boo
             ai_payload=payload,
             db_event_id=ev_id,
             is_live_digest=bool(is_digest),
-            is_insufficient_data=bool(is_insufficient),
+            is_insufficient_data=(not has_actors and not has_location),
         )
         records.append(rec)
 
-    print(f"Loaded {len(records)} articles ({insufficient_count} with insufficient data / no actors).")
+    print(f"Loaded {len(records)} articles across time window:")
+    print(f"   • Total Articles Analyzed: {len(records)}")
+    print(f"   • Articles with missing actors (Empty Actors): {empty_actor_count}")
+    print(f"   • Articles with missing location (Empty Location): {empty_location_count}")
+    print(f"   • Articles with BOTH missing (Insufficient Data): {both_empty_count}")
     return records, True
 
 
@@ -542,13 +553,20 @@ async def main_async(days: int) -> None:
     print("\n--- 2. Executing Sequential Replay: Current Rule (Merge Threshold = 0.60, Follow-Up = 0.80) ---")
     map_base, evs_base, decs_base = run_sequential_replay(articles, require_strict_gate=False)
     multi_base = [ev for ev in evs_base if len(ev.article_ids) > 1]
+    follow_up_base = [ev for ev in evs_base if ev.is_follow_up]
     chaining_base = find_chaining_cases(evs_base, articles_map)
     ctrl_base = analyze_replay_control(articles, map_base)
 
     print(f"Total resulting events: {len(evs_base)}")
     print(f"Multi-article events: {len(multi_base)}")
+    print(f"Follow-up events created (Historical >= 0.80): {len(follow_up_base)}")
     print(f"Chaining cases (A-B & B-C, but sim(A,C) < 0.60): {chaining_base}")
-    print(f"Pairwise Metrics vs DB: Precision={ctrl_base['precision']:.3f} | Recall={ctrl_base['recall']:.3f} | F1={ctrl_base['f1']:.3f} | FPR={ctrl_base['fpr']:.4f}")
+    print(f"Pairwise Agreement vs DB Clustering (توافق دوبه‌دو با دیتابیس):")
+    print(f"   • Agreement-Precision: {ctrl_base['precision']:.4f}")
+    print(f"   • Agreement-Recall: {ctrl_base['recall']:.4f}")
+    print(f"   • Agreement-F1: {ctrl_base['f1']:.4f}")
+    print(f"   • False Positive Rate: {ctrl_base['fpr']:.4f}")
+    print("   [توجه روش‌شناختی: این معیارها صرفاً توافق با خوشه‌بندی ثبت‌شده در دیتابیس هستند، نه دقت مطلق واقعی]")
 
     # 3. Test Proposed Rules for X in (0.25, 0.35, x_dist)
     x_candidates = [0.25, 0.35, x_dist]
@@ -558,6 +576,7 @@ async def main_async(days: int) -> None:
         print(f"\n--- 3. Executing Sequential Replay: Proposed Strict Rule with X = {x:.2f} ---")
         map_p, evs_p, decs_p = run_sequential_replay(articles, require_strict_gate=True, keyword_threshold_x=x)
         multi_p = [ev for ev in evs_p if len(ev.article_ids) > 1]
+        follow_up_p = [ev for ev in evs_p if ev.is_follow_up]
         chaining_p = find_chaining_cases(evs_p, articles_map)
         ctrl_p = analyze_replay_control(articles, map_p)
 
@@ -583,6 +602,7 @@ async def main_async(days: int) -> None:
         results_proposed[x] = {
             "total_events": len(evs_p),
             "multi_article_events": len(multi_p),
+            "follow_up_events": len(follow_up_p),
             "broken_events": broken_events,
             "resulting_groups": resulting_groups_count,
             "separated_articles": separated_articles,
@@ -593,13 +613,35 @@ async def main_async(days: int) -> None:
             "map_p": map_p,
         }
 
-        print(f"   Total Events: {len(evs_p)} (Base: {len(evs_base)})")
-        print(f"   Multi-Article Events: {len(multi_p)} (Base: {len(multi_base)})")
-        print(f"   Broken Multi-Article Events: {broken_events}")
-        print(f"   Resulting Groups from Split: {resulting_groups_count}")
-        print(f"   Separated Articles (left primary cluster): {separated_articles} (Singletons: {singleton_separated})")
-        print(f"   Chaining Cases: {chaining_p}")
-        print(f"   Pairwise Metrics vs DB: Precision={ctrl_p['precision']:.3f} | Recall={ctrl_p['recall']:.3f} | F1={ctrl_p['f1']:.3f} | FPR={ctrl_p['fpr']:.4f}")
+        print(f"   • Total Events: {len(evs_p)} (Base: {len(evs_base)})")
+        print(f"   • Multi-Article Events: {len(multi_p)} (Base: {len(multi_base)})")
+        print(f"   • Follow-Up Events: {len(follow_up_p)} (Base: {len(follow_up_base)})")
+        print(f"   • Broken Multi-Article Events (رویدادهای شکسته): {broken_events}")
+        print(f"   • Resulting Groups from Split (گروه‌های حاصل از شکست): {resulting_groups_count}")
+        print(f"   • Separated Articles from Core (مقالات جداشده از خوشه اصلی): {separated_articles}")
+        print(f"   • Singleton Separated Articles (مقالات تفکیک‌شده تک‌عضوی): {singleton_separated}")
+        print(f"   • Chaining Cases (موارد زنجیره‌سازی): {chaining_p}")
+        print(f"   • Pairwise Agreement vs DB Clustering:")
+        print(f"        Agreement-Precision: {ctrl_p['precision']:.4f} | Agreement-Recall: {ctrl_p['recall']:.4f} | Agreement-F1: {ctrl_p['f1']:.4f} | FPR: {ctrl_p['fpr']:.4f}")
+
+    # Comparative Summary Table
+    print("\n" + "=" * 100)
+    print("  خلاصه مقایسه‌ای اجرای بازپخش: قاعده فعلی در برابر قواعد پیشنهادی")
+    print("=" * 100)
+    print(f"{'شاخص / متریک':<40} | {'Base (0.60)':<15} | {'Prop (X=0.25)':<15} | {'Prop (X=0.35)':<15}")
+    print("-" * 95)
+    print(f"{'تعداد کل رویدادها (Total Events)':<40} | {len(evs_base):<15} | {results_proposed[0.25]['total_events']:<15} | {results_proposed[0.35]['total_events']:<15}")
+    print(f"{'رویدادهای چندمقاله‌ای (Multi-Article)':<40} | {len(multi_base):<15} | {results_proposed[0.25]['multi_article_events']:<15} | {results_proposed[0.35]['multi_article_events']:<15}")
+    print(f"{'رویدادهای پیگیری (Follow-Up Events)':<40} | {len(follow_up_base):<15} | {results_proposed[0.25]['follow_up_events']:<15} | {results_proposed[0.35]['follow_up_events']:<15}")
+    print(f"{'رویدادهای شکسته (Broken Events)':<40} | {'—':<15} | {results_proposed[0.25]['broken_events']:<15} | {results_proposed[0.35]['broken_events']:<15}")
+    print(f"{'گروه‌های حاصل از شکست (Resulting Groups)':<40} | {'—':<15} | {results_proposed[0.25]['resulting_groups']:<15} | {results_proposed[0.35]['resulting_groups']:<15}")
+    print(f"{'مقالات جداشده از هسته (Separated Articles)':<40} | {'—':<15} | {results_proposed[0.25]['separated_articles']:<15} | {results_proposed[0.35]['separated_articles']:<15}")
+    print(f"{'مقالات تک‌عضوی جدید (Singleton Articles)':<40} | {'—':<15} | {results_proposed[0.25]['singleton_separated']:<15} | {results_proposed[0.35]['singleton_separated']:<15}")
+    print(f"{'موارد زنجیره‌سازی (Chaining Cases)':<40} | {chaining_base:<15} | {results_proposed[0.25]['chaining_cases']:<15} | {results_proposed[0.35]['chaining_cases']:<15}")
+    print(f"{'توافق دقت با دیتابیس (DB Agreement-P)':<40} | {ctrl_base['precision']:<15.4f} | {results_proposed[0.25]['ctrl']['precision']:<15.4f} | {results_proposed[0.35]['ctrl']['precision']:<15.4f}")
+    print(f"{'توافق پوشش با دیتابیس (DB Agreement-R)':<40} | {ctrl_base['recall']:<15.4f} | {results_proposed[0.25]['ctrl']['recall']:<15.4f} | {results_proposed[0.35]['ctrl']['recall']:<15.4f}")
+    print(f"{'F1 توافق با دیتابیس (DB Agreement-F1)':<40} | {ctrl_base['f1']:<15.4f} | {results_proposed[0.25]['ctrl']['f1']:<15.4f} | {results_proposed[0.35]['ctrl']['f1']:<15.4f}")
+    print("=" * 100)
 
     # 4. Generate Samples for Manual Review (using X = 0.25)
     print("\n" + "=" * 100)
@@ -669,7 +711,7 @@ async def main_async(days: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Replay event matching and calibrate proposed rules.")
-    parser.add_argument("--days", type=int, default=7, help="Number of days to replay (default: 7)")
+    parser.add_argument("--days", type=int, default=30, help="Number of days to replay (default: 30)")
     args = parser.parse_args()
 
     asyncio.run(main_async(args.days))
