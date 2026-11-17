@@ -250,12 +250,26 @@ def test_perspectives_gate_compound_locations():
     assert extract_non_country_entities({"location": "قاهره / مصر"}) == {"قاهره"}
     assert extract_non_country_entities({"location": "مأرب، یمن"}) == {"مأرب"}
 
-    # Compound location with only countries or waterways: all stripped -> set()
+    # Hyphenated place names: hyphens inside words are NOT split into meaningless pieces
+    assert extract_non_country_entities({"location": "Port-au-Prince, Haiti"}) == {"port-au-prince"}
+    assert extract_non_country_entities({"location": "Port-au-Prince"}) == {"port-au-prince"}
+    assert extract_non_country_entities({"location": "Tel-Aviv, Israel"}) == {"tel-aviv"}
+    assert extract_non_country_entities({"location": "Beirut - Lebanon"}) == {"beirut"}
+    assert extract_non_country_entities({"location": "بیروت - لبنان"}) == {"بیروت"}
+
+    # Compound actors: country parts are stripped, non-state actors retained
+    assert extract_non_country_entities({"actors": ["Iran and Houthis"]}) == {"houthis"}
+    assert extract_non_country_entities({"actors": ["ایران و انصارالله"]}) == {"انصارالله"}
+    assert extract_non_country_entities({"actors": ["Houthis and Hezbollah"]}) == {"houthis", "hezbollah"}
+    assert extract_non_country_entities({"actors": ["انصارالله و حزب‌الله"]}) == {"انصارالله", "حزب الله"}
+
+    # Compound actors or locations with only countries/waterways: all stripped -> set()
+    assert extract_non_country_entities({"actors": ["Iran and Russia"]}) == set()
+    assert extract_non_country_entities({"actors": ["ایران و روسیه"]}) == set()
     assert extract_non_country_entities({"location": "Japan and South Korea"}) == set()
     assert extract_non_country_entities({"location": "ژاپن و کره جنوبی"}) == set()
     assert extract_non_country_entities({"location": "Red Sea and Gulf of Aden"}) == set()
     assert extract_non_country_entities({"location": "دریای سرخ و خلیج عدن"}) == set()
-    assert extract_non_country_entities({"actors": ["ایران و روسیه"]}) == set()
 
 
 def test_perspectives_gate_compound_matching_behavior():
@@ -300,6 +314,19 @@ def test_perspectives_gate_compound_matching_behavior():
     assert len(shared) == 0
 
 
+class StrictZeroCallProvider:
+    """A strict provider mock that raises AssertionError on ANY attribute access or method invocation.
+
+    Guarantees 100% that no provider methods (e.g. generate_text, complete, etc.) are accessed or invoked.
+    """
+
+    def __getattr__(self, name: str):
+        raise AssertionError(f"StrictZeroCallProvider violation: provider.{name} was accessed or invoked!")
+
+    def __call__(self, *args, **kwargs):
+        raise AssertionError("StrictZeroCallProvider violation: provider was invoked directly!")
+
+
 @pytest.mark.asyncio
 async def test_perspectives_gate_explicit_mock_zero_model_calls(caplog):
     """Explicitly verify that when the gate rejects, AI provider is never called (0 model calls)."""
@@ -317,18 +344,13 @@ async def test_perspectives_gate_explicit_mock_zero_model_calls(caplog):
         execute=AsyncMock(return_value=SimpleNamespace(all=lambda: rows)),
         scalars=AsyncMock(return_value=SimpleNamespace(first=lambda: summary)),
     )
-    mock_ai_provider = AsyncMock()
-    mock_ai_provider.generate_text = AsyncMock()
-    mock_ai_provider.call_count = 0
+    strict_ai_provider = StrictZeroCallProvider()
 
     with caplog.at_level(logging.INFO):
-        res = await _refresh_event_perspectives(session, 88, "Event 88", mock_ai_provider)
+        res = await _refresh_event_perspectives(session, 88, "Event 88", strict_ai_provider)
 
     assert res is False
     assert "reason=disjoint_entities" in caplog.text
-    # Explicit assertion: Zero AI model calls made
-    assert mock_ai_provider.generate_text.call_count == 0
-    assert mock_ai_provider.call_count == 0
 
 
 @pytest.mark.asyncio
@@ -347,14 +369,13 @@ async def test_perspectives_gate_rejection_insufficient_data(caplog):
         execute=AsyncMock(return_value=SimpleNamespace(all=lambda: rows)),
         scalars=AsyncMock(return_value=SimpleNamespace(first=lambda: summary)),
     )
-    provider = MagicMock()
+    strict_ai_provider = StrictZeroCallProvider()
 
     with caplog.at_level(logging.INFO):
-        res = await _refresh_event_perspectives(session, 77, "Test Event", provider)
+        res = await _refresh_event_perspectives(session, 77, "Test Event", strict_ai_provider)
 
     assert res is False
     assert "reason=insufficient_data" in caplog.text
-    assert provider.call_count == 0
 
 
 def test_perspectives_gate_passes_with_shared_actor():
