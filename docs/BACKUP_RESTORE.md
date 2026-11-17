@@ -54,9 +54,9 @@ bash scripts/backup.sh
 ```
 
 The dump is written by a `postgres:18-alpine` container, because `pg_dump` refuses to dump a
-server newer than itself and the managed database runs PostgreSQL 18. The script uploads to
-`${BACKUP_REMOTE:-b2}:${BACKUP_BUCKET}/db/` and then deletes backups older than
-`BACKUP_RETENTION_DAYS` (default 7).
+server newer than itself and the managed database runs PostgreSQL 18. The script validates
+the dump with `pg_restore --list`, uploads it to `${BACKUP_REMOTE:-b2}:${BACKUP_BUCKET}/db/`,
+and verifies the uploaded object's name and byte size. **It deletes nothing.**
 
 ## 4. Automate Backups
 
@@ -82,5 +82,23 @@ You will be prompted to type `yes` to confirm. The script downloads the file fro
 
 ## 6. Retention Policy
 
-By default, backups older than 7 days are deleted from the bucket. Change this by setting
-`BACKUP_RETENTION_DAYS` in `.env` (or in the workflow environment).
+Nothing is deleted automatically — not by `scripts/backup.sh`, not by
+`.github/workflows/backup.yml`. Retention is an explicit, separate action so a backup run
+can never destroy an earlier restore point:
+
+```bash
+# Preview what is older than 7 days (deletes nothing)
+bash scripts/prune_backups.sh
+
+# Delete dumps older than 7 days
+bash scripts/prune_backups.sh --yes
+
+# Different retention
+bash scripts/prune_backups.sh --yes --retention-days 14
+```
+
+`BACKUP_REMOTE` and `BACKUP_BUCKET` must be set (run
+`bash scripts/resolve_backup_storage.sh` first in Actions, or export the same variables
+locally). Pruning is limited to `newsbot-backup-*.dump` under `<remote>:<bucket>/db/`, and
+an empty or malformed destination aborts before any `rclone` call. `--retention-days`
+defaults to `BACKUP_RETENTION_DAYS` (7).

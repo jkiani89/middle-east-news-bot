@@ -54,6 +54,30 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
       TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
+      # The full 12-hour bulletin belongs on Telegraph; Telegram carries the notification
+      # with the index link. TELEGRAPH_ENABLED=false keeps the previous behaviour exactly:
+      # the full bulletin text is sent to Telegram instead. Enable it (repository variable)
+      # only after TELEGRAPH_ACCESS_TOKEN exists, or production would create throwaway
+      # accounts whose pages can never be edited.
+      TELEGRAPH_ENABLED: ${{ vars.TELEGRAPH_ENABLED || 'false' }}
+      TELEGRAPH_ACCESS_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
+      TELEGRAPH_AUTHOR_NAME: ${{ vars.TELEGRAPH_AUTHOR_NAME || 'پایش تحولات خاورمیانه' }}
+      TELEGRAPH_AUTHOR_URL: ${{ vars.TELEGRAPH_AUTHOR_URL || '' }}
+      TELEGRAPH_SHORT_NAME: ${{ vars.TELEGRAPH_SHORT_NAME || 'middle_east_news' }}
+      # Pre-migration backup: same destination and credentials as backup.yml, resolved by
+      # the shared script so the two workflows cannot drift apart.
+      BACKUP_STORAGE: ${{ vars.BACKUP_STORAGE }}
+      B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME || 'newsbot-backups' }}
+      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME || 'newsbot-backups' }}
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      RCLONE_CONFIG_R2_ACL: private
+      RCLONE_CONFIG_B2_TYPE: b2
+      RCLONE_CONFIG_B2_ACCOUNT: ${{ secrets.B2_APPLICATION_KEY_ID }}
+      RCLONE_CONFIG_B2_KEY: ${{ secrets.B2_APPLICATION_KEY }}
       # Editorial guards: log every numeric mismatch, and send one admin alert per run
       # about the articles parked for review. Override any of these with a repository
       # variable of the same name; the defaults are the safe, non-blocking behaviour.
@@ -93,14 +117,25 @@ jobs:
           pip install --no-deps 'aiogram==3.22.0'
           pip install -r requirements-dev.txt
 
-      - name: Apply database schema migrations
-        run: alembic upgrade head
+      - name: Install rclone for the pre-migration backup
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rclone
+
+      - name: Resolve backup storage
+        run: bash scripts/resolve_backup_storage.sh
+
+      # Fail-closed: a pending migration runs only after a dump that pg_restore accepts
+      # and that is verified at the destination. No pending migration = no backup and
+      # no bucket writes, so the normal runs leave the free tier untouched.
+      - name: Migrate only after a verified backup
+        run: bash scripts/migrate_with_backup.sh
 
       - name: Execute single-run batch pipeline
         run: python scripts/run_once.py
 
       # A dry run sends nothing, so the only way to review what the reader would have
-      # received is the bulletin text and PDF the job writes into scratch/.
+      # received is the bulletin text (and Telegraph link) the job writes into scratch/.
       - name: Upload dry-run bulletin evidence
         if: always()
         uses: actions/upload-artifact@v4

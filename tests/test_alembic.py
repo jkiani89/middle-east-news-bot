@@ -25,6 +25,7 @@ def test_alembic_config_and_script_directory():
     assert "f1a2b3c4d5e6" in rev_ids  # gemini_rotator_tables
     assert "a7d3c1e9f2b4" in rev_ids  # article attempt tracking
     assert "a7c1d2e3f4b5" in rev_ids  # bulletin_slots
+    assert "c3d4e5f6a7b8" in rev_ids  # telegraph_reports
 
     # Structural: no branch conflicts (single linear chain)
     heads = script.get_heads()
@@ -32,4 +33,4 @@ def test_alembic_config_and_script_directory():
 
     # Snapshot: current head (update when intentionally adding migrations)
     head_rev = script.get_current_head()
-    assert head_rev == "a7c1d2e3f4b5"
+    assert head_rev == "c3d4e5f6a7b8"

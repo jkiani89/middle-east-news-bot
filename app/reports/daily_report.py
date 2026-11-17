@@ -14,7 +14,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.summarizer import passes_persian_guard
@@ -188,6 +188,56 @@ def slot_report_date(slot_hour: int, now: datetime | None = None) -> date:
     return latest_slot_start(moment, slot_hour).date()
 
 
+def slot_start(report_date: date, slot_hour: int) -> datetime:
+    """The exact local start of one briefing slot."""
+    tz = ZoneInfo(settings.timezone)
+    return datetime.combine(report_date, time(hour=slot_hour, minute=0), tzinfo=tz)
+
+
+def current_due_slot(now: datetime | None = None) -> tuple[date, int] | None:
+    """The slot that is due right now, i.e. started within ``slot_grace_hours``.
+
+    Returns ``(report_date, slot_hour)`` or ``None`` when no slot is currently inside
+    its catch-up window. The report date is the day the slot started, so a 00:42 run
+    still belongs to yesterday's 20:00 slot.
+    """
+    tz = ZoneInfo(settings.timezone)
+    moment = (now or datetime.now(tz)).astimezone(tz)
+    grace_hours = min(max(1, settings.slot_grace_hours), 11)
+    for day_offset in (0, 1):
+        day = moment.date() - timedelta(days=day_offset)
+        for hour in sorted(report_slot_hours(), reverse=True):
+            start = slot_start(day, hour)
+            if start <= moment and moment - start < timedelta(hours=grace_hours):
+                return day, hour
+    return None
+
+
+def slot_candidates(
+    now: datetime | None = None,
+    lookback_hours: int | None = None,
+) -> list[tuple[date, int]]:
+    """All slot starts inside the recovery lookback, oldest first.
+
+    A dropped scheduled run leaves a slot with no publication record; walking every
+    configured slot start (rather than only the one that is due) is what lets the next
+    run recover the ones it missed.
+    """
+    tz = ZoneInfo(settings.timezone)
+    moment = (now or datetime.now(tz)).astimezone(tz)
+    lookback = lookback_hours if lookback_hours is not None else settings.slot_recovery_lookback_hours
+    lookback = max(0, int(lookback))
+    out: list[tuple[date, int]] = []
+    horizon = timedelta(hours=lookback)
+    for day_offset in range(0, lookback // 24 + 2):
+        day = moment.date() - timedelta(days=day_offset)
+        for hour in report_slot_hours():
+            start = slot_start(day, hour)
+            if start <= moment and moment - start <= horizon:
+                out.append((day, hour))
+    return sorted(out, key=lambda candidate: slot_start(*candidate))
+
+
 def report_window(
     report_date: date | None = None,
     slot_hour: int | None = None,
@@ -274,11 +324,19 @@ async def fetch_report_items(
     report_date: date | None = None,
     min_importance: int | None = None,
     slot_hour: int | None = None,
+    include_all: bool = False,
 ) -> tuple[date, list[dict[str, Any]], dict[str, Any]]:
-    """Query PostgreSQL for events in the 24-hour window matching report criteria.
+    """Query PostgreSQL for events in the report window matching report criteria.
 
     Strictly excludes any events containing articles with status 'flagged_for_review' or 'rejected'.
     Collects primary and supplementary source citations (Staleness Policy Option C).
+
+    ``include_all`` is the completeness mode used by the Telegraph report: membership is
+    decided only by the article collection time inside the half-open window, with no
+    importance threshold, no regional filter, no item cap and no exclusion of events
+    parked for review. ``flagged_events_included`` and ``review_pending`` keep that state
+    visible instead of hiding it. Stories whose analysis produced no summary are added by
+    :func:`app.reports.telegraph_report.fetch_complete_window_items`.
     """
     if min_importance is None:
         min_importance = settings.min_importance
@@ -292,23 +350,45 @@ async def fetch_report_items(
         .where(Article.status.in_(["flagged_for_review", "rejected"]))
     )
 
-    # An event belongs to a slot when its summary was produced in that window, in addition
-    # to the original collection timestamp. A backlog makes the two differ by many hours:
-    # anchored only on collection, a story analyzed at 10:00 from a 23:00 article was
-    # dated a day back and silently fell out of every slot.
-    conditions = [
-        or_(
-            and_(Summary.created_at >= window_start, Summary.created_at < window_end),
-            and_(Event.first_seen_at >= window_start, Event.first_seen_at < window_end),
-        ),
-        Event.importance >= min_importance,
-        Event.id.not_in(flagged_subquery),
-    ]
-    created_after = report_created_after_cutoff()
-    if created_after is not None:
-        # ``events`` has no created_at column (and adding one would need a migration);
-        # first_seen_at is its ingestion timestamp, set once when the event is inserted.
-        conditions.append(Event.first_seen_at >= created_after)
+    # Membership is decided by the collection time of the linked articles, in the half-open
+    # window. A story therefore belongs to exactly one report even when its summary is
+    # produced hours later, and a story already published yesterday is never dropped from
+    # today's report for that reason alone.
+    collected_in_window = (
+        select(ArticleEvent.event_id)
+        .join(Article, Article.id == ArticleEvent.article_id)
+        .where(
+            Article.collected_at >= window_start,
+            Article.collected_at < window_end,
+        )
+    )
+    conditions = [Event.id.in_(collected_in_window)]
+    flagged_events_included = 0
+    flagged_ids: set[int] = set()
+    if include_all:
+        # A parked event is still collected news: it is published and marked, not dropped.
+        flagged_rows = await session.scalars(
+            select(ArticleEvent.event_id)
+            .join(Article, Article.id == ArticleEvent.article_id)
+            .where(Article.status.in_(["flagged_for_review", "rejected"]))
+            .distinct()
+        )
+        flagged_ids = {int(event_id) for event_id in flagged_rows.all()}
+        flagged_events_included = len(flagged_ids)
+        if flagged_events_included:
+            logger.warning(
+                "%d event(s) in this window are parked for review; they are published with "
+                "a review marker rather than silently removed.",
+                flagged_events_included,
+            )
+    else:
+        conditions.append(Event.id.not_in(flagged_subquery))
+        conditions.append(Event.importance >= min_importance)
+        created_after = report_created_after_cutoff()
+        if created_after is not None:
+            # ``events`` has no created_at column (and adding one would need a migration);
+            # first_seen_at is its ingestion timestamp, set once when the event is inserted.
+            conditions.append(Event.first_seen_at >= created_after)
 
     # Query events in time window with importance threshold, excluding flagged
     stmt = (
@@ -332,6 +412,8 @@ async def fetch_report_items(
             "max_items": settings.max_daily_report_items,
             "language_rejected_count": 0,
             "min_created_at": (settings.daily_report_min_created_at or "").strip() or None,
+            "completeness": "all_events" if include_all else "filtered",
+            "flagged_events_included": flagged_events_included,
         }
         return report_date, [], metadata
 
@@ -363,18 +445,26 @@ async def fetch_report_items(
             continue
         seen_event_ids.add(event.id)
 
-        # R-1: stored text may predate the Phase N guard, so re-check it here and
-        # drop anything that is not fluent Persian instead of spreading it further.
+        # R-1: stored text may predate the Phase N guard, so re-check it here. A filtered
+        # bulletin drops it; the completeness report keeps it with an explicit warning
+        # rather than losing a collected story.
+        language_warning = False
         if not (
             passes_persian_guard(summary.headline_fa)
             and passes_persian_guard(summary.summary_fa)
         ):
             language_rejected_count += 1
+            language_warning = True
+            if not include_all:
+                logger.warning(
+                    "Event #%d dropped from the daily report: headline/summary failed the Persian language guard.",
+                    event.id,
+                )
+                continue
             logger.warning(
-                "Event #%d dropped from the daily report: headline/summary failed the Persian language guard.",
+                "Event #%d is included with a language warning: its summary failed the Persian guard.",
                 event.id,
             )
-            continue
 
         is_mock = is_summary_mock(summary)
         if is_mock:
@@ -469,7 +559,7 @@ async def fetch_report_items(
             "is_insufficient": cq_insufficient,
             "is_live_digest": is_digest,
             # Phase T-2: per-camp claims, kept as stored so the same event reads the
-            # same way in the text bulletin and in the PDF.
+            # same way in the Telegram bulletin and on the Telegraph page.
             "perspectives": [
                 {
                     **p,
@@ -492,6 +582,8 @@ async def fetch_report_items(
             "topic_key": topic.key if topic else None,
             "topic_fa": topic.name_fa if topic else "سایر تحولات",
             "is_mock": is_mock,
+            "language_warning": language_warning,
+            "review_pending": event.id in flagged_ids,
         }
 
         if distinct_sources < 2:
@@ -502,8 +594,14 @@ async def fetch_report_items(
                 item["verification_status"], "نامشخص"
             )
 
-        # Regional filter: require Middle East country, city, or waterway in geography
-        if getattr(settings, "bulletin_require_regional", True) and not has_regional_presence(item):
+        # Regional filter: require Middle East country, city, or waterway in geography.
+        # The completeness report is not regional: a world-news story collected in the
+        # window must still appear.
+        if (
+            not include_all
+            and getattr(settings, "bulletin_require_regional", True)
+            and not has_regional_presence(item)
+        ):
             logger.info("Excluding non-regional event ID %d ('%s') from bulletin.", event.id, event.title[:40])
             continue
 
@@ -512,10 +610,11 @@ async def fetch_report_items(
     # Sort items: Importance DESC, Source count DESC, Recency DESC
     items.sort(key=_item_sort_key, reverse=True)
 
-    # R-3: a bulletin is a briefing, not a dump; keep the strongest events only.
+    # R-3: a bulletin is a briefing, not a dump; keep the strongest events only. The
+    # completeness report is exempt: every collected story of the window is published.
     events_before_cap = len(items)
     max_items = max(0, settings.max_daily_report_items)
-    if max_items and len(items) > max_items:
+    if not include_all and max_items and len(items) > max_items:
         logger.info(
             "Capping the daily report at %d of %d eligible events.", max_items, events_before_cap
         )
@@ -544,6 +643,8 @@ async def fetch_report_items(
         "max_items": max_items,
         "language_rejected_count": language_rejected_count,
         "min_created_at": (settings.daily_report_min_created_at or "").strip() or None,
+        "completeness": "all_events" if include_all else "filtered",
+        "flagged_events_included": flagged_events_included,
         "slot": slot_label(slot_hour) if slot_hour is not None else None,
         "timezone": settings.timezone,
     }
@@ -1085,8 +1186,10 @@ async def generate_slot_bulletins(
                 for key, name, topic_items in sections
             ],
             "message_ids": previous.get("message_ids") or [],
-            "pdf_message_id": previous.get("pdf_message_id"),
-            "status": "generated",
+            "status": previous.get("status") or "generated",
+            "telegraph_index_url": previous.get("telegraph_index_url"),
+            "telegraph_status": previous.get("telegraph_status"),
+            "telegram_status": previous.get("telegram_status"),
         }
         bulletins[label] = payload
 
@@ -1125,7 +1228,7 @@ async def generate_slot_bulletins(
 
 
 # A run claims its slot before sending anything. The claim expires so a crashed run cannot
-# block the slot forever, but it is long enough to cover a normal Telegram + PDF delivery.
+# block the slot forever, but it is long enough to cover a normal Telegraph + Telegram run.
 SLOT_IN_FLIGHT_TIMEOUT_MINUTES = 15
 
 SLOT_CLAIMED = "claimed"
@@ -1166,6 +1269,16 @@ INSERT INTO bulletin_slots (report_date, slot_hour, status, message_ids)
 VALUES (:report_date, :slot_hour, 'published', CAST(:message_ids AS jsonb))
 ON CONFLICT ON CONSTRAINT uq_bulletin_slot_date_hour
 DO UPDATE SET status = 'published', message_ids = EXCLUDED.message_ids
+""")
+
+# A failed Telegram notification must not keep the slot claimed: the next run retries the
+# notification (the Telegraph pages are already recorded, so nothing is rebuilt).
+_SLOT_RELEASE = text("""
+UPDATE bulletin_slots
+   SET status = 'pending', claimed_at = NULL
+ WHERE report_date = :report_date
+   AND slot_hour = :slot_hour
+   AND status = 'in_flight'
 """)
 
 
@@ -1213,12 +1326,23 @@ async def claim_slot(
     return SLOT_PUBLISHED if status == SLOT_PUBLISHED else SLOT_IN_FLIGHT
 
 
+async def release_slot(
+    session: AsyncSession,
+    report_date: date,
+    slot_hour: int,
+) -> None:
+    """Give a claimed slot back after a failed notification, so the retry may run."""
+    await session.execute(
+        _SLOT_RELEASE, {"report_date": report_date, "slot_hour": slot_hour}
+    )
+    await session.commit()
+
+
 async def mark_slot_published(
     session: AsyncSession,
     report_date: date,
     slot_hour: int,
     message_ids: list[int],
-    pdf_message_id: int | None = None,
 ) -> None:
     """Record delivery of one briefing slot so a re-run never reposts it."""
     report = await session.scalar(
@@ -1227,7 +1351,7 @@ async def mark_slot_published(
     if report is None:
         return
     # The slot table is the authoritative delivery record; the JSON copy below keeps the
-    # reader-facing payload (content quality, PDF id) next to the rest of the report.
+    # reader-facing payload (content quality, Telegraph link) next to the report.
     await session.execute(
         _SLOT_MARK_PUBLISHED,
         {
@@ -1242,7 +1366,7 @@ async def mark_slot_published(
     payload: dict[str, Any] = dict(bulletins.get(label) or {})
     payload["status"] = "published"
     payload["message_ids"] = message_ids
-    payload["pdf_message_id"] = pdf_message_id
+    payload["telegram_status"] = "sent"
     bulletins[label] = payload
     content["bulletins"] = bulletins
     report.content = content
@@ -1251,6 +1375,31 @@ async def mark_slot_published(
     report.status = "published" if all(
         (slot.get("status") == "published") for slot in bulletins.values()
     ) else "generated"
+    await session.commit()
+
+
+async def mark_slot_telegraph(
+    session: AsyncSession,
+    report_date: date,
+    slot_hour: int,
+    index_url: str | None,
+    telegraph_status: str | None,
+) -> None:
+    """Keep the reader-facing copy of the Telegraph state next to the slot's bulletin."""
+    report = await session.scalar(
+        select(DailyReport).where(DailyReport.report_date == report_date)
+    )
+    if report is None:
+        return
+    content: dict[str, Any] = dict(report.content or {})
+    bulletins: dict[str, Any] = dict(content.get("bulletins") or {})
+    label = slot_label(slot_hour)
+    payload: dict[str, Any] = dict(bulletins.get(label) or {})
+    payload["telegraph_index_url"] = index_url
+    payload["telegraph_status"] = telegraph_status
+    bulletins[label] = payload
+    content["bulletins"] = bulletins
+    report.content = content
     await session.commit()
 
 

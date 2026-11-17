@@ -126,7 +126,7 @@ class BulletinSlot(Base):
 
     The claim and its release are single SQL statements, so two runs cannot both decide a
     slot is free; the JSON copy inside ``daily_reports.content`` is kept for the reader
-    payload (content quality, PDF id) but is no longer the lock.
+    payload (content quality, Telegraph link) but is no longer the lock.
     """
 
     __tablename__ = "bulletin_slots"
@@ -139,6 +139,36 @@ class BulletinSlot(Base):
     status: Mapped[str] = mapped_column(String(30), default="pending", nullable=False)
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     message_ids: Mapped[list] = mapped_column(JSONB, default=list)
+
+
+class TelegraphReport(Base):
+    """Publication state of one 12-hour report on Telegraph and Telegram.
+
+    The two delivery channels are tracked independently: ``status`` describes the
+    Telegraph pages (pending / in_progress / telegraph_completed / telegraph_partial /
+    failed) and ``telegram_status`` describes the notification (pending / sent / failed),
+    so a failed notification never causes the pages to be rebuilt.
+    """
+
+    __tablename__ = "telegraph_reports"
+    __table_args__ = (
+        UniqueConstraint("report_date", "slot_hour", name="uq_telegraph_report_date_hour"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    report_date: Mapped[date] = mapped_column(Date, nullable=False)
+    slot_hour: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    window_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(30), default="pending", nullable=False)
+    telegram_status: Mapped[str] = mapped_column(String(30), default="pending", nullable=False)
+    index_path: Mapped[str | None] = mapped_column(Text)
+    index_url: Mapped[str | None] = mapped_column(Text)
+    # event_id (as text) -> {path, url, title, topic_key} for every published subject page.
+    topic_pages: Mapped[dict] = mapped_column(JSONB, default=dict)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class JobLog(Base):

@@ -1,0 +1,106 @@
+"""Section titles and ordering for the Telegraph report index.
+
+The editorial topic rule (``app.editorial.topics``) decides which topic an event belongs
+to. This module only decides how those topics are titled and ordered on the index page.
+Grouping is total: an item whose topic is unknown (or missing) lands in ``other``, so a
+presentation lookup can never silently remove a news item from the report.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+TELEGRAPH_TOPICS_PATH = Path(__file__).resolve().parents[2] / "editorial" / "telegraph_topics.json"
+
+OTHER_TOPIC_KEY = "other"
+OTHER_TOPIC_NAME = "سایر تحولات"
+
+
+@dataclass(frozen=True)
+class TelegraphTopic:
+    """One index section."""
+
+    key: str
+    name_fa: str
+    order: int
+
+
+DEFAULT_TOPICS: tuple[TelegraphTopic, ...] = (
+    TelegraphTopic(key=OTHER_TOPIC_KEY, name_fa=OTHER_TOPIC_NAME, order=99),
+)
+
+
+def build_telegraph_topics(payload: dict[str, Any] | None) -> tuple[TelegraphTopic, ...]:
+    topics: list[TelegraphTopic] = []
+    seen: set[str] = set()
+    for raw in (payload or {}).get("topics", []):
+        key = str(raw.get("key") or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        topics.append(
+            TelegraphTopic(
+                key=key,
+                name_fa=str(raw.get("name_fa") or key),
+                order=int(raw.get("order", 50)),
+            )
+        )
+    if OTHER_TOPIC_KEY not in seen:
+        topics.append(TelegraphTopic(OTHER_TOPIC_KEY, OTHER_TOPIC_NAME, 99))
+    return tuple(sorted(topics, key=lambda topic: (topic.order, topic.key)))
+
+
+@lru_cache(maxsize=1)
+def load_telegraph_topics() -> tuple[TelegraphTopic, ...]:
+    try:
+        payload = json.loads(TELEGRAPH_TOPICS_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        logger.warning("%s is missing; the index uses the generic section only.", TELEGRAPH_TOPICS_PATH)
+        return DEFAULT_TOPICS
+    except json.JSONDecodeError as exc:
+        logger.error("%s is invalid JSON (%s); the index uses the generic section only.", TELEGRAPH_TOPICS_PATH, exc)
+        return DEFAULT_TOPICS
+    return build_telegraph_topics(payload)
+
+
+def reset_telegraph_topic_cache() -> None:
+    load_telegraph_topics.cache_clear()
+
+
+def telegraph_topic(key: str | None) -> TelegraphTopic:
+    """Resolve a topic key, falling back to the generic section."""
+    topics = load_telegraph_topics()
+    for topic in topics:
+        if key and topic.key == key:
+            return topic
+    for topic in topics:
+        if topic.key == OTHER_TOPIC_KEY:
+            return topic
+    return TelegraphTopic(OTHER_TOPIC_KEY, OTHER_TOPIC_NAME, 99)
+
+
+def group_items_by_telegraph_topic(
+    items: list[dict[str, Any]],
+) -> list[tuple[str, str, list[dict[str, Any]]]]:
+    """Group items into index sections, preserving the configured order and every item."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        key = telegraph_topic(item.get("topic_key")).key
+        grouped.setdefault(key, []).append(item)
+
+    sections: list[tuple[str, str, list[dict[str, Any]]]] = []
+    for topic in load_telegraph_topics():
+        topic_items = grouped.pop(topic.key, None)
+        if topic_items:
+            sections.append((topic.key, topic.name_fa, topic_items))
+    # A topic present in the data but absent from the JSON must still be published.
+    for key, topic_items in grouped.items():
+        sections.append((key, telegraph_topic(key).name_fa, topic_items))
+    return sections

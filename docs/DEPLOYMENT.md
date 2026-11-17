@@ -113,8 +113,8 @@ Set these as **Repository Variables** (Settings → Secrets and variables → Ac
   - `0 5`, `0 6`, `0 17`, `0 18` UTC: catch-up chances inside each slot's window (see below).
   - `workflow_dispatch`: Manual trigger from the GitHub Actions UI.
 
-> **Catch-up window:** a slot is publishable for `SLOT_GRACE_HOURS` (default 3) after it
-> starts, i.e. 08:00-11:00 and 20:00-23:00 Tehran. GitHub can delay or drop a scheduled run,
+> **Catch-up window:** a slot is publishable for `SLOT_GRACE_HOURS` (default 6) after it
+> starts, i.e. 08:00-14:00 and 20:00-02:00 Tehran. GitHub can delay or drop a scheduled run,
 > so these extra runs make sure a late bulletin still ships; an already published slot is
 > skipped by the record stored in `daily_reports.content.bulletins`.
 - **Actions performed:**
@@ -144,7 +144,9 @@ Set these as **Repository Variables** (Settings → Secrets and variables → Ac
 - **Actions performed:**
   1. Installs `rclone`.
   2. Uses transient `postgres:18-alpine` Docker container to run `pg_dump -Fc` against Aiven `DATABASE_URL` (the client must match the server's major version, otherwise `pg_dump` aborts).
-  3. Uploads the compressed binary dump to Backblaze B2 and deletes backups older than 7 days.
+  3. Validates the dump with `pg_restore --list`, uploads it to Backblaze B2 (`db/`), and
+     verifies the uploaded object's name and byte size. It **deletes nothing**: old-backup
+     pruning is a separate, explicit action (`scripts/prune_backups.sh --yes`).
 
 ---
 
@@ -160,11 +162,12 @@ six-hour delay is indistinguishable from a missing run.
 published and `bulletin_slots` had no row for it, while the 08:00 slot published normally:
 
 - the 08:00 slot was claimed at `05:34:00Z` by run `43681348002`
-  (`Slot decision: slot=8, now=09:04, grace=3h -> publish=True`);
+  (`Slot decision: slot=8, now=09:04, grace=3h -> publish=True`; the grace was 3h then
+  and is 6h now):
 - **no workflow run existed at all between `13:39:16Z` and `21:07:42Z`**, so the 16:30 UTC
   schedule and its 17:00/18:00 UTC catch-up chances never fired;
 - the next three runs (`21:07:42Z`, `21:27:28Z`, `22:20:54Z`) all logged
-  `Slot decision: slot=20, now=00:42/01:11/01:53, grace=3h -> publish=False`
+  `Slot decision: slot=20, now=00:42/01:11/01:53, grace=6h -> publish=False`
   — by then Tehran time was past the 20:00-23:00 window, so the code did the right thing.
 
 **Defence in depth.** Keep the `schedule` triggers as the second layer; add an external
@@ -253,6 +256,20 @@ same method, body and headers — only the title and the schedule time change.
 - `workflow_dispatch` must stay enabled in `.github/workflows/cron.yml`; the dispatch API
   only works for a workflow that declares it, and the workflow file must exist on the `ref`
   you dispatch (`main`).
+
+### 2.5 Where migrations are allowed to run
+
+- **Production (GitHub Actions):** the only allowed path is `.github/workflows/cron.yml` →
+  `scripts/migrate_with_backup.sh`. It refuses to migrate unless the dump produced by that
+  same run passed `pg_restore --list`, was uploaded, and its name and byte size were verified
+  at the destination.
+- **Legacy Docker Compose:** `scripts/deploy.sh` runs `alembic upgrade head` directly, with
+  **no Backup Gate**. Running it against the production database is **not allowed**; it exists
+  for local/legacy hosts only.
+- **CI:** `.github/workflows/ci.yml` migrates a throwaway PostgreSQL service for the test
+  suite; it never touches production.
+- Any manual `alembic upgrade head` against production is forbidden outside the gated
+  workflow.
 
 ## 3. Database Setup: Aiven PostgreSQL 16 Free
 

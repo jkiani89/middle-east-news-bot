@@ -17,7 +17,8 @@ jobs:
     timeout-minutes: 15
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      BACKUP_RETENTION_DAYS: '7'
+      # No retention setting here on purpose: this workflow never deletes anything.
+      # Pruning is a separate, explicit action (scripts/prune_backups.sh --yes).
       # 'r2' (Cloudflare) or 'b2' (Backblaze). The optional repository variable
       # BACKUP_STORAGE overrides the choice; without it the provider is inferred from the
       # credentials that actually exist, so a configured B2 key alone is enough.
@@ -45,27 +46,8 @@ jobs:
           sudo apt-get install -y rclone
 
       - name: Resolve backup storage
-        run: |
-          storage="${BACKUP_STORAGE:-}"
-          if [ -z "$storage" ]; then
-            if [ -n "${RCLONE_CONFIG_B2_ACCOUNT:-}" ]; then
-              storage=b2
-            else
-              storage=r2
-            fi
-          fi
-          if [ "$storage" = "b2" ]; then
-            # A Backblaze application key is scoped to specific buckets and rclone refuses
-            # any other name, so the bucket the key can actually reach is authoritative;
-            # the secret only covers a key that lists no bucket.
-            discovered=$(rclone lsd b2: 2>/dev/null | awk '{print $NF}' | head -n 1 || true)
-            bucket="${discovered:-${B2_BUCKET_NAME:-newsbot-backups}}"
-          else
-            bucket="${R2_BUCKET_NAME:-newsbot-backups}"
-          fi
-          echo "BACKUP_REMOTE=$storage" >> "$GITHUB_ENV"
-          echo "BACKUP_BUCKET=$bucket" >> "$GITHUB_ENV"
-          echo "Selected storage: $storage (bucket: $bucket)"
+        # Shared with cron.yml's pre-migration backup so both always target one place.
+        run: bash scripts/resolve_backup_storage.sh
 
       - name: Verify backup credentials are configured
         run: |

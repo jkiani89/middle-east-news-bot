@@ -250,8 +250,10 @@ async def test_created_at_filter_is_applied_to_the_event_query():
     with patch.object(settings, "daily_report_min_created_at", "2026-11-13"):
         await fetch_report_items(session, report_date=date(2026, 11, 14))
 
-    # events has no created_at column; first_seen_at is its ingestion timestamp.
-    assert captured["sql"].count("events.first_seen_at >=") == 2
+    # Windowing now anchors on the article collection time; the cutoff is the only
+    # events.first_seen_at comparison left (events has no created_at column).
+    assert captured["sql"].count("articles.collected_at >=") == 1
+    assert captured["sql"].count("events.first_seen_at >=") == 1
 
 
 @pytest.mark.asyncio
@@ -270,4 +272,5 @@ async def test_created_at_filter_is_absent_when_disabled():
     with patch.object(settings, "daily_report_min_created_at", ""):
         await fetch_report_items(session, report_date=date(2026, 11, 14))
 
-    assert captured["sql"].count("events.first_seen_at >=") == 1
+    assert captured["sql"].count("events.first_seen_at >=") == 0
+    assert captured["sql"].count("articles.collected_at >=") == 1
