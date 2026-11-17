@@ -587,6 +587,27 @@ def compute_pairwise_relations(
     New Pairs = Pairs_Prop - Pairs_Base (pairs separated in Base, but merged in Proposed)
     Retained Pairs = Pairs_Base & Pairs_Prop (pairs merged in both)
     """
+    expected_ids = {a.id for a in articles}
+    base_ids = set(map_base.keys())
+    prop_ids = set(map_prop.keys())
+
+    missing_from_base = expected_ids - base_ids
+    extra_in_base = base_ids - expected_ids
+    missing_from_prop = expected_ids - prop_ids
+    extra_in_prop = prop_ids - expected_ids
+
+    if missing_from_base or extra_in_base or missing_from_prop or extra_in_prop:
+        errors = []
+        if missing_from_base:
+            errors.append(f"Articles missing from Base mapping: {sorted(missing_from_base)}")
+        if extra_in_base:
+            errors.append(f"Unexpected extra articles in Base mapping: {sorted(extra_in_base)}")
+        if missing_from_prop:
+            errors.append(f"Articles missing from Proposed mapping: {sorted(missing_from_prop)}")
+        if extra_in_prop:
+            errors.append(f"Unexpected extra articles in Proposed mapping: {sorted(extra_in_prop)}")
+        raise ValueError(f"Mapping integrity violation before Pairwise computation: {'; '.join(errors)}")
+
     pairs_base: set[tuple[int, int]] = set()
     pairs_prop: set[tuple[int, int]] = set()
     n = len(articles)
@@ -640,15 +661,25 @@ def save_samples_atomically(
             f.flush()
             os.fsync(f.fileno())
 
-        # 2. If a valid previous file exists, create a timestamped backup before replacing
+        # 2. If a valid previous file exists, create a unique timestamped backup before replacing
         if out_json_path.exists():
             ts = backup_timestamp or int(datetime.now(UTC).timestamp())
             bak_path = out_json_path.with_suffix(f".bak_{ts}.json")
+            counter = 1
+            while bak_path.exists():
+                bak_path = out_json_path.with_suffix(f".bak_{ts}_{counter}.json")
+                counter += 1
             try:
                 shutil.copy2(out_json_path, bak_path)
                 print(f"Backed up previous samples to {bak_path.name}")
             except Exception as e_bak:
-                print(f"Notice: Could not create backup of previous samples: {e_bak}")
+                print(f"Error: Failed to create backup of previous samples: {e_bak}. Aborting save to protect original file.")
+                if temp_json_path.exists():
+                    try:
+                        temp_json_path.unlink()
+                    except Exception:
+                        pass
+                return False
 
         # 3. Atomically replace temp file into destination
         os.replace(temp_json_path, out_json_path)

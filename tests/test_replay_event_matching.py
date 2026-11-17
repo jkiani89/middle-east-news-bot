@@ -810,6 +810,77 @@ def test_save_samples_atomically_robustness_and_failures(tmp_path, monkeypatch):
     with open(target_file, encoding="utf-8") as f:
         assert json.load(f) == updated_data
 
+    # 4. Simulated failure during backup: must abort and leave target_file 100% intact
+    import shutil
+    monkeypatch.undo()  # restore json.dump
+
+    def mock_broken_copy2(*args, **kwargs):
+        raise OSError("Simulated permission error or failure during backup creation")
+
+    monkeypatch.setattr(shutil, "copy2", mock_broken_copy2)
+    ok4 = save_samples_atomically([{"corrupt_backup": True}], target_file, backup_timestamp=4000)
+    assert ok4 is False
+    # Target file still contains updated_data, NOT overwritten
+    with open(target_file, encoding="utf-8") as f:
+        assert json.load(f) == updated_data
+    # Temp file must have been cleanly removed
+    assert not target_file.with_suffix(".tmp").exists()
+
+    # 5. Timestamp collision on backup creates sequential numbered backups
+    monkeypatch.undo()  # restore shutil.copy2
+    ok5_a = save_samples_atomically([{"run": "first"}], target_file, backup_timestamp=5000)
+    assert ok5_a is True
+    assert (tmp_path / "replay_samples_30.bak_5000.json").exists()
+
+    ok5_b = save_samples_atomically([{"run": "second"}], target_file, backup_timestamp=5000)
+    assert ok5_b is True
+    assert (tmp_path / "replay_samples_30.bak_5000_1.json").exists()
+
+
+def test_compute_pairwise_relations_mapping_integrity_checks():
+    """Verify compute_pairwise_relations strictly verifies mapping equality with input articles
+
+    and halts with an explicit ValueError on missing or extra article IDs.
+    """
+    now = datetime.now(UTC)
+    art1 = ArticleRecord(1, "S", "A1", "u1", now, {}, 1, False, False)
+    art2 = ArticleRecord(2, "S", "A2", "u2", now, {}, 1, False, False)
+    art3 = ArticleRecord(3, "S", "A3", "u3", now, {}, 2, False, False)
+    articles = [art1, art2, art3]
+
+    valid_base = {1: 10, 2: 10, 3: 20}
+    valid_prop = {1: 10, 2: 30, 3: 20}
+
+    # Case 1: Both mappings complete and correct
+    pw = compute_pairwise_relations(articles, valid_base, valid_prop)
+    assert pw["pairs_base_count"] == 1
+    assert pw["broken_pairs_count"] == 1
+
+    # Case 2: Article ID missing from Base
+    incomplete_base = {1: 10, 2: 10}
+    with pytest.raises(ValueError) as exc_base_missing:
+        compute_pairwise_relations(articles, incomplete_base, valid_prop)
+    assert "Articles missing from Base mapping: [3]" in str(exc_base_missing.value)
+
+    # Case 3: Article ID missing from Proposed
+    incomplete_prop = {1: 10, 3: 20}
+    with pytest.raises(ValueError) as exc_prop_missing:
+        compute_pairwise_relations(articles, valid_base, incomplete_prop)
+    assert "Articles missing from Proposed mapping: [2]" in str(exc_prop_missing.value)
+
+    # Case 4: Extra unexpected Article ID in Base
+    extra_base = {1: 10, 2: 10, 3: 20, 99: 99}
+    with pytest.raises(ValueError) as exc_base_extra:
+        compute_pairwise_relations(articles, extra_base, valid_prop)
+    assert "Unexpected extra articles in Base mapping: [99]" in str(exc_base_extra.value)
+
+    # Case 5: Extra unexpected Article ID in Proposed
+    extra_prop = {1: 10, 2: 30, 3: 20, 88: 88}
+    with pytest.raises(ValueError) as exc_prop_extra:
+        compute_pairwise_relations(articles, valid_base, extra_prop)
+    assert "Unexpected extra articles in Proposed mapping: [88]" in str(exc_prop_extra.value)
+
+
 
 
 
