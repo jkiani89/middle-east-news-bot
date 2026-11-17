@@ -17,6 +17,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -252,3 +253,44 @@ def glossary_for_prompt(*texts: str, path: Path | str | None = None) -> tuple[st
         "review_required_skipped": sum(1 for entry in glossary.entries if entry.review_required),
     }
     return build_glossary_block(entries), meta
+
+
+_PERSIAN_LETTER_MAP = str.maketrans({"ي": "ی", "ك": "ک", "ۀ": "ه", "ة": "ه"})
+
+# Precompiled replacement rules for closed approved entities (Phase Y-13)
+# Rule order matters: longer compound phrases first, then single words with clitics.
+_CANONICAL_REPLACEMENTS: tuple[tuple[re.Pattern[str], Any], ...] = (
+    # 1. Vladimir Putin
+    (re.compile(r"(?:فلادیمیر|ولادیمیر)\s+بوتین", re.UNICODE), "ولادیمیر پوتین"),
+    (re.compile(r"(?<!\w)([\u0648\u0628\u0644]|[\u0648\u0628]\u0627\u0644)?(?:بوتین|بوتن)\b", re.UNICODE), lambda m: f"{m.group(1) or ''}پوتین"),
+
+    # 2. Donald Trump
+    (re.compile(r"دونالد\s+(?:ترمب|ترامب)", re.UNICODE), "دونالد ترامپ"),
+    (re.compile(r"(?<!\w)([\u0648\u0628\u0644]|[\u0648\u0628]\u0627\u0644)?(?:ترمب|ترامب)\b", re.UNICODE), lambda m: f"{m.group(1) or ''}ترامپ"),
+
+    # 3. Xi Jinping
+    (re.compile(r"شی\s+جین\s*پینگ", re.UNICODE), "شی جین‌پینگ"),
+    (re.compile(r"شي\s+جين\s*بينغ", re.UNICODE), "شی جین‌پینگ"),
+
+    # 4. Shenzhen
+    (re.compile(r"(?<!\w)([\u0648\u0628\u0644]|[\u0648\u0628]\u0627\u0644)?(?:شنجن|شنزن)\b", re.UNICODE), lambda m: f"{m.group(1) or ''}شنژن"),
+
+    # 5. APEC
+    (re.compile(r"مجمع\s+همکاری(?:\s+های)?\s+اقتصادی\s+آسیا[- ]پاس[ی]?فیک", re.UNICODE), "مجمع همکاری اقتصادی آسیا-اقیانوسیه (اپک)"),
+    (re.compile(r"(?<!\w)([\u0648\u0628\u0644]?)[أا]بيك\b", re.UNICODE), lambda m: f"{m.group(1) or ''}اپک"),
+)
+
+
+def canonicalize_approved_names(text: str | None) -> str:
+    """Replace closed set of approved leader/place spelling variants with canonical Persian forms.
+
+    Idempotent: applying once or repeatedly produces the exact same text.
+    Only replaces names within narrative text; never touches URLs or source names.
+    """
+    if not text:
+        return "" if text is None else text
+    norm = str(text).translate(_PERSIAN_LETTER_MAP)
+    for pattern, replacement in _CANONICAL_REPLACEMENTS:
+        norm = pattern.sub(replacement, norm)
+    return norm
+

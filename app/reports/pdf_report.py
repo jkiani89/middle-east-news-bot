@@ -35,6 +35,8 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from app.config import settings
+from app.editorial.glossary import canonicalize_approved_names
 from app.editorial.perspectives import group_perspectives
 
 logger = logging.getLogger(__name__)
@@ -327,7 +329,7 @@ def _header_flowables(
         ("رویدادهای منتشرشده", _digits(len(items))),
         ("تحولات راهبردی", _digits(strategic)),
         ("تحولات منطقه‌ای", _digits(regional)),
-        ("حد اهمیت", _digits(min_importance) if min_importance != "" else "—"),
+        ("حداقل اهمیت", _digits(min_importance) if min_importance != "" else "—"),
     ]
     # Right-to-left reading order: the first stat sits in the rightmost column.
     ordered = list(reversed(stats))
@@ -395,19 +397,46 @@ def _header_flowables(
     return flowables
 
 
+def _format_pdf_source(src: str, url: str) -> str:
+    clean_src = str(src or "منبع").strip()
+    clean_url = str(url or "").strip()
+    if not clean_src and not clean_url:
+        return ""
+    if "news.google.com" in clean_url:
+        clean_src = f"{clean_src} (Google News)" if clean_src else "Google News"
+    if clean_url:
+        return f'<a href="{clean_url}" color="#1a56db">{clean_src}</a>'
+    return clean_src
+
+
 def _sources_text(item: dict[str, Any]) -> str:
     entries: list[str] = []
-    primary = " — ".join(
-        part for part in (item.get("primary_source") or "", item.get("primary_url") or "") if part
-    )
-    if primary:
-        entries.append(primary)
+    seen_sources: set[str] = set()
+
+    pri_src = item.get("primary_source") or ""
+    pri_url = item.get("primary_url") or ""
+    if pri_src or pri_url:
+        key = (pri_src or "").strip().lower()
+        if key:
+            seen_sources.add(key)
+        formatted = _format_pdf_source(pri_src, pri_url)
+        if formatted:
+            entries.append(formatted)
+
     for supp in item.get("additional_sources") or []:
         if not isinstance(supp, dict):
             continue
-        entry = " — ".join(part for part in (supp.get("source") or "", supp.get("url") or "") if part)
-        if entry:
-            entries.append(entry)
+        s_src = supp.get("source") or ""
+        s_url = supp.get("url") or ""
+        key = s_src.strip().lower()
+        if key and key in seen_sources:
+            continue
+        if key:
+            seen_sources.add(key)
+        formatted = _format_pdf_source(s_src, s_url)
+        if formatted:
+            entries.append(formatted)
+
     if not entries:
         return ""
     if len(entries) == 1:
@@ -421,6 +450,9 @@ def _perspective_blocks(
     width: float,
 ) -> list[Any]:
     """Render the per-camp claim table of one item, or nothing when absent (T-2)."""
+    if item.get("is_live_digest"):
+        return []
+
     grouped = group_perspectives(item.get("perspectives") or [])
     if not grouped:
         return []
@@ -432,7 +464,7 @@ def _perspective_blocks(
         sources = "، ".join(
             dict.fromkeys(str(claim.get("source_name") or "").strip() for claim in claims)
         ).strip("، ")
-        text = " / ".join(str(claim.get("claim_fa") or "").strip() for claim in claims)
+        text = " / ".join(canonicalize_approved_names(str(claim.get("claim_fa") or "").strip()) for claim in claims)
         head = orientation.label_fa + (f" ({sources})" if sources else "")
         rows.append(
             [
@@ -441,7 +473,7 @@ def _perspective_blocks(
             ]
         )
 
-    disagreement = str(item.get("disagreement_fa") or "").strip()
+    disagreement = canonicalize_approved_names(str(item.get("disagreement_fa") or "").strip())
     if disagreement:
         rows.append(
             [
@@ -450,21 +482,22 @@ def _perspective_blocks(
             ]
         )
 
-    silent = "، ".join(
-        str(party).strip() for party in item.get("silent_parties_fa") or [] if str(party).strip()
-    )
-    if silent:
-        rows.append(
-            [
-                Paragraph(_wrap_rtl(silent, styles["persp"], claim_width, pad=6), styles["persp"]),
-                Paragraph(
-                    _wrap_rtl(
-                        "پوشش‌نشده در منابع پایش‌شده", styles["persp_label"], label_width, pad=6
-                    ),
-                    styles["persp_label"],
-                ),
-            ]
+    if getattr(settings, "show_silent_parties", False):
+        silent = "، ".join(
+            str(party).strip() for party in item.get("silent_parties_fa") or [] if str(party).strip()
         )
+        if silent:
+            rows.append(
+                [
+                    Paragraph(_wrap_rtl(silent, styles["persp"], claim_width, pad=6), styles["persp"]),
+                    Paragraph(
+                        _wrap_rtl(
+                            "پوشش‌نشده در منابع پایش‌شده", styles["persp_label"], label_width, pad=6
+                        ),
+                        styles["persp_label"],
+                    ),
+                ]
+            )
 
     table = Table(rows, colWidths=[claim_width, label_width])
     table.setStyle(
@@ -496,13 +529,17 @@ def _item_flowables(
     accent: colors.Color,
     width: float,
 ) -> list[Any]:
-    headline = item.get("headline_fa") or item.get("headline") or item.get("title") or "بدون تیتر"
-    summary = item.get("summary_fa") or item.get("summary") or ""
+    headline = canonicalize_approved_names(
+        item.get("headline_fa") or item.get("headline") or item.get("title") or "بدون تیتر"
+    )
+    summary = canonicalize_approved_names(item.get("summary_fa") or item.get("summary") or "")
     importance = max(1, min(5, int(item.get("importance") or 3)))
     category = item.get("category_fa") or "عمومی"
     status = PDF_STATUS_LABELS.get(item.get("verification_status") or "", "نامشخص")
-    geography = "، ".join(item.get("countries") or []) or item.get("location") or "منطقه"
-    actors = "، ".join(item.get("actors") or [])
+    geography = canonicalize_approved_names(
+        "، ".join(item.get("countries") or []) or item.get("location") or "منطقه"
+    )
+    actors = canonicalize_approved_names("، ".join(item.get("actors") or []))
 
     meta_bits = [
         f"اهمیت {_digits(importance)} از ۵",
@@ -511,6 +548,8 @@ def _item_flowables(
     ]
     if item.get("event_type"):
         meta_bits.append(f"کد رویداد: {item['event_type']}")
+    if item.get("is_live_digest"):
+        meta_bits.append("نوع پوشش: پوشش زنده (چندموضوعی)")
     if item.get("is_insufficient"):
         meta_bits.append(f"کیفیت محتوا: {item.get('content_quality_fa', 'اطلاعات ناکافی')}")
 
@@ -639,8 +678,10 @@ def build_daily_report_pdf(
 
     story: list[Any] = _header_flowables(styles, report_date, items, metadata, content_width)
 
-    strategic = [item for item in items if int(item.get("importance") or 3) >= 4]
-    regional = [item for item in items if int(item.get("importance") or 3) < 4]
+    strategic_raw = [item for item in items if int(item.get("importance") or 3) >= 4]
+    sec1_max = getattr(settings, "bulletin_section1_max", 12)
+    strategic = strategic_raw[:sec1_max]
+    regional = strategic_raw[sec1_max:] + [item for item in items if int(item.get("importance") or 3) < 4]
 
     if not items:
         story.append(
@@ -659,7 +700,7 @@ def build_daily_report_pdf(
         story.extend(
             _section_flowables(
                 styles,
-                "بخش اول: اهم تحولات راهبردی",
+                "بخش اول: اهم تحولات (اهمیت ۴ و ۵)",
                 strategic,
                 STRATEGIC_ACCENT,
                 content_width,
@@ -669,7 +710,7 @@ def build_daily_report_pdf(
         story.extend(
             _section_flowables(
                 styles,
-                "بخش دوم: سایر تحولات منطقه‌ای و موضوعی",
+                "بخش دوم: سایر تحولات",
                 regional,
                 REGIONAL_ACCENT,
                 content_width,

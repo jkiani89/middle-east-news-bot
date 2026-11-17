@@ -91,6 +91,84 @@ MIDDLE_EAST_WATERWAYS: frozenset[str] = frozenset(
     }
 )
 
+# Comprehensive catalog of non-Middle East sovereign states, territories, and global powers
+# in both English and Persian (normalized).
+WORLD_COUNTRIES: frozenset[str] = frozenset(
+    {
+        # East Asia & Pacific
+        "japan", "south korea", "republic of korea", "korea", "north korea", "dprk", "china",
+        "peoples republic of china", "people's republic of china", "prc", "taiwan", "mongolia",
+        "ژاپن", "کره جنوبی", "جمهوری کره", "کره", "کره شمالی", "چین", "تایوان", "مغولستان",
+        # Southeast Asia
+        "vietnam", "thailand", "indonesia", "malaysia", "singapore", "philippines", "myanmar", "burma",
+        "cambodia", "laos", "brunei", "east timor", "timor-leste",
+        "ویتنام", "تایلند", "اندونزی", "مالزی", "سنگاپور", "فیلیپین", "میانمار", "برمه", "کامبوج", "لائوس", "برونئی", "تیمور شرقی",
+        # South Asia
+        "india", "pakistan", "bangladesh", "sri lanka", "nepal", "afghanistan", "maldives", "bhutan",
+        "هند", "پاکستان", "بنگلادش", "سری لانکا", "سری‌لانکا", "سریلانکا", "نپال", "افغانستان", "مالدیو", "بوتان",
+        # Central Asia & Caucasus
+        "kazakhstan", "uzbekistan", "turkmenistan", "kyrgyzstan", "tajikistan", "azerbaijan", "armenia", "georgia",
+        "قزاقستان", "ازبکستان", "ترکمنستان", "قرقیزستان", "تاجیکستان", "آذربایجان", "ارمنستان", "گرجستان",
+        # Europe
+        "russia", "russian federation", "ukraine", "belarus", "united kingdom", "uk", "britain", "great britain", "england",
+        "france", "germany", "italy", "spain", "portugal", "netherlands", "holland", "belgium", "switzerland",
+        "austria", "poland", "sweden", "norway", "finland", "denmark", "greece", "czech republic", "czechia",
+        "hungary", "romania", "bulgaria", "serbia", "croatia", "ireland", "slovakia", "slovenia", "lithuania",
+        "latvia", "estonia", "cyprus", "malta", "luxembourg", "iceland", "albania", "north macedonia", "bosnia",
+        "bosnia and herzegovina", "montenegro", "kosovo", "moldova", "vatican", "monaco",
+        "روسیه", "اوکراین", "بلاروس", "بریتانیا", "انگلیس", "انگلستان", "بریتانیای کبیر",
+        "فرانسه", "آلمان", "ایتالیا", "اسپانیا", "پرتغال", "هلند", "بلژیک", "سوئیس", "اتریش",
+        "لهستان", "سوئد", "نروژ", "فنلاند", "دانمارک", "یونان", "چک", "جمهوری چک", "مجارستان",
+        "رومانی", "بلغارستان", "صربستان", "کرواسی", "ایرلند", "اسلواکی", "اسلوونی", "لیتوانی",
+        "لتونی", "استونی", "قبرس", "مالت", "لوکزامبورگ", "ایسلند", "آلبانی", "مقدونیه شمالی",
+        "بوسنی", "بوسنی و هرزگوین", "مونته‌نگرو", "کوزوو", "مولداوی", "واتیکان", "موناکو",
+        # North America
+        "united states", "united states of america", "usa", "us", "u.s.", "u.s.a.", "canada", "mexico",
+        "آمریکا", "ایالات متحده", "ایالات متحده آمریکا", "کانادا", "مکزیک",
+        # Latin America & Caribbean
+        "brazil", "argentina", "colombia", "venezuela", "chile", "peru", "ecuador", "bolivia",
+        "paraguay", "uruguay", "cuba", "haiti", "dominican republic", "panama", "costa rica",
+        "guatemala", "honduras", "el salvador", "nicaragua", "jamaica",
+        "برزیل", "آرژانتین", "کلمبیا", "ونزوئلا", "شیلی", "پرو", "اکوادور", "بولیوی",
+        "پاراگوئه", "اروگوئه", "کوبا", "هائیتی", "جمهوری دومینیکن", "پاناما", "کاستاریکا",
+        "گواتمالا", "هندوراس", "السالوادور", "نیکاراگوئه", "جامائیکا",
+        # Africa
+        "sudan", "south sudan", "libya", "tunisia", "algeria", "morocco", "ethiopia", "somalia",
+        "djibouti", "eritrea", "kenya", "uganda", "tanzania", "rwanda", "congo", "drc", "nigeria",
+        "niger", "chad", "mali", "burkina faso", "senegal", "ghana", "ivory coast", "cote d'ivoire",
+        "south africa", "zimbabwe", "zambia", "angola", "mozambique", "madagascar", "cameroon",
+        "gabon", "namibia", "botswana",
+        "سودان", "سودان جنوبی", "لیبی", "تونس", "الجزایر", "مراکش", "مغرب", "اتیوپی", "سومالی",
+        "جیبوتی", "اریتره", "کنیا", "اوگاندا", "تانزانیا", "رواندا", "کنگو", "جمهوری دموکراتیک کنگو",
+        "نیجریه", "نیجر", "چاد", "مالی", "بورکینافاسو", "سنگال", "غنا", "ساحل عاج", "آفریقای جنوبی",
+        "زیمبابوه", "زامبیا", "آنگولا", "موزامبیک", "ماداگاسکار", "کامرون", "گابن", "نامیبیا", "بوتسوانا",
+        # Oceania
+        "australia", "new zealand", "papua new guinea", "fiji",
+        "استرالیا", "نیوزیلند", "پاپوآ گینه نو", "فیجی",
+    }
+)
+
+# Major global and regional waterways/seas beyond the Middle East
+GLOBAL_WATERWAYS: frozenset[str] = frozenset(
+    {
+        "black sea", "baltic sea", "caspian sea", "mediterranean", "mediterranean sea",
+        "south china sea", "east china sea", "taiwan strait", "panama canal", "indian ocean",
+        "pacific ocean", "atlantic ocean", "strait of malacca", "malacca strait", "gulf of mexico", "north sea",
+        "دریای سیاه", "دریای بالتیک", "دریای خزر", "دریای مازندران", "دریای مدیترانه",
+        "دریای چین جنوبی", "دریای چین شرقی", "تنگه تایوان", "کانال پاناما", "اقیانوس هند",
+        "اقیانوس آرام", "اقیانوس اطلس", "تنگه مالاکا", "خلیج مکزیک", "دریای شمال",
+    }
+)
+
+# Unified global sets
+ALL_COUNTRIES: frozenset[str] = frozenset(
+    MIDDLE_EAST_COUNTRIES | WORLD_COUNTRIES
+)
+
+ALL_WATERWAYS: frozenset[str] = frozenset(
+    MIDDLE_EAST_WATERWAYS | GLOBAL_WATERWAYS
+)
+
 # Major cities of the region. Analyses usually name a city rather than a country,
 # so a strict gate that only knew country names would reject Tehran- or Cairo-datelined
 # stories that are entirely in scope.
@@ -163,6 +241,13 @@ def is_middle_east_country(value: str) -> bool:
     return normalize_place(value) in MIDDLE_EAST_COUNTRIES
 
 
+def is_country(value: str | None) -> bool:
+    """Whether a place name represents any sovereign country or major territory globally."""
+    if not value:
+        return False
+    return normalize_place(value) in ALL_COUNTRIES
+
+
 def mentions_middle_east_waterway(value: str | None) -> bool:
     """Whether a location string mentions one of the strategic waterways."""
     if not value:
@@ -170,6 +255,16 @@ def mentions_middle_east_waterway(value: str | None) -> bool:
     normalized = normalize_place(value)
     return normalized in MIDDLE_EAST_WATERWAYS or any(
         waterway in normalized for waterway in MIDDLE_EAST_WATERWAYS
+    )
+
+
+def is_waterway(value: str | None) -> bool:
+    """Whether a place name represents a strategic or major global waterway/sea."""
+    if not value:
+        return False
+    normalized = normalize_place(value)
+    return normalized in ALL_WATERWAYS or any(
+        w in normalized for w in ALL_WATERWAYS
     )
 
 

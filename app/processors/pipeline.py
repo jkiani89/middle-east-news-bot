@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import and_, case, distinct, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -21,7 +22,9 @@ from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, ArticleEvent, Event, JobLog, Source, Summary
 from app.editorial.content_quality import classify_content_quality
-from app.editorial.perspectives import load_orientations, orientation_for
+from app.editorial.glossary import canonicalize_approved_names
+from app.editorial.liveblog import is_live_digest
+from app.editorial.perspectives import check_perspectives_gate, load_orientations, orientation_for
 from app.editorial.prefilter import prefilter_analysis
 from app.editorial.regions import has_middle_east_nexus, is_primary_actor
 from app.editorial.topics import match_primary_topic
@@ -101,7 +104,15 @@ async def _refresh_event_perspectives(
     try:
         rows = (
             await session.execute(
-                select(Article.id, Article.title, Article.original_text, Source.name)
+                select(
+                    Article.id,
+                    Article.title,
+                    Article.original_text,
+                    Source.name,
+                    Article.ai_payload,
+                    Article.canonical_url,
+                    Article.original_url,
+                )
                 .join(ArticleEvent, ArticleEvent.article_id == Article.id)
                 .join(Source, Source.id == Article.source_id)
                 .where(ArticleEvent.event_id == event_id)
@@ -113,12 +124,17 @@ async def _refresh_event_perspectives(
         return False
 
     # One excerpt per camp is enough to show the difference and keeps the prompt small.
-    chosen: dict[str, dict[str, str]] = {}
+    chosen: dict[str, dict[str, Any]] = {}
     for row in rows:
-        # SQLAlchemy returns Row objects, not tuples; check the shape instead of the type.
-        if len(row) != 4:
+        if len(row) < 4:
             continue
-        _article_id, title, text, source_name = row
+        _article_id, title, text, source_name = row[:4]
+        payload = row[4] if len(row) > 4 and isinstance(row[4], dict) else {}
+        can_u = row[5] if len(row) > 5 else None
+        orig_u = row[6] if len(row) > 6 else None
+
+        if payload.get("is_live_digest") or is_live_digest(can_u or orig_u, title):
+            continue
         if not source_name:
             continue
         orientation = orientation_for(source_name)
@@ -129,6 +145,8 @@ async def _refresh_event_perspectives(
             "source_name": source_name,
             "orientation": orientation.label_fa,
             "text": excerpt,
+            "actors": payload.get("actors") or [],
+            "location": payload.get("location") or "",
         }
 
     logger.info(
@@ -145,13 +163,43 @@ async def _refresh_event_perspectives(
         )
         return False
 
-    summary = (
-        await session.scalars(select(Summary).where(Summary.event_id == event_id))
-    ).first()
+    # Phase Y-13: Perspectives Gate — Require shared non-country actors/locations
+    has_any_actor_data = any(bool(art.get("actors") or art.get("location")) for art in chosen.values())
+    passed_gate, shared_entities = check_perspectives_gate(
+        list(chosen.values()),
+        min_shared_actors=settings.perspective_min_shared_actors,
+    )
+    if not passed_gate:
+        reason = "insufficient_data" if not has_any_actor_data else "disjoint_entities"
+        logger.info(
+            "Event #%d rejected by perspective gate (reason=%s): camps %s share no non-country actor or city.",
+            event_id,
+            reason,
+            sorted(chosen),
+        )
+        return False
+
+    summary = None
+    try:
+        res = await session.scalars(select(Summary).where(Summary.event_id == event_id))
+        if hasattr(res, "first"):
+            summary = res.first()
+        elif hasattr(res, "all"):
+            items = res.all()
+            summary = items[0] if items else None
+    except Exception:
+        logger.exception("Could not load summary for event #%d for perspectives.", event_id)
+        return False
+
     if summary is None:
         return False
 
     details = dict(summary.details_fa or {})
+    # Phase Y-13: Live digests never receive a perspective matrix
+    if details.get("is_live_digest") or details.get("article_kind") == "live_digest":
+        logger.info("Event #%d is a live digest; skipping perspective matrix.", event_id)
+        return False
+
     covered = sorted(chosen)
     if sorted(details.get("perspectives_orientations") or []) == covered and details.get("perspectives"):
         return False
@@ -213,10 +261,17 @@ async def _refresh_event_perspectives(
         limit = max(limit, len(YEMEN_REQUIRED_SIDES) + 1)
     silent = list(dict.fromkeys([*required, *others, *result.silent_parties_fa]))[:limit]
 
-    details["perspectives"] = [item.model_dump(mode="json") for item in result.perspectives]
+    details["perspectives"] = [
+        {
+            **item.model_dump(mode="json"),
+            "claim_fa": canonicalize_approved_names(item.claim_fa),
+        }
+        for item in result.perspectives
+    ]
     details["perspectives_orientations"] = covered
-    details["disagreement_fa"] = result.disagreement_fa
+    details["disagreement_fa"] = canonicalize_approved_names(result.disagreement_fa)
     details["silent_parties_fa"] = silent
+    details["shared_actors"] = sorted(shared_entities)
     summary.details_fa = details
     logger.info(
         "Narrative matrix for event #%d rebuilt from %d camp(s): %d claim(s), disagreement=%s.",
@@ -540,6 +595,30 @@ async def process_collected_articles(
         payload_dict = result.model_dump(mode="json")
         payload_dict["model_name"] = ai_provider.model_name
 
+        # Phase Y-13: Liveblog / Rolling Digest detection
+        is_digest = is_live_digest(article.canonical_url or article.original_url, article.title)
+        article_kind = "live_digest" if is_digest else "standard"
+        payload_dict["article_kind"] = article_kind
+        payload_dict["is_live_digest"] = is_digest
+        if is_digest:
+            result.importance = min(result.importance, getattr(settings, "liveblog_max_importance", 3))
+            payload_dict["importance"] = result.importance
+
+        # Phase Y-13: Closed-set canonicalization of approved names
+        result.headline_fa = canonicalize_approved_names(result.headline_fa)
+        result.summary_fa = canonicalize_approved_names(result.summary_fa)
+        if result.event_title:
+            result.event_title = canonicalize_approved_names(result.event_title)
+        if result.actors:
+            result.actors = [canonicalize_approved_names(a) for a in result.actors]
+        if result.countries:
+            result.countries = [canonicalize_approved_names(c) for c in result.countries]
+        payload_dict["headline_fa"] = result.headline_fa
+        payload_dict["summary_fa"] = result.summary_fa
+        payload_dict["event_title"] = result.event_title
+        payload_dict["actors"] = result.actors
+        payload_dict["countries"] = result.countries
+
         # Phase Y-1: every number in the Persian output must be grounded in the exact
         # text the model saw (title + body truncated by the prompt builder). A checker
         # failure is contained (Y-1b) so one odd article cannot abort the batch.
@@ -733,6 +812,8 @@ async def process_collected_articles(
                             "url": article.original_url,
                             "topic": topic.key if topic else None,
                             "content_quality": content_quality,
+                            "article_kind": payload_dict.get("article_kind", "standard"),
+                            "is_live_digest": is_digest,
                             "sources": [{
                                 "source": source_name,
                                 "url": article.original_url,
