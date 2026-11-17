@@ -16,7 +16,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database.models import Article, Event, Summary
+from app.editorial.glossary import canonicalize_approved_names
+from app.editorial.liveblog import is_live_digest
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +181,25 @@ def calculate_event_similarity(
     )
 
 
+def _is_live_digest_event(candidate: Event, cand_summary_or_details: Any) -> bool:
+    """Check whether a candidate event represents a live digest / rolling coverage."""
+    if is_live_digest(None, getattr(candidate, "title", "")):
+        return True
+    if cand_summary_or_details is None:
+        return False
+    if isinstance(cand_summary_or_details, dict):
+        return bool(
+            cand_summary_or_details.get("is_live_digest")
+            or cand_summary_or_details.get("article_kind") == "live_digest"
+        )
+    if hasattr(cand_summary_or_details, "details_fa") and isinstance(cand_summary_or_details.details_fa, dict):
+        return bool(
+            cand_summary_or_details.details_fa.get("is_live_digest")
+            or cand_summary_or_details.details_fa.get("article_kind") == "live_digest"
+        )
+    return False
+
+
 @dataclass
 class EventMatchResult:
     event_id: int
@@ -219,19 +241,36 @@ class EventMatcher:
         window_start = ref_time - timedelta(hours=self.time_window_hours)
         window_end = ref_time + timedelta(hours=self.time_window_hours)
 
-        # 1. Query candidate active events within the 48-hour window
-        stmt_active = select(Event).where(
-            Event.status == "active",
-            Event.first_seen_at >= window_start,
-            Event.first_seen_at <= window_end,
-        ).order_by(Event.first_seen_at.desc())
+        incoming_is_digest = (
+            analysis_data.get("article_kind") == "live_digest"
+            or is_live_digest(article.canonical_url or article.original_url, article.title)
+        )
 
-        active_events = (await session.scalars(stmt_active)).all()
+        active_events = []
+        if not incoming_is_digest:
+            # 1. Query candidate active events within the 48-hour window
+            stmt_active = select(Event).where(
+                Event.status == "active",
+                Event.first_seen_at >= window_start,
+                Event.first_seen_at <= window_end,
+            ).order_by(Event.first_seen_at.desc())
+
+            active_events = (await session.scalars(stmt_active)).all()
 
         best_active_event: Event | None = None
         best_active_score = 0.0
 
         for candidate in active_events:
+            # Phase Y-13: An event that is a live digest must NEVER accept other articles
+            cand_obj = None
+            try:
+                stmt_cand_summary = select(Summary.details_fa).where(Summary.event_id == candidate.id)
+                cand_obj = await session.scalar(stmt_cand_summary)
+            except Exception:
+                pass
+            if _is_live_digest_event(candidate, cand_obj):
+                continue
+
             sim = calculate_event_similarity(candidate, analysis_data)
             if sim.total_score > best_active_score:
                 best_active_score = sim.total_score
@@ -282,16 +321,27 @@ class EventMatcher:
 
         # 2. Check for Follow-Up candidate (>48h and <= follow_up_window_days)
         historical_start = ref_time - timedelta(days=self.follow_up_window_days)
-        stmt_hist = select(Event).where(
-            Event.first_seen_at >= historical_start,
-            Event.first_seen_at < window_start,
-        ).order_by(Event.first_seen_at.desc())
+        hist_events = []
+        if not incoming_is_digest:
+            stmt_hist = select(Event).where(
+                Event.first_seen_at >= historical_start,
+                Event.first_seen_at < window_start,
+            ).order_by(Event.first_seen_at.desc())
+            hist_events = (await session.scalars(stmt_hist)).all()
 
-        hist_events = (await session.scalars(stmt_hist)).all()
         best_hist_event: Event | None = None
         best_hist_score = 0.0
 
         for candidate in hist_events:
+            cand_obj = None
+            try:
+                stmt_cand_summary = select(Summary.details_fa).where(Summary.event_id == candidate.id)
+                cand_obj = await session.scalar(stmt_cand_summary)
+            except Exception:
+                pass
+            if _is_live_digest_event(candidate, cand_obj):
+                continue
+
             sim = calculate_event_similarity(candidate, analysis_data)
             if sim.total_score > best_hist_score:
                 best_hist_score = sim.total_score
@@ -305,7 +355,7 @@ class EventMatcher:
                 best_hist_event.title[:40],
                 best_hist_score,
             )
-            raw_title = analysis_data.get("event_title") or article.title
+            raw_title = canonicalize_approved_names(analysis_data.get("event_title") or article.title)
             follow_up_title = f"[پیگیری] {raw_title}"
             categories = analysis_data.get("categories") or []
             primary_cat = categories[0] if categories else best_hist_event.event_type
@@ -313,8 +363,8 @@ class EventMatcher:
             follow_up_event = Event(
                 title=follow_up_title,
                 event_type=primary_cat,
-                countries=analysis_data.get("countries") or best_hist_event.countries,
-                actors=analysis_data.get("actors") or best_hist_event.actors,
+                countries=[canonicalize_approved_names(c) for c in (analysis_data.get("countries") or best_hist_event.countries)],
+                actors=[canonicalize_approved_names(a) for a in (analysis_data.get("actors") or best_hist_event.actors)],
                 location=analysis_data.get("location") or best_hist_event.location,
                 importance=analysis_data.get("importance", 3),
                 status="active",
@@ -334,17 +384,20 @@ class EventMatcher:
             )
 
         # 3. Create brand new initial Event
-        raw_title = analysis_data.get("event_title") or article.title
+        raw_title = canonicalize_approved_names(analysis_data.get("event_title") or article.title)
         categories = analysis_data.get("categories") or []
         primary_cat = categories[0] if categories else None
+        imp = int(analysis_data.get("importance", 3) or 3)
+        if incoming_is_digest:
+            imp = min(imp, getattr(settings, "liveblog_max_importance", 3))
 
         new_event = Event(
             title=raw_title,
             event_type=primary_cat,
-            countries=analysis_data.get("countries") or [],
-            actors=analysis_data.get("actors") or [],
+            countries=[canonicalize_approved_names(c) for c in (analysis_data.get("countries") or [])],
+            actors=[canonicalize_approved_names(a) for a in (analysis_data.get("actors") or [])],
             location=analysis_data.get("location"),
-            importance=analysis_data.get("importance", 3),
+            importance=imp,
             status="active",
             parent_event_id=None,
             first_seen_at=ref_time,

@@ -124,13 +124,19 @@ def test_a_non_persian_claim_is_dropped_but_the_rest_survives():
     assert result.silent_parties_fa == ["هاآرتص"]
 
 
-def test_matrix_renders_camps_in_display_order_with_disagreement_and_silence():
+def test_matrix_renders_camps_in_display_order_with_disagreement_and_silence(monkeypatch):
+    monkeypatch.setattr(settings, "show_silent_parties", True)
     lines = "\n".join(perspective_lines(_item()))
     assert "مقایسه روایت‌ها" in lines
     assert lines.index("غربی") < lines.index("روسی") < lines.index("انصارالله")
     assert "نقاط اختلاف" in lines
     assert "پوشش‌نشده در منابع پایش‌شده" in lines
     assert "هاآرتص" in lines
+
+    # Under default SHOW_SILENT_PARTIES=False (Phase Y-13), silent parties are hidden
+    monkeypatch.setattr(settings, "show_silent_parties", False)
+    lines_default = "\n".join(perspective_lines(_item()))
+    assert "پوشش‌نشده در منابع پایش‌شده" not in lines_default
 
 
 def test_bulletin_text_shows_the_matrix_and_hides_it_when_empty():
@@ -256,8 +262,8 @@ class _FakeSession:
 async def test_refresh_builds_and_caches_the_matrix_per_camp():
     summary = SimpleNamespace(details_fa={}, event_id=7)
     rows = [
-        (11, "Five ships hit in the Red Sea", "Houthi attack damaged five vessels.", "Reuters"),
-        (12, "No Russian ship damaged", "TASS reports nothing was hit.", "TASS"),
+        (11, "Five ships hit in the Red Sea", "Houthi attack damaged five vessels.", "Reuters", {"actors": ["Houthi"], "location": "Red Sea"}),
+        (12, "No Russian ship damaged", "TASS reports nothing was hit.", "TASS", {"actors": ["Houthi"], "location": "Red Sea"}),
     ]
     session = _FakeSession(rows, summary)
     provider = MockAIProvider(canned_response=VALID_MATRIX)
@@ -362,8 +368,8 @@ def test_yemen_prompt_names_the_three_sides_and_the_topic():
 async def test_yemen_matrix_names_the_absent_side_in_the_readers_words():
     summary = SimpleNamespace(details_fa={}, event_id=42)
     rows = [
-        (1, "Yemen clashes in Marib", "Houthi forces advanced in Marib.", "Saba News Agency"),
-        (2, "Marib fighting continues", "Fighting continued in Marib.", "Reuters"),
+        (1, "Yemen clashes in Marib", "Houthi forces advanced in Marib.", "Saba News Agency", {"actors": ["Houthi"], "location": "Marib"}),
+        (2, "Marib fighting continues", "Fighting continued in Marib.", "Reuters", {"actors": ["Houthi"], "location": "Marib"}),
     ]
     provider = MockAIProvider(canned_response=VALID_MATRIX)
 
@@ -388,8 +394,8 @@ async def test_yemen_matrix_names_the_absent_side_in_the_readers_words():
 async def test_a_non_yemen_event_keeps_the_generic_silence_labels():
     summary = SimpleNamespace(details_fa={}, event_id=43)
     rows = [
-        (1, "Senate vote", "The Senate voted.", "Reuters"),
-        (2, "Senate leadership", "Leadership challenged.", "TASS"),
+        (1, "Senate vote", "The Senate voted.", "Reuters", {"actors": ["Senate"]}),
+        (2, "Senate leadership", "Leadership challenged.", "TASS", {"actors": ["Senate"]}),
     ]
     provider = MockAIProvider(canned_response=VALID_MATRIX)
 

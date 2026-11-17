@@ -21,6 +21,15 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from app.editorial.glossary import canonicalize_approved_names
+from app.editorial.regions import (
+    MIDDLE_EAST_COUNTRIES,
+    MIDDLE_EAST_WATERWAYS,
+    is_middle_east_country,
+    mentions_middle_east_waterway,
+    normalize_place,
+)
+
 logger = logging.getLogger(__name__)
 
 ORIENTATIONS_PATH = (
@@ -139,3 +148,75 @@ def group_perspectives(
         leftover = [record for records in grouped.values() for record in records]
         result.append((UNKNOWN_ORIENTATION, leftover))
     return result
+
+
+_EXCLUDED_COUNTRIES_AND_WATERWAYS: frozenset[str] = frozenset(
+    MIDDLE_EAST_COUNTRIES
+    | MIDDLE_EAST_WATERWAYS
+    | {
+        "آمریکا", "ایالات متحده", "ایالات متحده آمریکا", "روسیه", "چین", "بریتانیا",
+        "فرانسه", "آلمان", "اوکراین", "تاجیکستان", "سودان", "سومالی", "جیبوتی", "هند", "پاکستان",
+        "united states", "usa", "us", "u.s.", "russia", "china", "britain", "uk",
+        "france", "germany", "ukraine", "tajikistan", "sudan", "somalia", "djibouti", "india", "pakistan",
+    }
+)
+
+
+def extract_non_country_entities(article_dict: dict[str, Any]) -> set[str]:
+    """Extract non-country actors and specific non-country/non-waterway locations.
+
+    Countries and regional waterways are removed. Approved glossary spellings are
+    canonicalized so spelling variants (e.g. بوتین / پوتین) match as one entity.
+    """
+    raw_actors = article_dict.get("actors") or []
+    location = article_dict.get("location") or ""
+    entities: set[str] = set()
+
+    for item in (*raw_actors, location):
+        if not item:
+            continue
+        canon = canonicalize_approved_names(str(item))
+        norm = normalize_place(canon)
+        if not norm or len(norm) < 2:
+            continue
+        if norm in _EXCLUDED_COUNTRIES_AND_WATERWAYS:
+            continue
+        if is_middle_east_country(norm) or mentions_middle_east_waterway(norm):
+            continue
+        entities.add(norm)
+
+    return entities
+
+
+def check_perspectives_gate(
+    camp_articles: list[dict[str, Any]],
+    min_shared_actors: int = 1,
+) -> tuple[bool, set[str]]:
+    """Determine whether multi-camp coverage qualifies for perspective matrix generation.
+
+    Gate Rule (Phase Y-13):
+    Coverage qualifies ONLY if at least two different editorial camps share at least
+    ``min_shared_actors`` non-country actor or city/specific location.
+    If only broad countries (e.g. 'Yemen') or waterways match, the gate rejects to prevent
+    spurious perspective comparisons between distinct, coincidental events.
+
+    Recorded limitation:
+    This gate cannot distinguish two completely separate incidents if they happen
+    to involve the exact same specific actors in the same time frame.
+    """
+    if len(camp_articles) < 2:
+        return False, set()
+
+    camp_entities: list[set[str]] = [
+        extract_non_country_entities(art) for art in camp_articles
+    ]
+
+    all_shared: set[str] = set()
+    for i in range(len(camp_entities)):
+        for j in range(i + 1, len(camp_entities)):
+            shared = camp_entities[i] & camp_entities[j]
+            if len(shared) >= min_shared_actors:
+                all_shared |= shared
+
+    return bool(all_shared), all_shared
+

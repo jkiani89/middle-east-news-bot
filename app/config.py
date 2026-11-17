@@ -122,6 +122,12 @@ class Settings(BaseSettings):
     max_perspective_backfill_per_briefing: int = 3
     min_summary_len_for_full_text: int = 800
     require_full_text_for_ai: bool = True
+    # Phase Y-13: Event integrity, liveblog limits, perspective gating, bulletin section caps
+    liveblog_max_importance: int = 3
+    perspective_min_shared_actors: int = 1
+    bulletin_section1_max: int = 12
+    bulletin_require_regional: bool = True
+    show_silent_parties: bool = False
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -21,7 +21,9 @@ from app.ai.summarizer import passes_persian_guard
 from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, ArticleEvent, DailyReport, Event, Source, Summary
-from app.editorial.perspectives import group_perspectives, orientation_for
+from app.editorial.glossary import canonicalize_approved_names
+from app.editorial.perspectives import check_perspectives_gate, group_perspectives, orientation_for
+from app.editorial.regions import is_middle_east_country, mentions_middle_east_place
 from app.editorial.topics import load_topics, topic_for_event
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,48 @@ VERIFICATION_LABELS: dict[str, str] = {
     "disputed": "⚖️ مورد مناقشه",
     "false": "❌ نادرست / ردشده",
 }
+
+
+def has_regional_presence(item: dict[str, Any]) -> bool:
+    """Check whether an event item mentions a Middle East country, city, or waterway."""
+    countries = item.get("countries") or []
+    location = item.get("location") or ""
+    for c in countries:
+        if is_middle_east_country(c):
+            return True
+    if mentions_middle_east_place(location):
+        return True
+    return False
+
+
+def _format_source_display(source: str, url: str, as_html: bool = True) -> str:
+    """Format source label with Google News note when origin is news.google.com."""
+    clean_src = str(source or "منبع").strip()
+    clean_url = str(url or "").strip()
+    if "news.google.com" in clean_url:
+        clean_src = f"{clean_src} (Google News)" if clean_src else "Google News"
+    if as_html and clean_url:
+        return f'<a href="{esc(clean_url)}">{esc(clean_src)}</a>'
+    elif as_html:
+        return esc(clean_src)
+    elif clean_url:
+        return f"{clean_src}: {clean_url}"
+    return clean_src
+
+
+def _item_sort_key(it: dict[str, Any]) -> tuple[int, int, float]:
+    """Sort key for daily bulletin: importance DESC, source count DESC, recency DESC."""
+    imp = int(it.get("importance") or 3)
+    srcs = int(it.get("total_sources_count") or len(it.get("additional_sources") or []) + 1)
+    ts = 0.0
+    fs = it.get("first_seen_at")
+    if fs:
+        try:
+            ts = datetime.fromisoformat(fs).timestamp()
+        except Exception:
+            pass
+    return (imp, srcs, ts)
+
 
 
 def _utcnow() -> datetime:
@@ -402,18 +446,20 @@ async def fetch_report_items(
         cq_label_fa = (cq or {}).get("label_fa", "متن کامل")
         cq_insufficient = (cq or {}).get("is_insufficient", False)
 
+        is_digest = bool(details_fa.get("is_live_digest") or details_fa.get("article_kind") == "live_digest")
+
         item = {
             "event_id": event.id,
-            "title": event.title,
+            "title": canonicalize_approved_names(event.title),
             "event_type": event.event_type or "GEN",
             "category_fa": CATEGORY_TITLES.get(event.event_type or "", "سایر تحولات"),
             "importance": event.importance,
             "first_seen_at": event.first_seen_at.isoformat() if event.first_seen_at else "",
-            "countries": event.countries or [],
-            "actors": event.actors or [],
+            "countries": [canonicalize_approved_names(c) for c in (event.countries or [])],
+            "actors": [canonicalize_approved_names(a) for a in (event.actors or [])],
             "location": event.location or "منطقه",
-            "headline_fa": summary.headline_fa,
-            "summary_fa": summary.summary_fa,
+            "headline_fa": canonicalize_approved_names(summary.headline_fa),
+            "summary_fa": canonicalize_approved_names(summary.summary_fa),
             "verification_status": summary.verification_status,
             "verification_status_fa": VERIFICATION_LABELS.get(
                 summary.verification_status, "نامشخص"
@@ -421,12 +467,18 @@ async def fetch_report_items(
             "content_quality": cq_status,
             "content_quality_fa": cq_label_fa,
             "is_insufficient": cq_insufficient,
+            "is_live_digest": is_digest,
             # Phase T-2: per-camp claims, kept as stored so the same event reads the
             # same way in the text bulletin and in the PDF.
             "perspectives": [
-                p for p in details_fa.get("perspectives") or [] if isinstance(p, dict)
+                {
+                    **p,
+                    "claim_fa": canonicalize_approved_names(p.get("claim_fa", "")),
+                }
+                for p in details_fa.get("perspectives") or []
+                if isinstance(p, dict)
             ],
-            "disagreement_fa": details_fa.get("disagreement_fa") or "",
+            "disagreement_fa": canonicalize_approved_names(details_fa.get("disagreement_fa") or ""),
             "silent_parties_fa": [
                 str(s).strip()
                 for s in (details_fa.get("silent_parties_fa") or [])
@@ -442,6 +494,31 @@ async def fetch_report_items(
             "is_mock": is_mock,
         }
 
+        # Gate perspectives: if actor metadata is available, require shared non-country entities
+        if item["perspectives"] and linked_arts:
+            camp_articles: list[dict[str, Any]] = []
+            seen_camps: set[str] = set()
+            for art, src in linked_arts:
+                if not src:
+                    continue
+                o = orientation_for(src.name)
+                if o.key in seen_camps:
+                    continue
+                seen_camps.add(o.key)
+                p_load = art.ai_payload if isinstance(art.ai_payload, dict) else {}
+                camp_articles.append({
+                    "source_name": src.name,
+                    "actors": p_load.get("actors") or [],
+                    "location": p_load.get("location") or "",
+                })
+            if len(camp_articles) >= 2:
+                passed_gate, _ = check_perspectives_gate(
+                    camp_articles, min_shared_actors=settings.perspective_min_shared_actors
+                )
+                if not passed_gate:
+                    item["perspectives"] = []
+                    item["disagreement_fa"] = ""
+
         if distinct_sources < 2:
             item["verification_status"] = _resolved_verification_status(
                 item["verification_status"], distinct_sources
@@ -450,7 +527,15 @@ async def fetch_report_items(
                 item["verification_status"], "نامشخص"
             )
 
+        # Regional filter: require Middle East country, city, or waterway in geography
+        if getattr(settings, "bulletin_require_regional", True) and not has_regional_presence(item):
+            logger.info("Excluding non-regional event ID %d ('%s') from bulletin.", event.id, event.title[:40])
+            continue
+
         items.append(item)
+
+    # Sort items: Importance DESC, Source count DESC, Recency DESC
+    items.sort(key=_item_sort_key, reverse=True)
 
     # R-3: a bulletin is a briefing, not a dump; keep the strongest events only.
     events_before_cap = len(items)
@@ -505,6 +590,9 @@ def perspective_lines(item: dict[str, Any], as_html: bool = True) -> list[str]:
     next to "روسی" and "طرف درگیر" rather than one blended voice. A camp that stayed
     silent is named explicitly instead of being left out.
     """
+    if item.get("is_live_digest"):
+        return []
+
     grouped = group_perspectives(item.get("perspectives") or [])
     if not grouped:
         return []
@@ -525,13 +613,14 @@ def perspective_lines(item: dict[str, Any], as_html: bool = True) -> list[str]:
         lines.append(f"      ⚠️ <b>نقاط اختلاف:</b> {esc(disagreement)}" if as_html
                      else f"      ⚠️ نقاط اختلاف: {disagreement}")
 
-    silent = [str(s).strip() for s in item.get("silent_parties_fa") or [] if str(s).strip()]
-    if silent:
-        joined = "، ".join(silent)
-        lines.append(
-            f"      🔇 <b>پوشش‌نشده در منابع پایش‌شده:</b> {esc(joined)}" if as_html
-            else f"      🔇 پوشش‌نشده در منابع پایش‌شده: {joined}"
-        )
+    if getattr(settings, "show_silent_parties", False):
+        silent = [str(s).strip() for s in item.get("silent_parties_fa") or [] if str(s).strip()]
+        if silent:
+            joined = "، ".join(silent)
+            lines.append(
+                f"      🔇 <b>پوشش‌نشده در منابع پایش‌شده:</b> {esc(joined)}" if as_html
+                else f"      🔇 پوشش‌نشده در منابع پایش‌شده: {joined}"
+            )
     return lines
 
 
@@ -580,8 +669,8 @@ def format_persian_daily_report(
         lines = [
             "<b>📊 بولتن هوش و پایش تحولات خاورمیانه و جهان اسلام</b>",
             f"📅 تاریخ گزارش: <code>{report_date.strftime('%Y/%m/%d') if hasattr(report_date, 'strftime') else str(report_date)}</code> (بازه پایش ۲۴ ساعته)",
-            f"📈 آمار رویدادها: <b>{total_events}</b> رخداد واجد شرایط (اهمیت ≥ {min_imp}) | "
-            f"راهبردی: <b>{strategic_count}</b> | منطقه‌ای: <b>{regional_count}</b>",
+            f"📈 آمار رویدادها: <b>{total_events}</b> رخداد واجد شرایط (حداقل اهمیت: {min_imp}) | "
+            f"اهمیت ۴ و ۵: <b>{strategic_count}</b> | سایر: <b>{regional_count}</b>",
             quality_badge,
             "═" * 50,
             "",
@@ -590,27 +679,30 @@ def format_persian_daily_report(
         lines = [
             "📊 بولتن هوش و پایش تحولات خاورمیانه و جهان اسلام",
             f"📅 تاریخ گزارش: {report_date.strftime('%Y/%m/%d') if hasattr(report_date, 'strftime') else str(report_date)} (بازه پایش ۲۴ ساعته)",
-            f"📈 آمار رویدادها: {total_events} رخداد واجد شرایط (اهمیت ≥ {min_imp}) | "
-            f"راهبردی: {strategic_count} | منطقه‌ای: {regional_count}",
+            f"📈 آمار رویدادها: {total_events} رخداد واجد شرایط (حداقل اهمیت: {min_imp}) | "
+            f"اهمیت ۴ و ۵: {strategic_count} | سایر: {regional_count}",
             quality_badge,
             "═" * 50,
             "",
         ]
 
     strategic_items = [i for i in items if i.get("importance", 3) >= 4]
-    regional_items = [i for i in items if i.get("importance", 3) < 4]
+    sec1_max = getattr(settings, "bulletin_section1_max", 12)
+    sec1_items = strategic_items[:sec1_max]
+    sec1_overflow = strategic_items[sec1_max:]
+    regional_items = sec1_overflow + [i for i in items if i.get("importance", 3) < 4]
 
-    # Section 1: Strategic Developments (Importance >= 4)
-    if strategic_items:
+    # Section 1: Major Developments (Importance 4 & 5, capped at BULLETIN_SECTION1_MAX)
+    if sec1_items:
         strategic_title = (
-            section_titles[0] if section_titles else "🔴 بخش اول: اهم تحولات راهبردی (اولویت بالا)"
+            section_titles[0] if section_titles else "🔴 بخش اول: اهم تحولات (اهمیت ۴ و ۵)"
         )
         sec1_header = f"<b>{esc(strategic_title)}</b>" if as_html else strategic_title
         lines.extend([
             sec1_header,
             "─" * 45,
         ])
-        for idx, item in enumerate(strategic_items, start=1):
+        for idx, item in enumerate(sec1_items, start=1):
             importance = item.get("importance", 4)
             stars = "⭐" * importance
             cat = item.get("category_fa", "عمومی")
@@ -629,47 +721,56 @@ def format_persian_daily_report(
                 lines.append(f"   ▫️ درجه اهمیت: {stars} ({importance}/5) | حوزه: <b>{esc(cat)}</b> [{esc(event_type)}]")
                 lines.append(f"   ▫️ جغرافیا و بازیگران: {esc(geo)} | {esc(acts)}")
                 lines.append(f"   ▫️ خلاصه گزیده: {esc(summary_txt)}")
+                if item.get("is_live_digest"):
+                    lines.append("   ▫️ نوع پوشش: 🔴 <b>پوشش زنده (چندموضوعی)</b>")
                 if item.get("is_insufficient"):
                     lines.append(f"   ▫️ کیفیت محتوا: ⚠️ <b>{esc(item.get('content_quality_fa', 'اطلاعات ناکافی'))}</b> (گزارش اولیه / نیازمند تکمیل جزئیات)")
                 lines.extend(perspective_lines(item, as_html=True))
                 lines.append(f"   ▫️ راستی‌آزمایی: {esc(verification)}")
-                if primary_u:
-                    lines.append(f"   ▫️ منبع اصلی: <a href=\"{esc(primary_u)}\">{esc(primary_src)}</a>")
-                else:
-                    lines.append(f"   ▫️ منبع اصلی: {esc(primary_src)}")
+                lines.append(f"   ▫️ منبع اصلی: {_format_source_display(primary_src, primary_u, as_html=True)}")
 
-                # Supplementary sources from EventMatcher / Staleness Policy C
+                # Supplementary sources from EventMatcher / Staleness Policy C (deduped by source)
                 if item.get("additional_sources"):
                     lines.append("   🔗 پوشش‌های موازی و منابع تکمیلی:")
+                    seen_sources = {primary_src.strip().lower()} if primary_src else set()
                     for supp in item["additional_sources"]:
-                        supp_src = esc(supp.get("source", "منبع پیگیری"))
+                        supp_src = supp.get("source", "منبع پیگیری")
                         supp_url = supp.get("url", "")
-                        if supp_url:
-                            lines.append(f"      • <a href=\"{esc(supp_url)}\">{supp_src}</a>")
-                        else:
-                            lines.append(f"      • {supp_src}")
+                        key = supp_src.strip().lower()
+                        if key in seen_sources:
+                            continue
+                        seen_sources.add(key)
+                        lines.append(f"      • {_format_source_display(supp_src, supp_url, as_html=True)}")
             else:
                 lines.append(f"{idx}. 📌 {headline}")
                 lines.append(f"   ▫️ درجه اهمیت: {stars} ({importance}/5) | حوزه: {cat} [{event_type}]")
                 lines.append(f"   ▫️ جغرافیا و بازیگران: {geo} | {acts}")
                 lines.append(f"   ▫️ خلاصه گزیده: {summary_txt}")
+                if item.get("is_live_digest"):
+                    lines.append("   ▫️ نوع پوشش: 🔴 پوشش زنده (چندموضوعی)")
                 if item.get("is_insufficient"):
                     lines.append(f"   ▫️ کیفیت محتوا: ⚠️ {item.get('content_quality_fa', 'اطلاعات ناکافی')} (گزارش اولیه / نیازمند تکمیل جزئیات)")
                 lines.extend(perspective_lines(item, as_html=False))
                 lines.append(f"   ▫️ راستی‌آزمایی: {verification}")
-                lines.append(f"   ▫️ منبع اصلی: {primary_src} ⟵ {primary_u}")
+                lines.append(f"   ▫️ منبع اصلی: {_format_source_display(primary_src, primary_u, as_html=False)}")
                 if item.get("additional_sources"):
                     lines.append("   🔗 پوشش‌های موازی و منابع تکمیلی:")
+                    seen_sources = {primary_src.strip().lower()} if primary_src else set()
                     for supp in item["additional_sources"]:
                         supp_src = supp.get("source", "منبع پیگیری")
                         supp_url = supp.get("url", "")
-                        lines.append(f"      • {supp_src}: {supp_url}")
+                        key = supp_src.strip().lower()
+                        if key in seen_sources:
+                            continue
+                        seen_sources.add(key)
+                        lines.append(f"      • {_format_source_display(supp_src, supp_url, as_html=False)}")
             lines.append("")
 
     # Section 2: Regional & Thematic Developments (Importance 2 & 3)
+    # Section 2: Regional & Other Developments
     if regional_items:
         regional_title = (
-            section_titles[1] if section_titles else "🌐 بخش دوم: سایر تحولات منطقه‌ای و موضوعی"
+            section_titles[1] if section_titles else "🌐 بخش دوم: سایر تحولات"
         )
         sec2_header = f"<b>{esc(regional_title)}</b>" if as_html else regional_title
         lines.extend([
@@ -700,35 +801,43 @@ def format_persian_daily_report(
                 if as_html:
                     lines.append(f"  • <b>{esc(headline)}</b> ({stars})")
                     lines.append(f"    - خلاصه: {esc(summary_txt)}")
+                    if item.get("is_live_digest"):
+                        lines.append("    - نوع پوشش: 🔴 <b>پوشش زنده (چندموضوعی)</b>")
                     if item.get("is_insufficient"):
                         lines.append(f"    - کیفیت محتوا: ⚠️ <b>{esc(item.get('content_quality_fa', 'اطلاعات ناکافی'))}</b>")
                     lines.extend(perspective_lines(item, as_html=True))
-                    if primary_u:
-                        lines.append(f"    - راستی‌آزمایی: {esc(verification)} | منبع: <a href=\"{esc(primary_u)}\">{esc(primary_src)}</a>")
-                    else:
-                        lines.append(f"    - راستی‌آزمایی: {esc(verification)} | منبع: {esc(primary_src)}")
+                    lines.append(f"    - راستی‌آزمایی: {esc(verification)} | منبع: {_format_source_display(primary_src, primary_u, as_html=True)}")
                     if item.get("additional_sources"):
                         lines.append("    - منابع موازی:")
+                        seen_sources = {primary_src.strip().lower()} if primary_src else set()
                         for supp in item["additional_sources"]:
-                            supp_src = esc(supp.get("source", "منبع"))
+                            supp_src = supp.get("source", "منبع")
                             supp_url = supp.get("url", "")
-                            if supp_url:
-                                lines.append(f"      * <a href=\"{esc(supp_url)}\">{supp_src}</a>")
-                            else:
-                                lines.append(f"      * {supp_src}")
+                            key = supp_src.strip().lower()
+                            if key in seen_sources:
+                                continue
+                            seen_sources.add(key)
+                            lines.append(f"      * {_format_source_display(supp_src, supp_url, as_html=True)}")
                 else:
                     lines.append(f"  • {headline} ({stars})")
                     lines.append(f"    - خلاصه: {summary_txt}")
+                    if item.get("is_live_digest"):
+                        lines.append("    - نوع پوشش: 🔴 پوشش زنده (چندموضوعی)")
                     if item.get("is_insufficient"):
                         lines.append(f"    - کیفیت محتوا: ⚠️ {item.get('content_quality_fa', 'اطلاعات ناکافی')}")
                     lines.extend(perspective_lines(item, as_html=False))
-                    lines.append(f"    - راستی‌آزمایی: {verification} | منبع: {primary_src}")
-                    if primary_u:
-                        lines.append(f"    - پیوند: {primary_u}")
+                    lines.append(f"    - راستی‌آزمایی: {verification} | منبع: {_format_source_display(primary_src, primary_u, as_html=False)}")
                     if item.get("additional_sources"):
                         lines.append("    - منابع موازی:")
+                        seen_sources = {primary_src.strip().lower()} if primary_src else set()
                         for supp in item["additional_sources"]:
-                            lines.append(f"      * {supp.get('source')}: {supp.get('url')}")
+                            supp_src = supp.get("source", "منبع")
+                            supp_url = supp.get("url", "")
+                            key = supp_src.strip().lower()
+                            if key in seen_sources:
+                                continue
+                            seen_sources.add(key)
+                            lines.append(f"      * {_format_source_display(supp_src, supp_url, as_html=False)}")
             lines.append("")
 
     if not items:

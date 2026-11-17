@@ -36,6 +36,14 @@
       "review_required": false
     },
     {
+      "id": "donald-trump",
+      "kind": "person",
+      "canonical_fa": "دونالد ترامپ",
+      "source_forms": ["Trump", "Donald Trump", "ترمب", "ترامب", "دونالد ترمب", "دونالد ترامب"],
+      "variants_fa": ["ترامپ"],
+      "review_required": false
+    },
+    {
       "id": "xi-jinping",
       "kind": "person",
       "canonical_fa": "شی جین‌پینگ",
