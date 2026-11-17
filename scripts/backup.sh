@@ -25,9 +25,24 @@ fi
 # Defaults
 DB_USER="${POSTGRES_USER:-newsbot}"
 DB_NAME="${POSTGRES_DB:-newsbot}"
-# The workflow sets BACKUP_REMOTE/BACKUP_BUCKET; the fallbacks keep a local run working.
-BACKUP_REMOTE="${BACKUP_REMOTE:-r2}"
-BACKUP_BUCKET="${BACKUP_BUCKET:-${R2_BUCKET_NAME:-${B2_BUCKET_NAME:-newsbot-backups}}}"
+
+# GitHub Actions resolves the destination with scripts/resolve_backup_storage.sh and exports
+# BACKUP_REMOTE/BACKUP_BUCKET, so the fallbacks below stay for that path only. A local run
+# must name its destination explicitly: silently defaulting to the production bucket would
+# upload a development dump next to real backups.
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    BACKUP_REMOTE="${BACKUP_REMOTE:-r2}"
+    BACKUP_BUCKET="${BACKUP_BUCKET:-${R2_BUCKET_NAME:-${B2_BUCKET_NAME:-newsbot-backups}}}"
+else
+    if [ -z "${BACKUP_REMOTE:-}" ] || [ -z "${BACKUP_BUCKET:-}" ]; then
+        echo "ERROR: BACKUP_REMOTE and BACKUP_BUCKET must both be set for a local backup run; refusing to guess a destination." >&2
+        echo "Set them explicitly, for example:" >&2
+        echo "  BACKUP_REMOTE=b2 BACKUP_BUCKET=your-bucket bash scripts/backup.sh" >&2
+        echo "In GitHub Actions this is resolved by scripts/resolve_backup_storage.sh." >&2
+        exit 1
+    fi
+fi
+
 # This script never deletes anything: retention is a separate, explicit action
 # (scripts/prune_backups.sh, which requires --yes). A backup that silently removes
 # earlier dumps cannot be used as a restore point.
