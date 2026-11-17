@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,6 +24,40 @@ from scripts.dev_only.replay_event_matching import (
     run_sequential_replay,
     save_samples_atomically,
 )
+
+
+def _multiprocess_atomic_save_worker(
+    target_path_str: str,
+    fixed_ts: int,
+    worker_id: int,
+    queue: Any,
+    barrier: Any,
+) -> None:
+    """Module-level worker function required for multiprocessing on Windows ('spawn' mode)."""
+    try:
+        from scripts.dev_only.replay_event_matching import save_samples_atomically
+
+        target = Path(target_path_str)
+        sample = [{"worker_id": worker_id, "data": f"payload_from_{worker_id}"}]
+        barrier.wait(timeout=10)
+        errs: list[Exception] = []
+        success = save_samples_atomically(
+            sample,
+            target,
+            backup_timestamp=fixed_ts,
+            error_collector=errs,
+        )
+        err_info = None
+        if errs:
+            err = errs[0]
+            err_info = {
+                "type": type(err).__name__,
+                "msg": str(err),
+                "winerror": getattr(err, "winerror", None),
+            }
+        queue.put((worker_id, success, err_info, None))
+    except Exception as exc:
+        queue.put((worker_id, False, None, str(exc)))
 
 
 def test_to_event_candidate_adapter():
@@ -675,8 +711,8 @@ def test_atomic_write_preserves_previous_file_on_failure(tmp_path):
 @pytest.mark.asyncio
 async def test_production_tie_breaking_non_determinism_documentation():
     """Document that operational EventMatcher candidate selection on identical first_seen_at
-
-    depends entirely on SQL engine scan order because stmt lacks a secondary sort key.
+    is unspecified by PostgreSQL and depends entirely on SQL engine scan order / physical page layout
+    because stmt lacks an ORDER BY clause.
     """
     from app.database.models import Article, Event
     from app.processors.event_matcher import EventMatcher
@@ -800,10 +836,10 @@ def test_save_samples_atomically_robustness_and_failures(tmp_path, monkeypatch):
         assert json.load(f) == updated_data
 
     # 3. Simulated failure during write/fsync: target_file must remain intact
-    def mock_broken_dump(*args, **kwargs):
+    def mock_broken_dumps(*args, **kwargs):
         raise OSError("Simulated disk error during serialization")
 
-    monkeypatch.setattr("json.dump", mock_broken_dump)
+    monkeypatch.setattr("json.dumps", mock_broken_dumps)
     ok3 = save_samples_atomically([{"corrupt": True}], target_file, backup_timestamp=3000)
     assert ok3 is False
     # Target file still contains updated_data, NOT corrupted
@@ -812,22 +848,22 @@ def test_save_samples_atomically_robustness_and_failures(tmp_path, monkeypatch):
 
     # 4. Simulated failure during backup: must abort and leave target_file 100% intact
     import shutil
-    monkeypatch.undo()  # restore json.dump
+    monkeypatch.undo()  # restore json.dumps
 
-    def mock_broken_copy2(*args, **kwargs):
+    def mock_broken_copyfileobj(*args, **kwargs):
         raise OSError("Simulated permission error or failure during backup creation")
 
-    monkeypatch.setattr(shutil, "copy2", mock_broken_copy2)
+    monkeypatch.setattr(shutil, "copyfileobj", mock_broken_copyfileobj)
     ok4 = save_samples_atomically([{"corrupt_backup": True}], target_file, backup_timestamp=4000)
     assert ok4 is False
     # Target file still contains updated_data, NOT overwritten
     with open(target_file, encoding="utf-8") as f:
         assert json.load(f) == updated_data
     # Temp file must have been cleanly removed
-    assert not target_file.with_suffix(".tmp").exists()
+    assert not any(p.name.startswith("replay_samples_30.tmp_") for p in tmp_path.iterdir())
 
     # 5. Timestamp collision on backup creates sequential numbered backups
-    monkeypatch.undo()  # restore shutil.copy2
+    monkeypatch.undo()  # restore shutil.copyfileobj
     ok5_a = save_samples_atomically([{"run": "first"}], target_file, backup_timestamp=5000)
     assert ok5_a is True
     assert (tmp_path / "replay_samples_30.bak_5000.json").exists()
@@ -881,6 +917,657 @@ def test_compute_pairwise_relations_mapping_integrity_checks():
     assert "Unexpected extra articles in Proposed mapping: [88]" in str(exc_prop_extra.value)
 
 
+def test_save_samples_atomically_temp_write_failure_preserves_target(tmp_path, monkeypatch):
+    """Independent test 1: Simulated temporary file write error.
+
+    Target file must remain intact and temp file must be cleaned up.
+    """
+    import json
+    target_file = tmp_path / "replay_samples_30.json"
+    initial_data = [{"sample_id": 10, "status": "original_intact"}]
+    with open(target_file, "w", encoding="utf-8") as f:
+        json.dump(initial_data, f)
+
+    def mock_broken_dumps(*args, **kwargs):
+        raise OSError("Simulated disk error or write interruption during temp serialization")
+
+    monkeypatch.setattr("json.dumps", mock_broken_dumps)
+    errs = []
+    success = save_samples_atomically([{"new": "data"}], target_file, backup_timestamp=1111, error_collector=errs)
+    assert success is False
+    assert len(errs) == 1
+    assert "Simulated disk error" in str(errs[0])
+
+    # Original target file must be completely untouched
+    with open(target_file, encoding="utf-8") as f:
+        assert json.load(f) == initial_data
+
+    # No leftover temporary files
+    assert not any(p.name.startswith("replay_samples_30.tmp_") for p in tmp_path.iterdir())
 
 
+def test_save_samples_atomically_backup_failure_aborts_and_preserves_target(tmp_path, monkeypatch):
+    """Independent test 2: Simulated backup creation error.
+
+    Target file must NOT be replaced or modified, temp file must be unlinked.
+    """
+    import json
+    import shutil
+    target_file = tmp_path / "replay_samples_30.json"
+    initial_data = [{"sample_id": 20, "status": "original_intact"}]
+    with open(target_file, "w", encoding="utf-8") as f:
+        json.dump(initial_data, f)
+
+    def mock_broken_copyfileobj(*args, **kwargs):
+        raise OSError("Simulated permission error or quota failure during backup copy")
+
+    monkeypatch.setattr(shutil, "copyfileobj", mock_broken_copyfileobj)
+    success = save_samples_atomically([{"new": "data"}], target_file, backup_timestamp=2222)
+    assert success is False
+
+    # Original target file must be completely untouched
+    with open(target_file, encoding="utf-8") as f:
+        assert json.load(f) == initial_data
+
+    # No leftover temporary files
+    assert not any(p.name.startswith("replay_samples_30.tmp_") for p in tmp_path.iterdir())
+
+
+def test_save_samples_atomically_replace_failure_handles_windows_lock_and_preserves_target(tmp_path, monkeypatch):
+    """Independent test 3: Simulated Windows mandatory file lock (WinError 32) on os.replace.
+
+    Target file must remain intact and temp file must be deleted.
+    """
+    import json
+    import os
+    target_file = tmp_path / "replay_samples_30.json"
+    initial_data = [{"sample_id": 30, "status": "original_intact"}]
+    with open(target_file, "w", encoding="utf-8") as f:
+        json.dump(initial_data, f)
+
+    def mock_locked_replace(src, dst):
+        raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+
+    monkeypatch.setattr(os, "replace", mock_locked_replace)
+    success = save_samples_atomically([{"new": "data"}], target_file, backup_timestamp=3333)
+    assert success is False
+
+    # Original target file must be completely untouched
+    with open(target_file, encoding="utf-8") as f:
+        assert json.load(f) == initial_data
+
+    # No leftover temporary files
+    assert not any(p.name.startswith("replay_samples_30.tmp_") for p in tmp_path.iterdir())
+
+
+def test_save_samples_atomically_exclusive_backup_and_process_isolation(tmp_path):
+    """Verify exclusive backup creation avoids collisions under identical timestamps
+
+    and isolates temporary files with process ID.
+    """
+    import json
+    target_file = tmp_path / "replay_samples_30.json"
+    initial_data = [{"version": 1}]
+    with open(target_file, "w", encoding="utf-8") as f:
+        json.dump(initial_data, f)
+
+    fixed_ts = 999999
+
+    # First update: creates .bak_999999.json
+    ok1 = save_samples_atomically([{"version": 2}], target_file, backup_timestamp=fixed_ts)
+    assert ok1 is True
+    bak1 = tmp_path / "replay_samples_30.bak_999999.json"
+    assert bak1.exists()
+    with open(bak1, encoding="utf-8") as f:
+        assert json.load(f) == [{"version": 1}]
+
+    # Second update with same timestamp: creates .bak_999999_1.json exclusively without race collision
+    ok2 = save_samples_atomically([{"version": 3}], target_file, backup_timestamp=fixed_ts)
+    assert ok2 is True
+    bak2 = tmp_path / "replay_samples_30.bak_999999_1.json"
+    assert bak2.exists()
+    with open(bak2, encoding="utf-8") as f:
+        assert json.load(f) == [{"version": 2}]
+
+    # Target file has version 3
+    with open(target_file, encoding="utf-8") as f:
+        assert json.load(f) == [{"version": 3}]
+
+
+@pytest.mark.asyncio
+async def test_load_articles_closed_interval_and_summarized_filter(monkeypatch):
+    """Verify load_articles_from_db restricts query to closed interval [start_utc, end_utc],
+
+    enforces Article.status == 'summarized', and retains Article.ai_payload.is_not(None).
+    """
+    from scripts.dev_only.replay_event_matching import load_articles_from_db
+
+    captured_stmts = []
+
+    mock_session = AsyncMock()
+
+    async def mock_execute(stmt, *args, **kwargs):
+        stmt_str = str(stmt)
+        if "SET TRANSACTION READ ONLY" not in stmt_str and "SHOW transaction_read_only" not in stmt_str:
+            captured_stmts.append(stmt)
+        mock_res = MagicMock()
+        mock_res.scalar.return_value = "on"
+        mock_res.all.return_value = []
+        return mock_res
+
+    mock_session.execute = mock_execute
+
+    mock_tx = MagicMock()
+    mock_tx.__aenter__ = AsyncMock(return_value=None)
+    mock_tx.__aexit__ = AsyncMock(return_value=None)
+    mock_session.begin = MagicMock(return_value=mock_tx)
+
+    mock_session_cm = MagicMock()
+    mock_session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session_cm.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr("scripts.dev_only.replay_event_matching.SessionLocal", MagicMock(return_value=mock_session_cm))
+
+    fixed_end = datetime(2026, 11, 15, 12, 0, 0, tzinfo=UTC)
+    fixed_start = fixed_end - timedelta(days=7)
+
+    # 1. Test explicit bounds
+    records, ok = await load_articles_from_db(days=7, start_utc=fixed_start, end_utc=fixed_end)
+    assert ok is True
+    assert len(captured_stmts) == 1
+    compiled_sql = str(captured_stmts[0].compile(compile_kwargs={"literal_binds": True}))
+
+    # Closed interval checks
+    assert "articles.collected_at >=" in compiled_sql
+    assert "articles.collected_at <=" in compiled_sql
+    assert "2026-11-08 12:00:00" in compiled_sql
+    assert "2026-11-15 12:00:00" in compiled_sql
+
+    # Status whitelist check
+    assert "articles.status = 'summarized'" in compiled_sql
+    assert "articles.ai_payload IS NOT NULL" in compiled_sql
+    assert "flagged" not in compiled_sql
+
+
+def test_save_samples_atomically_backup_partial_copy_failure_cleans_incomplete_backup(tmp_path, monkeypatch):
+    """Verify that if copying backup data fails mid-transfer:
+
+    1. Incomplete temporary backup file (.bak_tmp_*) is unlinked.
+    2. No final backup file (.bak_*.json) is ever created or exposed.
+    3. Original target file is NEVER replaced or modified.
+    4. Temporary file (.tmp_*) is unlinked.
+    5. Function returns False.
+    """
+    import json
+    import shutil
+    target_file = tmp_path / "replay_samples_30.json"
+    initial_data = [{"valid_key": "original_seed_data"}]
+    with open(target_file, "w", encoding="utf-8") as f:
+        json.dump(initial_data, f)
+
+    def mock_partial_copyfileobj(f_src, f_dst, length=0):
+        # Write partial corrupt data into f_dst then fail
+        f_dst.write(b'{"incomplete_corrupt_content": true')
+        f_dst.flush()
+        raise OSError("Simulated disk error or write interruption after partial backup write")
+
+    monkeypatch.setattr(shutil, "copyfileobj", mock_partial_copyfileobj)
+    success = save_samples_atomically([{"new": "data"}], target_file, backup_timestamp=6666)
+    assert success is False
+
+    # Target file must remain 100% intact
+    with open(target_file, encoding="utf-8") as f:
+        assert json.load(f) == initial_data
+
+    # No final backup file was ever created
+    final_bak_files = list(tmp_path.glob("replay_samples_30.bak_*.json"))
+    assert len(final_bak_files) == 0
+
+    # No temporary backup files (.bak_tmp_*) or temp json files (.tmp_*) remain on disk
+    temp_bak_files = list(tmp_path.glob("replay_samples_30.bak_tmp_*"))
+    assert len(temp_bak_files) == 0
+    temp_files = list(tmp_path.glob("replay_samples_30.tmp_*"))
+    assert len(temp_files) == 0
+
+
+def test_save_samples_atomically_backup_finalization_collision_avoids_overwriting(tmp_path):
+    """Verify that if final backup destination already exists,
+
+    the backup finalizer increments suffix without overwriting the existing backup.
+    """
+    import json
+    target_file = tmp_path / "replay_samples_30.json"
+    target_file.write_text(json.dumps([{"target": "v1"}]), encoding="utf-8")
+
+    fixed_ts = 5555
+    # Pre-create the first backup path
+    existing_bak = tmp_path / f"replay_samples_30.bak_{fixed_ts}.json"
+    existing_content = [{"existing_backup": "dont_touch_me"}]
+    existing_bak.write_text(json.dumps(existing_content), encoding="utf-8")
+
+    success = save_samples_atomically([{"target": "v2"}], target_file, backup_timestamp=fixed_ts)
+    assert success is True
+
+    # Pre-existing backup must remain 100% untouched
+    assert json.loads(existing_bak.read_text(encoding="utf-8")) == existing_content
+
+    # A collision-free second backup (.bak_5555_1.json) must have been created containing target v1
+    next_bak = tmp_path / f"replay_samples_30.bak_{fixed_ts}_1.json"
+    assert next_bak.exists()
+    assert json.loads(next_bak.read_text(encoding="utf-8")) == [{"target": "v1"}]
+
+    # Target file now has v2
+    assert json.loads(target_file.read_text(encoding="utf-8")) == [{"target": "v2"}]
+
+
+def test_save_samples_atomically_exclusive_temp_file_handles_collision_without_deleting_other_files(tmp_path, monkeypatch):
+    """Verify exclusive temp file creation ('xb') handles collision cleanly
+
+    and never deletes or overwrites temporary files belonging to other processes.
+    """
+    import json
+    import os
+    target_file = tmp_path / "replay_samples_30.json"
+    initial_data = [{"version": 1}]
+    with open(target_file, "w", encoding="utf-8") as f:
+        json.dump(initial_data, f)
+
+    # Pre-create a candidate temp file simulating an in-flight file from another worker
+    foreign_temp = tmp_path / f"replay_samples_30.tmp_{os.getpid()}_collided.json"
+    foreign_data = b"foreign_process_in_flight_payload"
+    foreign_temp.write_bytes(foreign_data)
+
+    class MockUUID:
+        def __init__(self, hex_val: str):
+            self.hex = hex_val
+
+    uuid_sequence = [MockUUID("collided"), MockUUID("unique99")]
+
+    def mock_uuid4():
+        if uuid_sequence:
+            return uuid_sequence.pop(0)
+        return MockUUID("extra000")
+
+    monkeypatch.setattr("scripts.dev_only.replay_event_matching.uuid4", mock_uuid4)
+
+    success = save_samples_atomically([{"version": 2}], target_file, backup_timestamp=7777)
+    assert success is True
+
+    # The other process's in-flight temp file must remain 100% UNTOUCHED
+    assert foreign_temp.exists()
+    assert foreign_temp.read_bytes() == foreign_data
+
+    # Clean up foreign temp file for test isolation
+    foreign_temp.unlink()
+
+    # Target file was successfully updated
+    with open(target_file, encoding="utf-8") as f:
+        assert json.load(f) == [{"version": 2}]
+
+
+@pytest.mark.asyncio
+async def test_main_async_exits_nonzero_on_atomic_save_failure(monkeypatch):
+    """Verify main_async terminates with exit code 1 if save_samples_atomically returns False."""
+    from scripts.dev_only.replay_event_matching import main_async
+
+    async def mock_load(*args, **kwargs):
+        now = datetime.now(UTC)
+        art = ArticleRecord(1, "S", "T", "u", now, {"event_title": "T"}, 1, False, False)
+        return [art], True
+
+    monkeypatch.setattr("scripts.dev_only.replay_event_matching.load_articles_from_db", mock_load)
+    monkeypatch.setattr("scripts.dev_only.replay_event_matching.save_samples_atomically", lambda *args, **kwargs: False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        await main_async(days=7)
+    assert exc_info.value.code == 1
+
+
+def test_save_samples_atomically_backup_temp_collision_does_not_delete_foreign_file(tmp_path, monkeypatch):
+    """Verify that if candidate backup temp file (.bak_tmp_*) already exists (e.g. from another process),
+
+    save_samples_atomically generates a new unique name via retry without deleting or corrupting
+    the pre-existing foreign temporary file.
+    """
+    import json
+    import os
+
+    target_file = tmp_path / "replay_samples_30.json"
+    initial_data = [{"version": 1}]
+    with open(target_file, "w", encoding="utf-8") as f:
+        json.dump(initial_data, f)
+
+    # Pre-create a candidate backup temp file simulating an in-flight backup from another worker
+    foreign_bak_temp = tmp_path / f"replay_samples_30.bak_tmp_{os.getpid()}_collided.json"
+    foreign_payload = b"foreign_process_in_flight_backup_payload"
+    foreign_bak_temp.write_bytes(foreign_payload)
+
+    class MockUUID:
+        def __init__(self, hex_val: str):
+            self.hex = hex_val
+
+    # First call will collide with foreign_bak_temp; second call generates unique name
+    uuid_sequence = [MockUUID("collided"), MockUUID("unique88")]
+
+    def mock_uuid4():
+        if uuid_sequence:
+            return uuid_sequence.pop(0)
+        return MockUUID("extra000")
+
+    monkeypatch.setattr("scripts.dev_only.replay_event_matching.uuid4", mock_uuid4)
+
+    success = save_samples_atomically([{"version": 2}], target_file, backup_timestamp=9999)
+    assert success is True
+
+    # The other process's foreign backup temp file must remain 100% UNTOUCHED
+    assert foreign_bak_temp.exists()
+    assert foreign_bak_temp.read_bytes() == foreign_payload
+
+    # Clean up foreign temp file for test isolation
+    foreign_bak_temp.unlink()
+
+    # Target file was successfully updated
+    with open(target_file, encoding="utf-8") as f:
+        assert json.load(f) == [{"version": 2}]
+
+    # Backup file (.bak_9999.json) was successfully finalized with initial_data
+    backup_file = tmp_path / "replay_samples_30.bak_9999.json"
+    assert backup_file.exists()
+    with open(backup_file, encoding="utf-8") as f:
+        assert json.load(f) == initial_data
+
+    # No leftover temporary files (.tmp_* or .bak_tmp_*)
+    temp_files = list(tmp_path.glob("replay_samples_30.tmp_*")) + list(tmp_path.glob("replay_samples_30.bak_tmp_*"))
+    assert len(temp_files) == 0
+
+
+def test_save_samples_atomically_backup_temp_exhaustion_aborts_cleanly(tmp_path, monkeypatch):
+    """Verify that if all 10 candidate backup temp file names collide (FileExistsError),
+
+    save_samples_atomically aborts with False, never touches or deletes foreign files,
+    cleans up its own JSON temp file, and preserves the original target file.
+    """
+    import json
+
+    target_file = tmp_path / "replay_samples_30.json"
+    initial_data = [{"version": "initial_seed"}]
+    with open(target_file, "w", encoding="utf-8") as f:
+        json.dump(initial_data, f)
+
+    orig_open = open
+
+    def mock_open_always_collide(path, mode="r", *args, **kwargs):
+        if ".bak_tmp_" in str(path) and "x" in mode:
+            raise FileExistsError(f"Simulated continuous collision on {path}")
+        return orig_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_always_collide)
+
+    errs = []
+    success = save_samples_atomically([{"version": "should_fail"}], target_file, backup_timestamp=1234, error_collector=errs)
+    assert success is False
+    assert len(errs) == 1
+    assert isinstance(errs[0], FileExistsError)
+
+    # Target file must remain 100% intact
+    with open(target_file, encoding="utf-8") as f:
+        assert json.load(f) == initial_data
+
+    # No backup file was created
+    assert len(list(tmp_path.glob("replay_samples_30.bak_*"))) == 0
+
+    # No temp files leaked
+    assert len(list(tmp_path.glob("replay_samples_30.tmp_*"))) == 0
+    assert len(list(tmp_path.glob("replay_samples_30.bak_tmp_*"))) == 0
+
+
+def test_save_samples_atomically_temp_creation_permission_error_returns_false(tmp_path, monkeypatch):
+    """Verify that if primary temp file creation fails with PermissionError:
+    1. Error does NOT escape unhandled.
+    2. Function returns False.
+    3. Error is recorded in error_collector.
+    4. Original target file remains completely untouched.
+    5. Pre-existing foreign files are NOT deleted.
+    6. No temporary files leak.
+    """
+    import json
+    target_file = tmp_path / "replay_samples_30.json"
+    initial_data = [{"version": "initial_intact_target"}]
+    with open(target_file, "w", encoding="utf-8") as f:
+        json.dump(initial_data, f)
+
+    # Pre-create a foreign temp file simulating another concurrent worker
+    foreign_temp = tmp_path / "replay_samples_30.tmp_9999_foreign.json"
+    foreign_data = b"foreign_process_in_flight_payload"
+    foreign_temp.write_bytes(foreign_data)
+
+    orig_open = open
+
+    def mock_open_temp_permission_denied(path, mode="r", *args, **kwargs):
+        if ".tmp_" in str(path) and "x" in mode:
+            raise PermissionError(13, "Permission denied")
+        return orig_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_temp_permission_denied)
+
+    errs = []
+    success = save_samples_atomically(
+        [{"version": "should_fail"}],
+        target_file,
+        backup_timestamp=1234,
+        error_collector=errs,
+    )
+    assert success is False
+    assert len(errs) == 1
+    assert isinstance(errs[0], PermissionError)
+    assert errs[0].errno == 13
+
+    # Original target file must remain completely untouched
+    with open(target_file, encoding="utf-8") as f:
+        assert json.load(f) == initial_data
+
+    # Foreign temp file must NOT have been deleted or corrupted
+    assert foreign_temp.exists()
+    assert foreign_temp.read_bytes() == foreign_data
+
+    # Clean up foreign temp file for test isolation
+    foreign_temp.unlink()
+
+    # No leftover temporary files (.tmp_* or .bak_tmp_*)
+    temp_files = list(tmp_path.glob("replay_samples_30.tmp_*")) + list(tmp_path.glob("replay_samples_30.bak_tmp_*"))
+    assert len(temp_files) == 0
+
+
+def test_save_samples_atomically_temp_creation_oserror_returns_false(tmp_path, monkeypatch):
+    """Verify that if primary temp file creation fails with a generic OSError (e.g. disk space/quota):
+    1. Error does NOT escape unhandled.
+    2. Function returns False.
+    3. Error is recorded in error_collector.
+    4. Original target file remains completely untouched.
+    5. No temporary files leak.
+    """
+    import json
+    target_file = tmp_path / "replay_samples_30.json"
+    initial_data = [{"version": "initial_intact_target"}]
+    with open(target_file, "w", encoding="utf-8") as f:
+        json.dump(initial_data, f)
+
+    orig_open = open
+
+    def mock_open_temp_oserror(path, mode="r", *args, **kwargs):
+        if ".tmp_" in str(path) and "x" in mode:
+            raise OSError(28, "No space left on device")
+        return orig_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_temp_oserror)
+
+    errs = []
+    success = save_samples_atomically(
+        [{"version": "should_fail"}],
+        target_file,
+        backup_timestamp=5678,
+        error_collector=errs,
+    )
+    assert success is False
+    assert len(errs) == 1
+    assert isinstance(errs[0], OSError)
+    assert errs[0].errno == 28
+
+    # Original target file must remain completely untouched
+    with open(target_file, encoding="utf-8") as f:
+        assert json.load(f) == initial_data
+
+    # No leftover temporary files (.tmp_* or .bak_tmp_*)
+    temp_files = list(tmp_path.glob("replay_samples_30.tmp_*")) + list(tmp_path.glob("replay_samples_30.bak_tmp_*"))
+    assert len(temp_files) == 0
+
+
+def test_multiprocessing_concurrent_backup_and_temp_file_isolation(tmp_path):
+    """Verify that multiple concurrent OS processes competing to save and backup
+    never collide on temporary files, never overwrite each other's backups,
+    cleanly handle Windows concurrency locks, and maintain filesystem integrity.
+
+    Concurrency & Multi-Writer Semantics:
+    1. Single-Writer Design & No Lost-Update Prevention:
+       save_samples_atomically is architected strictly for single-writer executions. It does NOT
+       implement a distributed lock, multi-writer transaction coordinator, or lost-update prevention.
+       If multiple processes invoke it concurrently on the same path, the last successful writer wins.
+    2. Distinction: Function Return vs Process Exit Code:
+       - Process Exit Code (p.exitcode == 0): Verifies that the worker OS process terminated cleanly
+         without an unhandled exception, crash, or segmentation fault.
+       - Function Return Value (success: bool): True if atomic write succeeded; False if safe abort
+         occurred (e.g. transient Windows file sharing violation [WinError 32]).
+    3. Explicit Separation of Allowable Failures:
+       - Category 1 (Windows File Locking / Sharing Violation): PermissionError or OSError with WinError 32 or 5.
+       - Category 2 (Collision Retry Exhaustion): FileExistsError if all 10 candidate names collided.
+       - Any other exception type or unhandled error is strictly DISALLOWED and fails the test.
+    4. Data Integrity:
+       Target file and all generated backups must strictly parse as valid, uncorrupted JSON matching
+       one of the expected payload versions. Zero temporary files (.tmp_* or .bak_tmp_*) may leak.
+    """
+    import json
+    import multiprocessing
+
+    target_file = tmp_path / "replay_samples_30.json"
+    initial_content = [{"version": "initial_seed"}]
+    with open(target_file, "w", encoding="utf-8") as f:
+        json.dump(initial_content, f)
+
+    fixed_ts = 8888888
+    num_workers = 3
+    ctx = multiprocessing.get_context("spawn")
+    queue = ctx.Queue()
+    barrier = ctx.Barrier(num_workers)
+
+    processes = []
+    for wid in range(num_workers):
+        p = ctx.Process(
+            target=_multiprocess_atomic_save_worker,
+            args=(str(target_file), fixed_ts, wid, queue, barrier),
+        )
+        processes.append(p)
+
+    for p in processes:
+        p.start()
+
+    # Deterministically retrieve results for each worker without queue.empty() race
+    results = []
+    for _ in range(num_workers):
+        try:
+            results.append(queue.get(timeout=15))
+        except Exception as e:
+            pytest.fail(f"Timed out waiting for worker result from queue: {e}")
+
+    for p in processes:
+        p.join(timeout=15)
+        # Verify OS process exit code: strictly 0 (no uncaught exceptions or crashes)
+        assert p.exitcode == 0, f"Worker process {p.pid} exited with non-zero code {p.exitcode}"
+
+    assert len(results) == num_workers
+
+    # 1 & 2 & 3. Inspect each worker's individual execution outcome:
+    # Worker tuple: (worker_id, success, err_info, unhandled_exc)
+    successful_worker_ids = []
+    sharing_violation_failures = []
+    collision_exhaustion_failures = []
+    disallowed_failures = []
+
+    for wid, success, err_info, unhandled_exc in results:
+        # Process must not have crashed or raised an uncaught exception
+        assert unhandled_exc is None, f"Worker {wid} crashed with unhandled exception: {unhandled_exc}"
+        assert isinstance(success, bool)
+
+        if success is True:
+            successful_worker_ids.append(wid)
+            assert err_info is None, f"Worker {wid} reported success but returned unexpected error: {err_info}"
+        else:
+            # Strict Whitelist of Allowable Concurrency Failures on Windows:
+            # We strictly separate Category 1 (real file lock / sharing violation) from Category 2 (collision exhaustion):
+            assert err_info is not None, f"Worker {wid} returned False without capturing error details!"
+            exc_type = err_info.get("type")
+            winerror = err_info.get("winerror")
+            msg = err_info.get("msg", "")
+
+            is_sharing_violation = (exc_type in ("PermissionError", "OSError")) and (
+                winerror in (32, 5)
+                or "used by another process" in msg
+                or "Access is denied" in msg
+            )
+            is_collision_exhaustion = (exc_type == "FileExistsError")
+
+            if is_sharing_violation:
+                sharing_violation_failures.append((wid, err_info))
+            elif is_collision_exhaustion:
+                collision_exhaustion_failures.append((wid, err_info))
+            else:
+                disallowed_failures.append((wid, err_info))
+
+    # Any error outside the whitelist strictly FAILS the test
+    if disallowed_failures:
+        pytest.fail(
+            f"One or more workers failed with DISALLOWED / UNEXPECTED error: {disallowed_failures}"
+        )
+
+    # 5. At least one worker process must have successfully updated the file
+    assert len(successful_worker_ids) >= 1, (
+        f"Expected at least one successful worker, but all failed. "
+        f"Sharing violations: {sharing_violation_failures}, Collision exhaustions: {collision_exhaustion_failures}"
+    )
+
+    # 4. Verify final target file content matches the EXACT payload of one of the SUCCESSFUL workers
+    assert target_file.exists()
+    with open(target_file, encoding="utf-8") as f:
+        target_data = json.load(f)
+    assert isinstance(target_data, list)
+    assert len(target_data) >= 1
+    target_wid = target_data[0].get("worker_id")
+    assert target_wid is not None, f"Target file has invalid payload format: {target_data}"
+    assert target_wid in successful_worker_ids, (
+        f"Target file content belongs to worker {target_wid}, which is NOT in successful workers list: {successful_worker_ids}"
+    )
+    expected_target_payload = [{"worker_id": target_wid, "data": f"payload_from_{target_wid}"}]
+    assert target_data == expected_target_payload, (
+        f"Target data {target_data} does not match expected payload {expected_target_payload}"
+    )
+
+    # 6. Check backups created in tmp_path
+    backup_files = list(tmp_path.glob(f"replay_samples_30.bak_{fixed_ts}*.json"))
+    assert len(backup_files) >= 1
+
+    # Verify no backup names collided (set size == list size)
+    backup_names = [bf.name for bf in backup_files]
+    assert len(backup_names) == len(set(backup_names))
+
+    # Verify every backup created has valid, uncorrupted JSON matching initial_seed or a worker payload
+    expected_valid_versions = {"initial_seed"} | {f"payload_from_{wid}" for wid in range(num_workers)}
+    for bf in backup_files:
+        with open(bf, encoding="utf-8") as f:
+            b_data = json.load(f)
+            assert isinstance(b_data, list)
+            assert len(b_data) >= 1
+            payload_str = str(b_data[0].get("version") or b_data[0].get("data"))
+            assert payload_str in expected_valid_versions
+
+    # 7. Verify NO temporary files (.tmp_* or .bak_tmp_*) linger in tmp_path
+    temp_files = list(tmp_path.glob("replay_samples_30.tmp_*")) + list(tmp_path.glob("replay_samples_30.bak_tmp_*"))
+    assert len(temp_files) == 0, f"Found leaked temporary files: {temp_files}"
 

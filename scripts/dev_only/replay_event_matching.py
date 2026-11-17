@@ -28,10 +28,12 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 # Ensure project root is in sys.path
 _project_root = Path(__file__).resolve().parents[2]
@@ -125,12 +127,37 @@ def _has_shared_non_country_entity(
     return bool(set_a & set_b)
 
 
-async def load_articles_from_db(days: int = 7) -> tuple[list[ArticleRecord], bool]:
-    """Query articles collected in the last `days` days with strictly read-only transaction."""
-    now_utc = datetime.now(UTC)
-    start_utc = now_utc - timedelta(days=days)
+async def load_articles_from_db(
+    days: int = 7,
+    start_utc: datetime | None = None,
+    end_utc: datetime | None = None,
+) -> tuple[list[ArticleRecord], bool]:
+    """Query articles collected in the closed interval [start_utc, end_utc] with strictly read-only transaction.
 
-    print(f"Connecting to database to fetch articles from {start_utc.isoformat()} to {now_utc.isoformat()}...")
+    Defaults to [end_utc - days, end_utc] (where end_utc defaults to datetime.now(UTC)) if bounds are omitted.
+    Strictly filters for Article.status == "summarized" and Article.ai_payload.is_not(None).
+
+    Reproducibility & Snapshot Limitations:
+    - Fixed Time Window Semantics:
+      The closed interval [start_utc, end_utc] stabilizes the temporal query boundary. However, it does
+      NOT freeze or guarantee an identical database snapshot across repeated executions.
+    - Mutable Database Fields:
+      Articles undergo asynchronous state transitions in the live system:
+        * status: articles may transition from 'collected' to 'summarized', 'flagged_for_review', or 'rejected'.
+        * ai_payload: populated asynchronously when editorial AI models complete processing.
+        * ArticleEvent relationships: links and confidence scores can be updated post-collection.
+      Consequently, re-running this query on the same historical interval does NOT guarantee an identical
+      set of articles if database state has mutated. True reproducibility requires an isolated, immutable
+      dataset snapshot (e.g. static JSON dump).
+    """
+    if end_utc is None:
+        end_utc = datetime.now(UTC)
+    if start_utc is None:
+        start_utc = end_utc - timedelta(days=days)
+
+    print(f"Connecting to database to fetch articles from {start_utc.isoformat()} to {end_utc.isoformat()}...")
+    print(f"   • Time Window Bounds (UTC): [{start_utc.isoformat()} -> {end_utc.isoformat()}]")
+    print("   • Status Filter: Article.status == 'summarized'")
 
     async with SessionLocal() as session:
         # Enforce and verify read-only transaction at transaction start
@@ -157,7 +184,8 @@ async def load_articles_from_db(days: int = 7) -> tuple[list[ArticleRecord], boo
                 .outerjoin(ArticleEvent, ArticleEvent.article_id == Article.id)
                 .where(
                     Article.collected_at >= start_utc,
-                    Article.status.not_in(["flagged", "flagged_for_review", "rejected", "expired", "failed"]),
+                    Article.collected_at <= end_utc,
+                    Article.status == "summarized",
                     Article.ai_payload.is_not(None),
                 )
                 .order_by(
@@ -236,11 +264,18 @@ def run_sequential_replay(
     merge_threshold: float = 0.60,
     follow_up_threshold: float = 0.80,
 ) -> tuple[dict[int, int], list[ReplayEvent], list[dict[str, Any]]]:
-    """Run sequential in-memory clustering replicating 100% of EventMatcher rules.
+    """Run sequential in-memory clustering evaluating EventMatcher rules.
 
     Replicates both operational paths:
         Path 1: Active events within 48h (threshold >= 0.60)
         Path 2: Historical Follow-up events (48h < t <= 14d, threshold >= 0.80)
+
+    Candidate Ordering & Tie-Breaking Divergence Notice:
+        In production (app/processors/event_matcher.py), candidate queries lack an ORDER BY clause.
+        Consequently, row order on identical timestamps is unspecified by the SQL engine and dependent
+        on physical page layout/storage scans. In Replay, candidates are explicitly sorted by
+        (first_seen_at desc, id desc) for repeatable stability. Therefore, deterministic Replay
+        does NOT guarantee complete parity with production under tie conditions.
 
     Returns:
         article_to_event: map of article_id -> event_id
@@ -651,56 +686,235 @@ def save_samples_atomically(
     samples_serialized: list[dict[str, Any]],
     out_json_path: Path,
     backup_timestamp: int | None = None,
+    *,
+    error_collector: list[Exception] | None = None,
 ) -> bool:
-    """Save serialized samples atomically using temp file, flush, fsync, automated backup, and os.replace."""
-    temp_json_path = out_json_path.with_suffix(".tmp")
+    """Save serialized samples atomically using exclusive temp file ('xb'), flush, fsync, safe backup, and os.replace.
+
+    Windows File Safety & Technical Guarantees:
+    - Exclusive Temp File Creation:
+      The temporary file is created using exclusive binary mode ('xb') with process ID and UUID isolation
+      (`.tmp_{pid}_{uuid}.json`). If a file with that name exists, FileExistsError triggers a retry
+      with a fresh UUID (up to 10 attempts); pre-existing files belonging to other processes are never overwritten or deleted.
+    - Safety Levels & Technical Boundaries:
+      1. Atomic Namespace Replacement (جایگزینی اتمیک نام در فضای نام):
+         Under standard supported NTFS operating conditions on Windows, `os.replace` delegates to `MoveFileExW`
+         with `MOVEFILE_REPLACE_EXISTING`. This atomically updates the directory entry in NTFS metadata.
+         In normal operating conditions, readers resolving the target file path will observe either the
+         previous complete file or the new complete file, avoiding observation of partially-written or
+         truncated intermediate states. Absolute atomicity guarantees do not extend to unstandardized
+         storage configurations, network filesystem mounts (SMB/NFS), or interfering filesystem filter drivers.
+      2. Process-Crash Safety & In-Flight Cleanup (ایمنی در برابر خرابی پردازه):
+         Under standard execution conditions, the pre-existing target file remains preserved and untouched
+         until `os.replace` successfully commits; it is not truncated or overwritten in-place.
+         Temporary file cleanup (`unlink`) is performed only for errors and exceptions caught and handled
+         by application code (within try...except blocks). In the event of an abrupt process crash (e.g. SIGKILL,
+         hard termination, or unhandled interpreter abort), in-flight temporary files (`.tmp_*` or `.bak_tmp_*`)
+         will remain orphaned on disk. However, because these files use process-isolated unique names,
+         their presence does not corrupt the target file, and future executions will not touch or overwrite them.
+      3. Power-Loss Durability (پایداری در برابر قطع برق — تفکیک از اتمیسیتی ابرداده):
+         Atomic namespace replacement does NOT equate to hardware durability across power failure.
+         While `os.fsync` forces Python user-space and OS kernel filesystem buffers to flush to the
+         storage controller, consumer storage media (SSDs/HDDs) with volatile on-disk write caches without
+         Power Loss Protection (PLP) or battery-backed cache may drop uncommitted blocks during sudden
+         power cutoffs. Absolute hardware-level durability cannot be guaranteed at application software level.
+    - Windows Mandatory File Locking & Allowable Concurrency Failures:
+      Unlike POSIX filesystems where unlinked inodes remain accessible to existing open file descriptors,
+      Windows enforces mandatory file locks unless handles are explicitly opened with `FILE_SHARE_DELETE`.
+      If an external process (antivirus scanner, search indexer, editor, or concurrent writer) holds
+      an open handle on the target file without delete sharing, `os.replace` fails with
+      `PermissionError: [WinError 32] The process cannot access the file because it is being used by another process`.
+      In such cases, this function retries briefly and if still locked, catches the error, deletes
+      its own temporary file, preserves the pre-existing target file without data loss, and returns False.
+    - Safe Process-Isolated Backup Staging:
+      Backups are initially copied to an exclusively-owned process-isolated temporary file
+      (`.bak_tmp_{pid}_{uuid}.json`) allocated via exclusive creation ('xb') with collision retry (up to 10 attempts).
+      Ownership is only claimed upon verified creation. If streaming data fails midway, ONLY that process's verified
+      temporary backup file is unlinked. Incomplete backups are NEVER exposed under a final `.bak_*.json` name.
+      Once completely written and fsynced, the temporary backup file is moved to a collision-free
+      final backup name (`.bak_{ts}.json` / `.bak_{ts}_{counter}.json`) without overwriting.
+    - Multi-Writer Concurrency Limitation (سلب ادعای Multi-Writer):
+      This function is designed for single-writer executions. It does NOT provide a distributed transaction
+      manager, two-phase commit, or lost-update prevention across multiple concurrent writers.
+      If multiple processes invoke it simultaneously, the last writer to complete `os.replace` wins;
+      concurrent writers do not merge their updates, though filesystem integrity is maintained.
+    """
+    temp_json_path: Path | None = None
+    f_temp = None
+
+    # 1. Allocate and create temporary file exclusively ('xb')
+    for _ in range(10):
+        candidate_temp = out_json_path.with_suffix(f".tmp_{os.getpid()}_{uuid4().hex[:8]}.json")
+        try:
+            f_temp = open(candidate_temp, "xb")
+            temp_json_path = candidate_temp
+            break
+        except FileExistsError:
+            continue
+        except Exception as e_open:
+            print(f"Error: Failed to create temporary file ({candidate_temp.name}): {e_open}")
+            if error_collector is not None:
+                error_collector.append(e_open)
+            return False
+
+    if temp_json_path is None or f_temp is None:
+        err = FileExistsError("Failed to allocate unique temporary file exclusively after multiple attempts.")
+        print(f"Error: {err}")
+        if error_collector is not None:
+            error_collector.append(err)
+        return False
+
     try:
-        # 1. Write to temporary file with flush and fsync
-        with open(temp_json_path, "w", encoding="utf-8") as f:
-            json.dump(samples_serialized, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
+        # Write serialized JSON payload with flush and fsync
+        with f_temp:
+            data_bytes = json.dumps(samples_serialized, ensure_ascii=False, indent=2).encode("utf-8")
+            f_temp.write(data_bytes)
+            f_temp.flush()
+            os.fsync(f_temp.fileno())
 
         # 2. If a valid previous file exists, create a unique timestamped backup before replacing
         if out_json_path.exists():
             ts = backup_timestamp or int(datetime.now(UTC).timestamp())
-            bak_path = out_json_path.with_suffix(f".bak_{ts}.json")
-            counter = 1
-            while bak_path.exists():
-                bak_path = out_json_path.with_suffix(f".bak_{ts}_{counter}.json")
-                counter += 1
-            try:
-                shutil.copy2(out_json_path, bak_path)
-                print(f"Backed up previous samples to {bak_path.name}")
-            except Exception as e_bak:
-                print(f"Error: Failed to create backup of previous samples: {e_bak}. Aborting save to protect original file.")
-                if temp_json_path.exists():
+
+            # Step 2a: Allocate and open an exclusively-owned process-isolated temporary backup file ('xb')
+            bak_temp_path: Path | None = None
+            f_bak_dst = None
+            for _ in range(10):
+                cand_bak_temp = out_json_path.with_suffix(f".bak_tmp_{os.getpid()}_{uuid4().hex[:8]}.json")
+                try:
+                    f_bak_dst = open(cand_bak_temp, "xb")
+                    bak_temp_path = cand_bak_temp
+                    break
+                except FileExistsError:
+                    continue
+                except Exception as e_bak_open:
+                    print(
+                        f"Error: Failed to create temporary backup file ({cand_bak_temp.name}): {e_bak_open}. "
+                        "Aborting save to protect original file."
+                    )
+                    if temp_json_path and temp_json_path.exists():
+                        try:
+                            temp_json_path.unlink()
+                        except Exception:
+                            pass
+                    if error_collector is not None:
+                        error_collector.append(e_bak_open)
+                    return False
+
+            if bak_temp_path is None or f_bak_dst is None:
+                err_bak = FileExistsError("Failed to allocate unique temporary backup file exclusively after multiple attempts.")
+                print(
+                    f"Error: {err_bak} Aborting save to protect original file."
+                )
+                if temp_json_path and temp_json_path.exists():
                     try:
                         temp_json_path.unlink()
                     except Exception:
                         pass
+                if error_collector is not None:
+                    error_collector.append(err_bak)
                 return False
 
-        # 3. Atomically replace temp file into destination
-        os.replace(temp_json_path, out_json_path)
+            # Stream previous file into the verified exclusively-owned backup temp file
+            try:
+                with f_bak_dst, open(out_json_path, "rb") as f_src:
+                    shutil.copyfileobj(f_src, f_bak_dst)
+                    f_bak_dst.flush()
+                    os.fsync(f_bak_dst.fileno())
+            except Exception as e_copy:
+                print(
+                    f"Error: Failed to stream backup data to temporary file ({bak_temp_path.name}): {e_copy}. "
+                    "Aborting save to protect original file."
+                )
+                # Unlink ONLY our verified exclusively-owned backup temp file
+                if bak_temp_path and bak_temp_path.exists():
+                    try:
+                        bak_temp_path.unlink()
+                    except Exception:
+                        pass
+                if temp_json_path and temp_json_path.exists():
+                    try:
+                        temp_json_path.unlink()
+                    except Exception:
+                        pass
+                if error_collector is not None:
+                    error_collector.append(e_copy)
+                return False
+
+            # Step 2b: Move the fully-written temporary backup file to a collision-free final backup name
+            counter = 0
+            bak_committed = False
+            while not bak_committed:
+                suffix = f".bak_{ts}.json" if counter == 0 else f".bak_{ts}_{counter}.json"
+                final_bak_path = out_json_path.with_suffix(suffix)
+                try:
+                    if os.name == "nt":
+                        os.rename(bak_temp_path, final_bak_path)
+                    else:
+                        os.link(bak_temp_path, final_bak_path)
+                        os.unlink(bak_temp_path)
+                    bak_committed = True
+                    print(f"Backed up previous samples to {final_bak_path.name}")
+                except FileExistsError:
+                    counter += 1
+                except Exception as e_rename:
+                    print(
+                        f"Error: Failed to finalize backup ({final_bak_path.name}): {e_rename}. "
+                        "Aborting save to protect original file."
+                    )
+                    if bak_temp_path and bak_temp_path.exists():
+                        try:
+                            bak_temp_path.unlink()
+                        except Exception:
+                            pass
+                    if temp_json_path and temp_json_path.exists():
+                        try:
+                            temp_json_path.unlink()
+                        except Exception:
+                            pass
+                    if error_collector is not None:
+                        error_collector.append(e_rename)
+                    return False
+
+        # 3. Atomically replace temp file into destination (with transient lock retry for Windows)
+        replaced = False
+        for attempt in range(5):
+            try:
+                os.replace(temp_json_path, out_json_path)
+                replaced = True
+                break
+            except PermissionError:
+                if attempt < 4:
+                    time.sleep(0.05 * (attempt + 1))
+                else:
+                    raise
+
+        if not replaced:
+            raise RuntimeError(f"Could not replace {out_json_path} after multiple attempts.")
+
         print(f"\nSaved {len(samples_serialized)} audited sample pairs atomically to {out_json_path}")
         return True
     except Exception as e:
-        if temp_json_path.exists():
+        if temp_json_path and temp_json_path.exists():
             try:
                 temp_json_path.unlink()
             except Exception:
                 pass
         print(f"Warning: Could not save JSON samples: {e}")
+        if error_collector is not None:
+            error_collector.append(e)
         return False
 
 
 async def main_async(days: int) -> None:
-    start_time = datetime.now(UTC)
+    wall_start = datetime.now(UTC)
+    end_utc = wall_start
+    start_utc = end_utc - timedelta(days=days)
+
     print("=" * 100)
     print("  PHASE Y-14: EVENT MATCHING REPLAY AND CALIBRATION ANALYSIS (AUDITED)")
     print(f"  Target: Sequential replay over {days} days of collected articles")
-    print(f"  Start Time (UTC): {start_time.isoformat()}")
+    print(f"  Fixed Population Window (UTC): [{start_utc.isoformat()} -> {end_utc.isoformat()}]")
     try:
         git_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
         print(f"  Git Commit SHA: {git_sha}")
@@ -709,7 +923,7 @@ async def main_async(days: int) -> None:
     print("=" * 100)
 
     try:
-        articles, ok = await load_articles_from_db(days=days)
+        articles, ok = await load_articles_from_db(days=days, start_utc=start_utc, end_utc=end_utc)
     except Exception as e:
         print(f"Error loading from database: {e}")
         print("Note: If DATABASE_URL is not set or network is unreachable, please verify connection settings.")
@@ -745,6 +959,10 @@ async def main_async(days: int) -> None:
     print(f"   • Agreement-F1: {ctrl_base['f1']:.4f}")
     print(f"   • False Positive Rate: {ctrl_base['fpr']:.4f}")
     print("   [توجه روش‌شناختی: این معیارها صرفاً توافق با خوشه‌بندی ثبت‌شده در دیتابیس هستند، نه دقت مطلق واقعی]")
+    print("   [ملاحظه ترتیبی کاندیداها: در Production کوئری کاندیداها فاقد ORDER BY است و ترتیب ردیف‌ها در برابری امتیازها")
+    print("    توسط PostgreSQL نامعین و تضمین‌نشده (Unspecified) بوده و تابع چیدمان فیزیکی صفحات دیتابیس است.")
+    print("    در Replay از مرتب‌سازی صریح (first_seen_at desc, id desc) برای پایداری نتایج استفاده می‌شود؛")
+    print("    لذا Replay قطعی ادعایی بر Parity کامل ترتیبی در شرایط برابری امتیازها با رفتار نامعین دیتابیس ندارد.]")
 
     # 3. Test Proposed Rules for X in (0.25, 0.35, x_dist)
     x_candidates = [0.25, 0.35, x_dist]
@@ -968,16 +1186,20 @@ async def main_async(days: int) -> None:
 
     # Save to JSON file with atomic write and automated backup of existing valid file
     out_json_path = _project_root / "scripts" / "dev_only" / "replay_samples_30.json"
-    save_samples_atomically(
+    save_ok = save_samples_atomically(
         samples_serialized,
         out_json_path,
-        backup_timestamp=int(start_time.timestamp()),
+        backup_timestamp=int(end_utc.timestamp()),
     )
+    if not save_ok:
+        print("\nERROR: Failed to save replay samples atomically to JSON. Aborting with non-zero exit code.")
+        sys.exit(1)
 
-    end_time = datetime.now(UTC)
+    wall_finish = datetime.now(UTC)
     print("\n" + "=" * 100)
-    print(f"  Replay Execution Finished at (UTC): {end_time.isoformat()}")
-    print(f"  Total Duration: {(end_time - start_time).total_seconds():.2f}s")
+    print(f"  Replay Execution Finished at (UTC): {wall_finish.isoformat()}")
+    print(f"  Fixed Population Window (UTC): [{start_utc.isoformat()} -> {end_utc.isoformat()}]")
+    print(f"  Total Duration: {(wall_finish - wall_start).total_seconds():.2f}s")
     print("=" * 100)
 
 
