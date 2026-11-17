@@ -144,7 +144,9 @@ Set these as **Repository Variables** (Settings → Secrets and variables → Ac
 - **Actions performed:**
   1. Installs `rclone`.
   2. Uses transient `postgres:18-alpine` Docker container to run `pg_dump -Fc` against Aiven `DATABASE_URL` (the client must match the server's major version, otherwise `pg_dump` aborts).
-  3. Uploads the compressed binary dump to Backblaze B2 and deletes backups older than 7 days.
+  3. Validates the dump with `pg_restore --list`, uploads it to Backblaze B2 (`db/`), and
+     verifies the uploaded object's name and byte size. It **deletes nothing**: old-backup
+     pruning is a separate, explicit action (`scripts/prune_backups.sh --yes`).
 
 ---
 

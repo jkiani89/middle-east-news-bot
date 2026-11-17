@@ -28,7 +28,9 @@ DB_NAME="${POSTGRES_DB:-newsbot}"
 # The workflow sets BACKUP_REMOTE/BACKUP_BUCKET; the fallbacks keep a local run working.
 BACKUP_REMOTE="${BACKUP_REMOTE:-r2}"
 BACKUP_BUCKET="${BACKUP_BUCKET:-${R2_BUCKET_NAME:-${B2_BUCKET_NAME:-newsbot-backups}}}"
-RETENTION="${BACKUP_RETENTION_DAYS:-7}"
+# This script never deletes anything: retention is a separate, explicit action
+# (scripts/prune_backups.sh, which requires --yes). A backup that silently removes
+# earlier dumps cannot be used as a restore point.
 
 # Check if rclone is installed
 if ! command -v rclone >/dev/null 2>&1; then
@@ -91,9 +93,5 @@ echo "--- Verified remote object: ${BACKUP_REMOTE}:${BACKUP_BUCKET}/db/${FILENAM
 
 rm -f "$TMP_PATH"
 echo "--- Local temp file removed ---"
-
-# 3. Cleanup old backups in the bucket
-echo "--- Removing ${BACKUP_REMOTE} backups older than ${RETENTION} days ---"
-rclone delete "${BACKUP_REMOTE}:${BACKUP_BUCKET}/db/" --min-age "${RETENTION}d"
 
 echo "=== Backup completed successfully ==="

@@ -17,7 +17,8 @@ jobs:
     timeout-minutes: 15
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      BACKUP_RETENTION_DAYS: '7'
+      # No retention setting here on purpose: this workflow never deletes anything.
+      # Pruning is a separate, explicit action (scripts/prune_backups.sh --yes).
       # 'r2' (Cloudflare) or 'b2' (Backblaze). The optional repository variable
       # BACKUP_STORAGE overrides the choice; without it the provider is inferred from the
       # credentials that actually exist, so a configured B2 key alone is enough.

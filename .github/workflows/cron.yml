@@ -67,7 +67,6 @@ jobs:
       # Pre-migration backup: same destination and credentials as backup.yml, resolved by
       # the shared script so the two workflows cannot drift apart.
       BACKUP_STORAGE: ${{ vars.BACKUP_STORAGE }}
-      BACKUP_RETENTION_DAYS: '7'
       B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME || 'newsbot-backups' }}
       R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME || 'newsbot-backups' }}
       RCLONE_CONFIG_R2_TYPE: s3
