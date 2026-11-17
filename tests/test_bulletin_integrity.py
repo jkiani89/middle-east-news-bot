@@ -240,6 +240,97 @@ def test_perspectives_gate_one_camp_has_location_other_empty():
     assert len(shared) == 0
 
 
+def test_perspectives_gate_compound_locations():
+    from app.editorial.perspectives import extract_non_country_entities
+
+    # Compound location with city + country: country is stripped, city retained
+    assert extract_non_country_entities({"location": "Tokyo, Japan"}) == {"tokyo"}
+    assert extract_non_country_entities({"location": "توکیو، ژاپن"}) == {"توکیو"}
+    assert extract_non_country_entities({"location": "Cairo, Egypt"}) == {"cairo"}
+    assert extract_non_country_entities({"location": "قاهره / مصر"}) == {"قاهره"}
+    assert extract_non_country_entities({"location": "مأرب، یمن"}) == {"مأرب"}
+
+    # Compound location with only countries or waterways: all stripped -> set()
+    assert extract_non_country_entities({"location": "Japan and South Korea"}) == set()
+    assert extract_non_country_entities({"location": "ژاپن و کره جنوبی"}) == set()
+    assert extract_non_country_entities({"location": "Red Sea and Gulf of Aden"}) == set()
+    assert extract_non_country_entities({"location": "دریای سرخ و خلیج عدن"}) == set()
+    assert extract_non_country_entities({"actors": ["ایران و روسیه"]}) == set()
+
+
+def test_perspectives_gate_compound_matching_behavior():
+    # 1. Matching city with different compound forms qualifies
+    camp_tokyo_compound = {
+        "source_name": "Source A",
+        "actors": ["مقامات"],
+        "location": "Tokyo, Japan",
+    }
+    camp_tokyo_city = {
+        "source_name": "Source B",
+        "actors": ["سرمایه‌گذاران"],
+        "location": "Tokyo",
+    }
+    passed, shared = check_perspectives_gate([camp_tokyo_compound, camp_tokyo_city], min_shared_actors=1)
+    assert passed is True
+    assert "tokyo" in shared
+
+    # 2. Different cities in same country: country is stripped, cities disjoint -> rejects
+    camp_osaka = {
+        "source_name": "Source B",
+        "actors": ["سرمایه‌گذاران"],
+        "location": "Osaka, Japan",
+    }
+    passed, shared = check_perspectives_gate([camp_tokyo_compound, camp_osaka], min_shared_actors=1)
+    assert passed is False
+    assert len(shared) == 0
+
+    # 3. Compound countries only: both stripped -> rejects
+    camp_compound_countries = {
+        "source_name": "Source A",
+        "actors": ["دیپلمات‌ها"],
+        "location": "Japan and South Korea",
+    }
+    camp_single_country = {
+        "source_name": "Source B",
+        "actors": ["مقامات ارشد"],
+        "location": "South Korea",
+    }
+    passed, shared = check_perspectives_gate([camp_compound_countries, camp_single_country], min_shared_actors=1)
+    assert passed is False
+    assert len(shared) == 0
+
+
+@pytest.mark.asyncio
+async def test_perspectives_gate_explicit_mock_zero_model_calls(caplog):
+    """Explicitly verify that when the gate rejects, AI provider is never called (0 model calls)."""
+    import logging
+
+    from app.processors.pipeline import _refresh_event_perspectives
+
+    summary = SimpleNamespace(details_fa={}, event_id=88)
+    # Two camps covering different cities in Japan (Tokyo vs Osaka) without shared actors
+    rows = [
+        (21, "Title 1", "Body 1", "Reuters", {"actors": ["مسئولان"], "location": "Tokyo, Japan"}),
+        (22, "Title 2", "Body 2", "TASS", {"actors": ["کارشناسان"], "location": "Osaka, Japan"}),
+    ]
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=SimpleNamespace(all=lambda: rows)),
+        scalars=AsyncMock(return_value=SimpleNamespace(first=lambda: summary)),
+    )
+    mock_ai_provider = AsyncMock()
+    mock_ai_provider.generate_text = AsyncMock()
+    mock_ai_provider.call_count = 0
+
+    with caplog.at_level(logging.INFO):
+        res = await _refresh_event_perspectives(session, 88, "Event 88", mock_ai_provider)
+
+    assert res is False
+    assert "reason=disjoint_entities" in caplog.text
+    # Explicit assertion: Zero AI model calls made
+    assert mock_ai_provider.generate_text.call_count == 0
+    assert mock_ai_provider.call_count == 0
+
+
 @pytest.mark.asyncio
 async def test_perspectives_gate_rejection_insufficient_data(caplog):
     import logging
