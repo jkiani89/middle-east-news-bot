@@ -259,6 +259,7 @@ class GeminiProvider(BaseAIProvider):
         prompt: str,
         system_instruction: str | None,
         extra_config: dict[str, Any],
+        timeout: float | None = None,
     ) -> Any:
         """Run one model call under a hard timeout.
 
@@ -266,6 +267,13 @@ class GeminiProvider(BaseAIProvider):
         production produced single calls that blocked for 700+ seconds. ``wait_for``
         bounds the wait; the worker thread that is still running cannot be cancelled,
         so it finishes in the background and its result is discarded.
+
+        Cancellation boundary (do not "fix" this by assuming otherwise): the rotator
+        runs the blocking SDK call in ``loop.run_in_executor`` (gemini_rotator
+        middleware), so cancelling the awaited future only detaches the awaiter. The
+        HTTP request keeps running on its executor thread until the SDK's own retries
+        (5 attempts, 1/2/4/8s backoff) finish or the connection dies; only then does the
+        thread return and its result get dropped.
         """
         return await asyncio.wait_for(
             self._rotator.execute(
@@ -274,8 +282,57 @@ class GeminiProvider(BaseAIProvider):
                 system=system_instruction,
                 extra_config=extra_config,
             ),
-            timeout=self._request_timeout,
+            timeout=timeout if timeout is not None else self._request_timeout,
         )
+
+    def _timeout_for(self, purpose: str) -> float:
+        """Per-purpose ceiling; a perspective matrix is slower than one article."""
+        if purpose == "perspectives":
+            return max(self._request_timeout, float(settings.ai_perspectives_timeout_seconds))
+        return self._request_timeout
+
+    async def _execute_model_with_timeout_retry(
+        self,
+        model: str,
+        prompt: str,
+        system_instruction: str | None,
+        extra_config: dict[str, Any],
+        *,
+        timeout: float,
+        attempts: int,
+        purpose: str,
+    ) -> Any:
+        """Run one call, retrying at most once and only after a timeout.
+
+        Every timeout is logged, and the final one is re-raised, so the caller's normal
+        failure path (fallback model, then ``pipeline``'s ``logger.exception``) still sees
+        it; nothing is swallowed or turned into a silent empty result.
+
+        Known limitation: a timed-out attempt is *not* guaranteed to have stopped. Because
+        the SDK call runs in a thread (see ``_execute_model``), the retry can overlap with
+        the previous in-flight request, which keeps consuming quota and a per-key slot
+        until it finishes. Preventing that would require the rotator to expose a
+        cancellable/async transport; until then the overlap is accepted deliberately and
+        bounded (one retry, one fallback call). Operators can set
+        ``AI_PERSPECTIVES_RETRIES=0`` to opt out of the retry entirely.
+        """
+        for attempt in range(1, attempts + 1):
+            try:
+                return await self._execute_model(
+                    model, prompt, system_instruction, extra_config, timeout=timeout
+                )
+            except TimeoutError:
+                if attempt >= attempts:
+                    raise
+                logger.warning(
+                    "Gemini [%s] call timed out after %.0fs (attempt %d/%d); retrying.",
+                    purpose,
+                    timeout,
+                    attempt,
+                    attempts,
+                )
+                await asyncio.sleep(2.0 * attempt)
+        raise AssertionError("unreachable: the retry loop always returns or raises")
 
     def _record_primary_failure(self) -> None:
         """Trip the model-level circuit breaker after repeated primary failures."""
@@ -325,8 +382,22 @@ class GeminiProvider(BaseAIProvider):
         start_time = time.monotonic()
         raw_text: str | None = None
 
+        timeout = self._timeout_for(purpose)
+        # Clamped again at the call site: a directly mutated setting must never turn
+        # into an unbounded retry loop.
+        perspective_retries = min(max(int(settings.ai_perspectives_retries), 0), 1)
+        attempts = 1 + (perspective_retries if purpose == "perspectives" else 0)
+
         try:
-            response = await self._execute_model(target_model, prompt, system_instruction, extra_config)
+            response = await self._execute_model_with_timeout_retry(
+                target_model,
+                prompt,
+                system_instruction,
+                extra_config,
+                timeout=timeout,
+                attempts=attempts,
+                purpose=purpose,
+            )
             raw_text = getattr(response, "text", "") or ""
             self._last_used_model = target_model
             self._model = target_model
@@ -370,7 +441,7 @@ class GeminiProvider(BaseAIProvider):
                 try:
                     target_model = self._fallback_model
                     response = await self._execute_model(
-                        target_model, prompt, system_instruction, extra_config
+                        target_model, prompt, system_instruction, extra_config, timeout=timeout
                     )
                     raw_text = getattr(response, "text", "") or ""
                     self._last_used_model = target_model
