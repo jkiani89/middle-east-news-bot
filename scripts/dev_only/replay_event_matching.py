@@ -1,0 +1,1215 @@
+r"""Event Matching Replay and Calibration Analysis for Phase Y-14.
+
+READ-ONLY replay of event clustering over the last N days to evaluate proposed
+stricter EventMatcher rules:
+    Current rule: total_score >= 0.60
+    Proposed rule: total_score >= 0.60 AND (shared_non_country_actor >= 1 OR keywords_score >= X)
+
+Strictly read-only: executes SET TRANSACTION READ ONLY in begin() and verifies transaction_read_only = 'on'.
+Zero database writes, no temporary tables, zero external API calls, zero model calls.
+
+Windows PowerShell execution:
+    $securePass = Read-Host "Enter Aiven DB password" -AsSecureString
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePass)
+    $plainPass = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+    $env:DATABASE_URL = "postgresql+asyncpg://avnadmin:${plainPass}@pg-2f0e4f1c-newsbot-db.e.aivencloud.com:27362/defaultdb?ssl=require"
+    .venv\Scripts\python.exe scripts/dev_only/replay_event_matching.py --days 7
+    Remove-Item Env:\DATABASE_URL
+    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import difflib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+# Ensure project root is in sys.path
+_project_root = Path(__file__).resolve().parents[2]
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
+from sqlalchemy import select, text
+
+from app.config import settings
+from app.database.connection import SessionLocal
+from app.database.models import Article, ArticleEvent, Event, Source
+from app.editorial.glossary import canonicalize_approved_names
+from app.editorial.liveblog import is_live_digest
+from app.editorial.perspectives import extract_non_country_entities
+from app.processors.event_matcher import (
+    calculate_event_similarity,
+    tokenize,
+)
+
+
+@dataclass
+class ReplayEvent:
+    id: int
+    title: str
+    event_type: str | None
+    countries: list[str]
+    actors: list[str]
+    location: str | None
+    importance: int
+    status: str
+    first_seen_at: datetime
+    last_updated_at: datetime
+    is_live_digest: bool
+    is_follow_up: bool = False
+    parent_event_id: int | None = None
+    article_ids: list[int] = field(default_factory=list)
+
+
+@dataclass
+class ArticleRecord:
+    id: int
+    source_name: str
+    title: str
+    url: str
+    collected_at: datetime
+    ai_payload: dict[str, Any]
+    db_event_id: int | None
+    is_live_digest: bool
+    is_insufficient_data: bool
+    db_event_ids: set[int] = field(default_factory=set)
+
+
+@dataclass
+class EventCandidateCompat:
+    """Adapter ensuring calculate_event_similarity can inspect candidate attributes without AttributeError."""
+    title: str
+    event_type: str | None
+    countries: list[str]
+    actors: list[str]
+    location: str | None
+
+
+def _to_event_candidate(item: ArticleRecord | ReplayEvent | Event) -> Any:
+    """Convert an ArticleRecord, ReplayEvent, or Event into a calculate_event_similarity-compatible candidate."""
+    if isinstance(item, (Event, ReplayEvent)):
+        return item
+    payload = getattr(item, "ai_payload", {}) or {}
+    raw_title = payload.get("event_title") or payload.get("headline_fa") or getattr(item, "title", "")
+    return EventCandidateCompat(
+        title=canonicalize_approved_names(raw_title),
+        event_type=(payload.get("categories") or [None])[0],
+        countries=payload.get("countries") or [],
+        actors=payload.get("actors") or [],
+        location=payload.get("location"),
+    )
+
+
+def _headline_similarity_display_only(title_a: str, title_b: str) -> float:
+    """Calculate string similarity for display/ranking only (NOT used in matching decisions)."""
+    return round(difflib.SequenceMatcher(None, title_a or "", title_b or "").ratio(), 3)
+
+
+def _has_shared_non_country_entity(
+    actors_a: list[str],
+    loc_a: str | None,
+    actors_b: list[str],
+    loc_b: str | None,
+) -> bool:
+    set_a = extract_non_country_entities({"actors": actors_a, "location": loc_a or ""})
+    set_b = extract_non_country_entities({"actors": actors_b, "location": loc_b or ""})
+    return bool(set_a & set_b)
+
+
+async def load_articles_from_db(
+    days: int = 7,
+    start_utc: datetime | None = None,
+    end_utc: datetime | None = None,
+) -> tuple[list[ArticleRecord], bool]:
+    """Query articles collected in the closed interval [start_utc, end_utc] with strictly read-only transaction.
+
+    Defaults to [end_utc - days, end_utc] (where end_utc defaults to datetime.now(UTC)) if bounds are omitted.
+    Strictly filters for Article.status == "summarized" and Article.ai_payload.is_not(None).
+
+    Reproducibility & Snapshot Limitations:
+    - Fixed Time Window Semantics:
+      The closed interval [start_utc, end_utc] stabilizes the temporal query boundary. However, it does
+      NOT freeze or guarantee an identical database snapshot across repeated executions.
+    - Mutable Database Fields:
+      Articles undergo asynchronous state transitions in the live system:
+        * status: articles may transition from 'collected' to 'summarized', 'flagged_for_review', or 'rejected'.
+        * ai_payload: populated asynchronously when editorial AI models complete processing.
+        * ArticleEvent relationships: links and confidence scores can be updated post-collection.
+      Consequently, re-running this query on the same historical interval does NOT guarantee an identical
+      set of articles if database state has mutated. True reproducibility requires an isolated, immutable
+      dataset snapshot (e.g. static JSON dump).
+    """
+    if end_utc is None:
+        end_utc = datetime.now(UTC)
+    if start_utc is None:
+        start_utc = end_utc - timedelta(days=days)
+
+    print(f"Connecting to database to fetch articles from {start_utc.isoformat()} to {end_utc.isoformat()}...")
+    print(f"   • Time Window Bounds (UTC): [{start_utc.isoformat()} -> {end_utc.isoformat()}]")
+    print("   • Status Filter: Article.status == 'summarized'")
+
+    async with SessionLocal() as session:
+        # Enforce and verify read-only transaction at transaction start
+        async with session.begin():
+            await session.execute(text("SET TRANSACTION READ ONLY"))
+            check_ro = (await session.execute(text("SHOW transaction_read_only"))).scalar()
+            if str(check_ro).lower() != "on":
+                raise RuntimeError(f"Session is NOT read-only! SHOW transaction_read_only={check_ro}. Aborting.")
+            print(f"Verified read-only transaction: transaction_read_only = {check_ro}")
+
+            stmt = (
+                select(
+                    Article.id,
+                    Article.title,
+                    Article.canonical_url,
+                    Article.original_url,
+                    Article.collected_at,
+                    Article.ai_payload,
+                    Source.name,
+                    ArticleEvent.event_id,
+                    ArticleEvent.confidence,
+                )
+                .join(Source, Source.id == Article.source_id)
+                .outerjoin(ArticleEvent, ArticleEvent.article_id == Article.id)
+                .where(
+                    Article.collected_at >= start_utc,
+                    Article.collected_at <= end_utc,
+                    Article.status == "summarized",
+                    Article.ai_payload.is_not(None),
+                )
+                .order_by(
+                    Article.collected_at.asc(),
+                    Article.id.asc(),
+                    ArticleEvent.confidence.desc().nullslast(),
+                    ArticleEvent.id.desc(),
+                )
+            )
+
+            rows = (await session.execute(stmt)).all()
+
+    records_dict: dict[int, ArticleRecord] = {}
+    empty_actor_count = 0
+    empty_location_count = 0
+    both_empty_count = 0
+
+    for r in rows:
+        art_id, title, can_u, orig_u, coll_at, p_load, src_name, ev_id, conf = r
+        if art_id in records_dict:
+            # Multi-event article: preserve all associated event IDs in db_event_ids
+            if ev_id is not None:
+                records_dict[art_id].db_event_ids.add(ev_id)
+            continue
+
+        payload = p_load if isinstance(p_load, dict) else {}
+        url = can_u or orig_u or ""
+
+        # Check live digest
+        is_digest = is_live_digest(url, title) or payload.get("is_live_digest") or payload.get("article_kind") == "live_digest"
+
+        # Check empty actors and empty location independently
+        actors = payload.get("actors") or []
+        loc = str(payload.get("location") or "").strip()
+        has_actors = bool(actors)
+        has_location = bool(loc)
+
+        if not has_actors:
+            empty_actor_count += 1
+        if not has_location:
+            empty_location_count += 1
+        if not has_actors and not has_location:
+            both_empty_count += 1
+
+        ev_set = {ev_id} if ev_id is not None else set()
+        rec = ArticleRecord(
+            id=art_id,
+            source_name=src_name or "",
+            title=title or "",
+            url=url,
+            collected_at=coll_at if coll_at.tzinfo else coll_at.replace(tzinfo=UTC),
+            ai_payload=payload,
+            db_event_id=ev_id,  # Deterministically the highest-confidence event due to order_by
+            is_live_digest=bool(is_digest),
+            is_insufficient_data=(not has_actors and not has_location),
+            db_event_ids=ev_set,
+        )
+        records_dict[art_id] = rec
+
+    records = list(records_dict.values())
+
+    print(f"Loaded {len(records)} articles across time window:")
+    print(f"   • Total Articles Analyzed: {len(records)}")
+    print(f"   • Articles with missing actors (Empty Actors): {empty_actor_count}")
+    print(f"   • Articles with missing location (Empty Location): {empty_location_count}")
+    print(f"   • Articles with BOTH missing (Insufficient Data): {both_empty_count}")
+    return records, True
+
+
+def run_sequential_replay(
+    articles: list[ArticleRecord],
+    require_strict_gate: bool = False,
+    keyword_threshold_x: float = 0.25,
+    time_window_hours: int = 48,
+    follow_up_window_days: int = 14,
+    merge_threshold: float = 0.60,
+    follow_up_threshold: float = 0.80,
+) -> tuple[dict[int, int], list[ReplayEvent], list[dict[str, Any]]]:
+    """Run sequential in-memory clustering evaluating EventMatcher rules.
+
+    Replicates both operational paths:
+        Path 1: Active events within 48h (threshold >= 0.60)
+        Path 2: Historical Follow-up events (48h < t <= 14d, threshold >= 0.80)
+
+    Candidate Ordering & Tie-Breaking Divergence Notice:
+        In production (app/processors/event_matcher.py), candidate queries lack an ORDER BY clause.
+        Consequently, row order on identical timestamps is unspecified by the SQL engine and dependent
+        on physical page layout/storage scans. In Replay, candidates are explicitly sorted by
+        (first_seen_at desc, id desc) for repeatable stability. Therefore, deterministic Replay
+        does NOT guarantee complete parity with production under tie conditions.
+
+    Returns:
+        article_to_event: map of article_id -> event_id
+        events: list of ReplayEvent
+        decisions: list of merge decisions with component scores
+    """
+    next_event_id = 1
+    events: list[ReplayEvent] = []
+    article_to_event: dict[int, int] = {}
+    decisions: list[dict[str, Any]] = []
+
+    for art in articles:
+        analysis_data = art.ai_payload or {}
+        ref_time = art.collected_at
+        window_start = ref_time - timedelta(hours=time_window_hours)
+        window_end = ref_time + timedelta(hours=time_window_hours)
+
+        incoming_is_digest = art.is_live_digest
+
+        # 1. Active candidate events within 48h
+        best_candidate: ReplayEvent | None = None
+        best_score = 0.0
+        best_sim_score: Any = None
+        best_shared_actor = False
+
+        if not incoming_is_digest:
+            active_cands = [
+                ev for ev in events
+                if ev.status == "active"
+                and ev.first_seen_at >= window_start
+                and ev.first_seen_at <= window_end
+                and not ev.is_live_digest
+            ]
+            # Order by first_seen_at desc, id desc for 100% deterministic tie-breaking
+            active_cands.sort(key=lambda ev: (ev.first_seen_at, ev.id), reverse=True)
+
+            # Find single best candidate by similarity score (identical to operational EventMatcher)
+            for cand in active_cands:
+                sim = calculate_event_similarity(cand, analysis_data)
+                if sim.total_score > best_score:
+                    best_score = sim.total_score
+                    best_candidate = cand
+                    best_sim_score = sim
+
+            # Gate verification on best candidate:
+            # Must meet merge_threshold (0.60). If require_strict_gate is enabled,
+            # must also pass shared_actor or keywords_score >= X.
+            # Rejection does NOT fall back to a lesser candidate.
+            if best_candidate and best_score >= merge_threshold:
+                best_shared_actor = _has_shared_non_country_entity(
+                    best_candidate.actors, best_candidate.location,
+                    analysis_data.get("actors") or [], analysis_data.get("location")
+                )
+                if require_strict_gate:
+                    gate_passed = best_shared_actor or (best_sim_score.keywords_score >= keyword_threshold_x)
+                    if not gate_passed:
+                        best_candidate = None
+                        best_score = 0.0
+
+        # 2. Historical Follow-up candidate (>48h and <= follow_up_window_days)
+        historical_start = ref_time - timedelta(days=follow_up_window_days)
+        best_hist_event: ReplayEvent | None = None
+        best_hist_score = 0.0
+        best_hist_sim: Any = None
+        best_hist_shared_actor = False
+
+        if not incoming_is_digest and (best_candidate is None or best_score < merge_threshold):
+            hist_cands = [
+                ev for ev in events
+                if ev.status == "active"
+                and ev.first_seen_at >= historical_start
+                and ev.first_seen_at < window_start
+                and not ev.is_live_digest
+            ]
+            # Order by first_seen_at desc, id desc for 100% deterministic tie-breaking
+            hist_cands.sort(key=lambda ev: (ev.first_seen_at, ev.id), reverse=True)
+            for cand in hist_cands:
+                sim = calculate_event_similarity(cand, analysis_data)
+                if sim.total_score > best_hist_score:
+                    best_hist_score = sim.total_score
+                    best_hist_event = cand
+                    best_hist_sim = sim
+
+            if best_hist_event and best_hist_score >= follow_up_threshold:
+                best_hist_shared_actor = _has_shared_non_country_entity(
+                    best_hist_event.actors, best_hist_event.location,
+                    analysis_data.get("actors") or [], analysis_data.get("location")
+                )
+                if require_strict_gate:
+                    gate_passed = best_hist_shared_actor or (best_hist_sim.keywords_score >= keyword_threshold_x)
+                    if not gate_passed:
+                        best_hist_event = None
+                        best_hist_score = 0.0
+
+        if best_candidate and best_score >= merge_threshold:
+            # Action: Merge into active event
+            best_candidate.article_ids.append(art.id)
+            if ref_time > best_candidate.last_updated_at:
+                best_candidate.last_updated_at = ref_time
+            new_imp = analysis_data.get("importance", 3) or 3
+            if new_imp > best_candidate.importance:
+                best_candidate.importance = new_imp
+
+            article_to_event[art.id] = best_candidate.id
+            decisions.append({
+                "article_id": art.id,
+                "event_id": best_candidate.id,
+                "action": "merge",
+                "score": best_score,
+                "sim": best_sim_score,
+                "shared_actor": best_shared_actor,
+                "cand_id": best_candidate.id,
+            })
+        elif best_hist_event and best_hist_score >= follow_up_threshold:
+            # Action: Create Follow-up event
+            raw_title = canonicalize_approved_names(analysis_data.get("event_title") or art.title)
+            follow_up_title = f"[پیگیری] {raw_title}"
+            categories = analysis_data.get("categories") or []
+            primary_cat = categories[0] if categories else best_hist_event.event_type
+
+            follow_up_ev = ReplayEvent(
+                id=next_event_id,
+                title=follow_up_title,
+                event_type=primary_cat,
+                countries=[canonicalize_approved_names(c) for c in (analysis_data.get("countries") or best_hist_event.countries)],
+                actors=[canonicalize_approved_names(a) for a in (analysis_data.get("actors") or best_hist_event.actors)],
+                location=analysis_data.get("location") or best_hist_event.location,
+                importance=analysis_data.get("importance", 3) or 3,
+                status="active",
+                first_seen_at=ref_time,
+                last_updated_at=ref_time,
+                is_live_digest=False,
+                is_follow_up=True,
+                parent_event_id=best_hist_event.id,
+                article_ids=[art.id],
+            )
+            events.append(follow_up_ev)
+            article_to_event[art.id] = follow_up_ev.id
+            next_event_id += 1
+
+            decisions.append({
+                "article_id": art.id,
+                "event_id": follow_up_ev.id,
+                "action": "follow_up",
+                "score": best_hist_score,
+                "sim": best_hist_sim,
+                "shared_actor": best_hist_shared_actor,
+                "cand_id": best_hist_event.id,
+            })
+        else:
+            # Action: Create initial new event
+            raw_title = canonicalize_approved_names(analysis_data.get("event_title") or art.title)
+            categories = analysis_data.get("categories") or []
+            primary_cat = categories[0] if categories else None
+            imp = int(analysis_data.get("importance", 3) or 3)
+            if incoming_is_digest:
+                imp = min(imp, 3)
+
+            new_ev = ReplayEvent(
+                id=next_event_id,
+                title=raw_title,
+                event_type=primary_cat,
+                countries=[canonicalize_approved_names(c) for c in (analysis_data.get("countries") or [])],
+                actors=[canonicalize_approved_names(a) for a in (analysis_data.get("actors") or [])],
+                location=analysis_data.get("location"),
+                importance=imp,
+                status="active",
+                first_seen_at=ref_time,
+                last_updated_at=ref_time,
+                is_live_digest=incoming_is_digest,
+                article_ids=[art.id],
+            )
+            events.append(new_ev)
+            article_to_event[art.id] = new_ev.id
+            next_event_id += 1
+
+            decisions.append({
+                "article_id": art.id,
+                "event_id": new_ev.id,
+                "action": "create",
+                "score": 0.0,
+                "sim": None,
+                "shared_actor": False,
+                "cand_id": None,
+            })
+
+    return article_to_event, events, decisions
+
+
+def analyze_replay_control(
+    articles: list[ArticleRecord],
+    replay_mapping: dict[int, int],
+    use_primary_event_only: bool = False,
+) -> dict[str, float]:
+    """Evaluate pairwise clustering metrics (Precision, Recall, F1, FPR, FNR) vs DB grouping.
+
+    Semantics:
+    - If use_primary_event_only=False (default): Definition 1 (At least one shared event).
+      Measures overlap/tolerance relation (Covering). Allows multi-event articles.
+    - If use_primary_event_only=True: Definition 2 (Primary reference event equality).
+      Measures strict Equivalence Relation (Mathematical Partition).
+    """
+    valid_articles = [
+        a for a in articles
+        if (bool(a.db_event_ids) or a.db_event_id is not None) and a.id in replay_mapping
+    ]
+    n = len(valid_articles)
+
+    tp = 0
+    fp = 0
+    fn = 0
+    tn = 0
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            a1 = valid_articles[i]
+            a2 = valid_articles[j]
+            if use_primary_event_only:
+                same_db = (a1.db_event_id is not None and a1.db_event_id == a2.db_event_id)
+            else:
+                e1 = a1.db_event_ids or ({a1.db_event_id} if a1.db_event_id is not None else set())
+                e2 = a2.db_event_ids or ({a2.db_event_id} if a2.db_event_id is not None else set())
+                same_db = bool(e1 & e2)
+            same_replay = (replay_mapping[a1.id] == replay_mapping[a2.id])
+
+            if same_db and same_replay:
+                tp += 1
+            elif not same_db and same_replay:
+                fp += 1
+            elif same_db and not same_replay:
+                fn += 1
+            else:
+                tn += 1
+
+    precision = round(tp / (tp + fp), 4) if (tp + fp) > 0 else 1.0
+    recall = round(tp / (tp + fn), 4) if (tp + fn) > 0 else 1.0
+    f1 = round(2 * precision * recall / (precision + recall), 4) if (precision + recall) > 0 else 0.0
+    fpr = round(fp / (fp + tn), 4) if (fp + tn) > 0 else 0.0
+    fnr = round(fn / (tp + fn), 4) if (tp + fn) > 0 else 0.0
+
+    return {
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "tn": tn,
+        "total_pairs": tp + fp + fn + tn,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "fpr": fpr,
+        "fnr": fnr,
+    }
+
+
+def compute_keyword_score_distribution(articles: list[ArticleRecord]) -> dict[str, Any]:
+    """Compute min, median, p90 of raw keywords_score for DB merged articles using exact EventMatcher logic."""
+    event_groups: dict[int, list[ArticleRecord]] = {}
+    for a in articles:
+        e_set = a.db_event_ids or ({a.db_event_id} if a.db_event_id is not None else set())
+        for eid in e_set:
+            event_groups.setdefault(eid, []).append(a)
+
+    scores_with_actor: list[float] = []
+    scores_without_actor: list[float] = []
+
+    for ev_id, group in event_groups.items():
+        if len(group) < 2:
+            continue
+        for i in range(len(group)):
+            for j in range(i + 1, len(group)):
+                a1 = group[i]
+                a2 = group[j]
+                p1 = a1.ai_payload or {}
+                p2 = a2.ai_payload or {}
+
+                # Exact EventMatcher keyword comparison: candidate title vs incoming event_title/headline_fa
+                t1 = p1.get("event_title") or p1.get("headline_fa") or a1.title or ""
+                t2 = p2.get("event_title") or p2.get("headline_fa") or a2.title or ""
+                toks1 = tokenize(t1)
+                toks2 = tokenize(t2)
+                inter = len(toks1 & toks2)
+                union = len(toks1 | toks2)
+                kw_sim = round(inter / union, 4) if union else 0.0
+
+                shared = _has_shared_non_country_entity(
+                    p1.get("actors") or [], p1.get("location"),
+                    p2.get("actors") or [], p2.get("location"),
+                )
+                if shared:
+                    scores_with_actor.append(kw_sim)
+                else:
+                    scores_without_actor.append(kw_sim)
+
+    def _stats(arr: list[float]) -> dict[str, float]:
+        if not arr:
+            return {"min": 0.0, "median": 0.0, "p90": 0.0, "count": 0}
+        s = sorted(arr)
+        n = len(s)
+        return {
+            "min": s[0],
+            "median": s[n // 2],
+            "p90": s[int(n * 0.9)],
+            "count": n,
+        }
+
+    return {
+        "with_shared_actors": _stats(scores_with_actor),
+        "without_shared_actors": _stats(scores_without_actor),
+    }
+
+
+def find_chaining_cases(events: list[ReplayEvent], articles_map: dict[int, ArticleRecord]) -> int:
+    """Count multi-article events where chaining occurred (A-B and B-C merged, but sim(A, C) < 0.60)."""
+    chaining_count = 0
+    for ev in events:
+        if len(ev.article_ids) < 3:
+            continue
+        arts = [articles_map[aid] for aid in ev.article_ids if aid in articles_map]
+        has_chaining = False
+        for i in range(len(arts)):
+            for j in range(i + 2, len(arts)):
+                sim = calculate_event_similarity(_to_event_candidate(arts[i]), arts[j].ai_payload)
+                if sim.total_score < 0.60:
+                    has_chaining = True
+                    break
+            if has_chaining:
+                break
+        if has_chaining:
+            chaining_count += 1
+    return chaining_count
+
+
+def compute_pairwise_relations(
+    articles: list[ArticleRecord],
+    map_base: dict[int, int],
+    map_prop: dict[int, int],
+) -> dict[str, Any]:
+    """Rigorous set-theoretic computation of pairwise relations between Base and Proposed clusterings.
+
+    Pairs_Base = set of (i, j) where i < j and map_base[i] == map_base[j]
+    Pairs_Prop = set of (i, j) where i < j and map_prop[i] == map_prop[j]
+
+    Broken Pairs = Pairs_Base - Pairs_Prop (pairs merged in Base, but separated in Proposed)
+    New Pairs = Pairs_Prop - Pairs_Base (pairs separated in Base, but merged in Proposed)
+    Retained Pairs = Pairs_Base & Pairs_Prop (pairs merged in both)
+    """
+    expected_ids = {a.id for a in articles}
+    base_ids = set(map_base.keys())
+    prop_ids = set(map_prop.keys())
+
+    missing_from_base = expected_ids - base_ids
+    extra_in_base = base_ids - expected_ids
+    missing_from_prop = expected_ids - prop_ids
+    extra_in_prop = prop_ids - expected_ids
+
+    if missing_from_base or extra_in_base or missing_from_prop or extra_in_prop:
+        errors = []
+        if missing_from_base:
+            errors.append(f"Articles missing from Base mapping: {sorted(missing_from_base)}")
+        if extra_in_base:
+            errors.append(f"Unexpected extra articles in Base mapping: {sorted(extra_in_base)}")
+        if missing_from_prop:
+            errors.append(f"Articles missing from Proposed mapping: {sorted(missing_from_prop)}")
+        if extra_in_prop:
+            errors.append(f"Unexpected extra articles in Proposed mapping: {sorted(extra_in_prop)}")
+        raise ValueError(f"Mapping integrity violation before Pairwise computation: {'; '.join(errors)}")
+
+    pairs_base: set[tuple[int, int]] = set()
+    pairs_prop: set[tuple[int, int]] = set()
+    n = len(articles)
+
+    for i in range(n):
+        aid1 = articles[i].id
+        ev_base1 = map_base.get(aid1)
+        ev_prop1 = map_prop.get(aid1)
+        for j in range(i + 1, n):
+            aid2 = articles[j].id
+            if aid1 == aid2:
+                # Disallow reflexive self-pairs if non-deduplicated articles are passed
+                continue
+            ev_base2 = map_base.get(aid2)
+            ev_prop2 = map_prop.get(aid2)
+
+            if ev_base1 is not None and ev_base1 == ev_base2:
+                pairs_base.add((aid1, aid2))
+            if ev_prop1 is not None and ev_prop1 == ev_prop2:
+                pairs_prop.add((aid1, aid2))
+
+    broken_pairs = pairs_base - pairs_prop
+    new_pairs = pairs_prop - pairs_base
+    retained_pairs = pairs_base & pairs_prop
+
+    return {
+        "pairs_base_count": len(pairs_base),
+        "pairs_prop_count": len(pairs_prop),
+        "broken_pairs_count": len(broken_pairs),
+        "new_pairs_count": len(new_pairs),
+        "retained_pairs_count": len(retained_pairs),
+        "pairs_base": pairs_base,
+        "pairs_prop": pairs_prop,
+        "broken_pairs": broken_pairs,
+        "new_pairs": new_pairs,
+        "retained_pairs": retained_pairs,
+    }
+
+
+def save_samples_atomically(
+    samples_serialized: list[dict[str, Any]],
+    out_json_path: Path,
+    backup_timestamp: int | None = None,
+    *,
+    error_collector: list[Exception] | None = None,
+) -> bool:
+    """Save serialized samples atomically using exclusive temp file ('xb'), flush, fsync, safe backup, and os.replace.
+
+    Windows File Safety & Technical Guarantees:
+    - Exclusive Temp File Creation:
+      The temporary file is created using exclusive binary mode ('xb') with process ID and UUID isolation
+      (`.tmp_{pid}_{uuid}.json`). If a file with that name exists, FileExistsError triggers a retry
+      with a fresh UUID (up to 10 attempts); pre-existing files belonging to other processes are never overwritten or deleted.
+    - Safety Levels & Technical Boundaries:
+      1. Atomic Namespace Replacement (جایگزینی اتمیک نام در فضای نام):
+         Under standard supported NTFS operating conditions on Windows, `os.replace` delegates to `MoveFileExW`
+         with `MOVEFILE_REPLACE_EXISTING`. This atomically updates the directory entry in NTFS metadata.
+         In normal operating conditions, readers resolving the target file path will observe either the
+         previous complete file or the new complete file, avoiding observation of partially-written or
+         truncated intermediate states. Absolute atomicity guarantees do not extend to unstandardized
+         storage configurations, network filesystem mounts (SMB/NFS), or interfering filesystem filter drivers.
+      2. Process-Crash Safety & In-Flight Cleanup (ایمنی در برابر خرابی پردازه):
+         Under standard execution conditions, the pre-existing target file remains preserved and untouched
+         until `os.replace` successfully commits; it is not truncated or overwritten in-place.
+         Temporary file cleanup (`unlink`) is performed only for errors and exceptions caught and handled
+         by application code (within try...except blocks). In the event of an abrupt process crash (e.g. SIGKILL,
+         hard termination, or unhandled interpreter abort), in-flight temporary files (`.tmp_*` or `.bak_tmp_*`)
+         will remain orphaned on disk. However, because these files use process-isolated unique names,
+         their presence does not corrupt the target file, and future executions will not touch or overwrite them.
+      3. Power-Loss Durability (پایداری در برابر قطع برق — تفکیک از اتمیسیتی ابرداده):
+         Atomic namespace replacement does NOT equate to hardware durability across power failure.
+         While `os.fsync` forces Python user-space and OS kernel filesystem buffers to flush to the
+         storage controller, consumer storage media (SSDs/HDDs) with volatile on-disk write caches without
+         Power Loss Protection (PLP) or battery-backed cache may drop uncommitted blocks during sudden
+         power cutoffs. Absolute hardware-level durability cannot be guaranteed at application software level.
+    - Windows Mandatory File Locking & Allowable Concurrency Failures:
+      Unlike POSIX filesystems where unlinked inodes remain accessible to existing open file descriptors,
+      Windows enforces mandatory file locks unless handles are explicitly opened with `FILE_SHARE_DELETE`.
+      If an external process (antivirus scanner, search indexer, editor, or concurrent writer) holds
+      an open handle on the target file without delete sharing, `os.replace` fails with
+      `PermissionError: [WinError 32] The process cannot access the file because it is being used by another process`.
+      In such cases, this function retries briefly and if still locked, catches the error, deletes
+      its own temporary file, preserves the pre-existing target file without data loss, and returns False.
+    - Safe Process-Isolated Backup Staging:
+      Backups are initially copied to an exclusively-owned process-isolated temporary file
+      (`.bak_tmp_{pid}_{uuid}.json`) allocated via exclusive creation ('xb') with collision retry (up to 10 attempts).
+      Ownership is only claimed upon verified creation. If streaming data fails midway, ONLY that process's verified
+      temporary backup file is unlinked. Incomplete backups are NEVER exposed under a final `.bak_*.json` name.
+      Once completely written and fsynced, the temporary backup file is moved to a collision-free
+      final backup name (`.bak_{ts}.json` / `.bak_{ts}_{counter}.json`) without overwriting.
+    - Multi-Writer Concurrency Limitation (سلب ادعای Multi-Writer):
+      This function is designed for single-writer executions. It does NOT provide a distributed transaction
+      manager, two-phase commit, or lost-update prevention across multiple concurrent writers.
+      If multiple processes invoke it simultaneously, the last writer to complete `os.replace` wins;
+      concurrent writers do not merge their updates, though filesystem integrity is maintained.
+    """
+    temp_json_path: Path | None = None
+    f_temp = None
+
+    # 1. Allocate and create temporary file exclusively ('xb')
+    for _ in range(10):
+        candidate_temp = out_json_path.with_suffix(f".tmp_{os.getpid()}_{uuid4().hex[:8]}.json")
+        try:
+            f_temp = open(candidate_temp, "xb")
+            temp_json_path = candidate_temp
+            break
+        except FileExistsError:
+            continue
+        except Exception as e_open:
+            print(f"Error: Failed to create temporary file ({candidate_temp.name}): {e_open}")
+            if error_collector is not None:
+                error_collector.append(e_open)
+            return False
+
+    if temp_json_path is None or f_temp is None:
+        err = FileExistsError("Failed to allocate unique temporary file exclusively after multiple attempts.")
+        print(f"Error: {err}")
+        if error_collector is not None:
+            error_collector.append(err)
+        return False
+
+    try:
+        # Write serialized JSON payload with flush and fsync
+        with f_temp:
+            data_bytes = json.dumps(samples_serialized, ensure_ascii=False, indent=2).encode("utf-8")
+            f_temp.write(data_bytes)
+            f_temp.flush()
+            os.fsync(f_temp.fileno())
+
+        # 2. If a valid previous file exists, create a unique timestamped backup before replacing
+        if out_json_path.exists():
+            ts = backup_timestamp or int(datetime.now(UTC).timestamp())
+
+            # Step 2a: Allocate and open an exclusively-owned process-isolated temporary backup file ('xb')
+            bak_temp_path: Path | None = None
+            f_bak_dst = None
+            for _ in range(10):
+                cand_bak_temp = out_json_path.with_suffix(f".bak_tmp_{os.getpid()}_{uuid4().hex[:8]}.json")
+                try:
+                    f_bak_dst = open(cand_bak_temp, "xb")
+                    bak_temp_path = cand_bak_temp
+                    break
+                except FileExistsError:
+                    continue
+                except Exception as e_bak_open:
+                    print(
+                        f"Error: Failed to create temporary backup file ({cand_bak_temp.name}): {e_bak_open}. "
+                        "Aborting save to protect original file."
+                    )
+                    if temp_json_path and temp_json_path.exists():
+                        try:
+                            temp_json_path.unlink()
+                        except Exception:
+                            pass
+                    if error_collector is not None:
+                        error_collector.append(e_bak_open)
+                    return False
+
+            if bak_temp_path is None or f_bak_dst is None:
+                err_bak = FileExistsError("Failed to allocate unique temporary backup file exclusively after multiple attempts.")
+                print(
+                    f"Error: {err_bak} Aborting save to protect original file."
+                )
+                if temp_json_path and temp_json_path.exists():
+                    try:
+                        temp_json_path.unlink()
+                    except Exception:
+                        pass
+                if error_collector is not None:
+                    error_collector.append(err_bak)
+                return False
+
+            # Stream previous file into the verified exclusively-owned backup temp file
+            try:
+                with f_bak_dst, open(out_json_path, "rb") as f_src:
+                    shutil.copyfileobj(f_src, f_bak_dst)
+                    f_bak_dst.flush()
+                    os.fsync(f_bak_dst.fileno())
+            except Exception as e_copy:
+                print(
+                    f"Error: Failed to stream backup data to temporary file ({bak_temp_path.name}): {e_copy}. "
+                    "Aborting save to protect original file."
+                )
+                # Unlink ONLY our verified exclusively-owned backup temp file
+                if bak_temp_path and bak_temp_path.exists():
+                    try:
+                        bak_temp_path.unlink()
+                    except Exception:
+                        pass
+                if temp_json_path and temp_json_path.exists():
+                    try:
+                        temp_json_path.unlink()
+                    except Exception:
+                        pass
+                if error_collector is not None:
+                    error_collector.append(e_copy)
+                return False
+
+            # Step 2b: Move the fully-written temporary backup file to a collision-free final backup name
+            counter = 0
+            bak_committed = False
+            while not bak_committed:
+                suffix = f".bak_{ts}.json" if counter == 0 else f".bak_{ts}_{counter}.json"
+                final_bak_path = out_json_path.with_suffix(suffix)
+                try:
+                    if os.name == "nt":
+                        os.rename(bak_temp_path, final_bak_path)
+                    else:
+                        os.link(bak_temp_path, final_bak_path)
+                        os.unlink(bak_temp_path)
+                    bak_committed = True
+                    print(f"Backed up previous samples to {final_bak_path.name}")
+                except FileExistsError:
+                    counter += 1
+                except Exception as e_rename:
+                    print(
+                        f"Error: Failed to finalize backup ({final_bak_path.name}): {e_rename}. "
+                        "Aborting save to protect original file."
+                    )
+                    if bak_temp_path and bak_temp_path.exists():
+                        try:
+                            bak_temp_path.unlink()
+                        except Exception:
+                            pass
+                    if temp_json_path and temp_json_path.exists():
+                        try:
+                            temp_json_path.unlink()
+                        except Exception:
+                            pass
+                    if error_collector is not None:
+                        error_collector.append(e_rename)
+                    return False
+
+        # 3. Atomically replace temp file into destination (with transient lock retry for Windows)
+        replaced = False
+        for attempt in range(5):
+            try:
+                os.replace(temp_json_path, out_json_path)
+                replaced = True
+                break
+            except PermissionError:
+                if attempt < 4:
+                    time.sleep(0.05 * (attempt + 1))
+                else:
+                    raise
+
+        if not replaced:
+            raise RuntimeError(f"Could not replace {out_json_path} after multiple attempts.")
+
+        print(f"\nSaved {len(samples_serialized)} audited sample pairs atomically to {out_json_path}")
+        return True
+    except Exception as e:
+        if temp_json_path and temp_json_path.exists():
+            try:
+                temp_json_path.unlink()
+            except Exception:
+                pass
+        print(f"Warning: Could not save JSON samples: {e}")
+        if error_collector is not None:
+            error_collector.append(e)
+        return False
+
+
+async def main_async(days: int) -> None:
+    wall_start = datetime.now(UTC)
+    end_utc = wall_start
+    start_utc = end_utc - timedelta(days=days)
+
+    print("=" * 100)
+    print("  PHASE Y-14: EVENT MATCHING REPLAY AND CALIBRATION ANALYSIS (AUDITED)")
+    print(f"  Target: Sequential replay over {days} days of collected articles")
+    print(f"  Fixed Population Window (UTC): [{start_utc.isoformat()} -> {end_utc.isoformat()}]")
+    try:
+        git_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        print(f"  Git Commit SHA: {git_sha}")
+    except Exception:
+        print("  Git Commit SHA: unknown")
+    print("=" * 100)
+
+    try:
+        articles, ok = await load_articles_from_db(days=days, start_utc=start_utc, end_utc=end_utc)
+    except Exception as e:
+        print(f"Error loading from database: {e}")
+        print("Note: If DATABASE_URL is not set or network is unreachable, please verify connection settings.")
+        sys.exit(1)
+
+    articles_map = {a.id: a for a in articles}
+
+    # 1. Keywords Score Distribution using EventMatcher logic
+    dist = compute_keyword_score_distribution(articles)
+    print("\n--- 1. Raw Keywords Score Distribution for Merged Articles in DB ---")
+    print(f"Articles with shared non-country actors (Count: {dist['with_shared_actors']['count']}):")
+    print(f"   Min: {dist['with_shared_actors']['min']} | Median: {dist['with_shared_actors']['median']} | P90: {dist['with_shared_actors']['p90']}")
+    print(f"Articles WITHOUT shared actors (Count: {dist['without_shared_actors']['count']}):")
+    print(f"   Min: {dist['without_shared_actors']['min']} | Median: {dist['without_shared_actors']['median']} | P90: {dist['without_shared_actors']['p90']}")
+
+    x_dist = dist["with_shared_actors"]["median"] or 0.20
+
+    # 2. Sequential Replay under Current Rule (Base: Merge Threshold = 0.60)
+    print("\n--- 2. Executing Sequential Replay: Current Rule (Merge Threshold = 0.60, Follow-Up = 0.80) ---")
+    map_base, evs_base, decs_base = run_sequential_replay(articles, require_strict_gate=False)
+    multi_base = [ev for ev in evs_base if len(ev.article_ids) > 1]
+    follow_up_base = [ev for ev in evs_base if ev.is_follow_up]
+    chaining_base = find_chaining_cases(evs_base, articles_map)
+    ctrl_base = analyze_replay_control(articles, map_base)
+
+    print(f"Total resulting events: {len(evs_base)}")
+    print(f"Multi-article events: {len(multi_base)}")
+    print(f"Follow-up events created (Historical >= 0.80): {len(follow_up_base)}")
+    print(f"Chaining cases (A-B & B-C, but sim(A,C) < 0.60): {chaining_base}")
+    print(f"Pairwise Agreement vs DB Clustering (توافق دوبه‌دو با دیتابیس):")
+    print(f"   • Agreement-Precision: {ctrl_base['precision']:.4f}")
+    print(f"   • Agreement-Recall: {ctrl_base['recall']:.4f}")
+    print(f"   • Agreement-F1: {ctrl_base['f1']:.4f}")
+    print(f"   • False Positive Rate: {ctrl_base['fpr']:.4f}")
+    print("   [توجه روش‌شناختی: این معیارها صرفاً توافق با خوشه‌بندی ثبت‌شده در دیتابیس هستند، نه دقت مطلق واقعی]")
+    print("   [ملاحظه ترتیبی کاندیداها: در Production کوئری کاندیداها فاقد ORDER BY است و ترتیب ردیف‌ها در برابری امتیازها")
+    print("    توسط PostgreSQL نامعین و تضمین‌نشده (Unspecified) بوده و تابع چیدمان فیزیکی صفحات دیتابیس است.")
+    print("    در Replay از مرتب‌سازی صریح (first_seen_at desc, id desc) برای پایداری نتایج استفاده می‌شود؛")
+    print("    لذا Replay قطعی ادعایی بر Parity کامل ترتیبی در شرایط برابری امتیازها با رفتار نامعین دیتابیس ندارد.]")
+
+    # 3. Test Proposed Rules for X in (0.25, 0.35, x_dist)
+    x_candidates = [0.25, 0.35, x_dist]
+    results_proposed: dict[float, Any] = {}
+
+    for x in x_candidates:
+        print(f"\n--- 3. Executing Sequential Replay: Proposed Strict Rule with X = {x:.2f} ---")
+        map_p, evs_p, decs_p = run_sequential_replay(articles, require_strict_gate=True, keyword_threshold_x=x)
+        multi_p = [ev for ev in evs_p if len(ev.article_ids) > 1]
+        follow_up_p = [ev for ev in evs_p if ev.is_follow_up]
+        chaining_p = find_chaining_cases(evs_p, articles_map)
+        ctrl_p = analyze_replay_control(articles, map_p)
+
+        # Rigorous split metrics
+        broken_events = 0
+        separated_articles = 0
+        singleton_separated = 0
+        resulting_groups_count = 0
+
+        for b_ev in multi_base:
+            assigned_groups: dict[int, list[int]] = {}
+            for aid in b_ev.article_ids:
+                if aid in map_p:
+                    assigned_groups.setdefault(map_p[aid], []).append(aid)
+
+            if len(assigned_groups) > 1:
+                broken_events += 1
+                resulting_groups_count += len(assigned_groups)
+                sizes = sorted([len(g) for g in assigned_groups.values()], reverse=True)
+                separated_articles += (len(b_ev.article_ids) - sizes[0])
+                singleton_separated += sum(1 for s in sizes if s == 1)
+
+        pw_rel = compute_pairwise_relations(articles, map_base, map_p)
+
+        results_proposed[x] = {
+            "total_events": len(evs_p),
+            "multi_article_events": len(multi_p),
+            "follow_up_events": len(follow_up_p),
+            "broken_events": broken_events,
+            "resulting_groups": resulting_groups_count,
+            "separated_articles": separated_articles,
+            "singleton_separated": singleton_separated,
+            "chaining_cases": chaining_p,
+            "pw_rel": pw_rel,
+            "ctrl": ctrl_p,
+            "events_p": evs_p,
+            "map_p": map_p,
+        }
+
+        print(f"   • Total Events: {len(evs_p)} (Base: {len(evs_base)})")
+        print(f"   • Multi-Article Events: {len(multi_p)} (Base: {len(multi_base)})")
+        print(f"   • Follow-Up Events: {len(follow_up_p)} (Base: {len(follow_up_base)})")
+        print(f"   • Broken Multi-Article Events (رویدادهای شکسته): {broken_events}")
+        print(f"   • Resulting Groups from Split (گروه‌های حاصل از شکست): {resulting_groups_count}")
+        print(f"   • Separated Articles from Core (مقالات جداشده از خوشه اصلی): {separated_articles}")
+        print(f"   • Singleton Separated Articles (مقالات تفکیک‌شده تک‌عضوی): {singleton_separated}")
+        print(f"   • Broken Pairs (جفت‌های تفکیک‌شده): {pw_rel['broken_pairs_count']}")
+        print(f"   • New Pairs (جفت‌های الحاقی جدید): {pw_rel['new_pairs_count']}")
+        print(f"   • Retained Pairs (جفت‌های حفظ‌شده مشترک): {pw_rel['retained_pairs_count']}")
+        print(f"   • Chaining Cases (موارد زنجیره‌سازی): {chaining_p}")
+        print(f"   • Pairwise Agreement vs DB Clustering:")
+        print(f"        Agreement-Precision: {ctrl_p['precision']:.4f} | Agreement-Recall: {ctrl_p['recall']:.4f} | Agreement-F1: {ctrl_p['f1']:.4f} | FPR: {ctrl_p['fpr']:.4f}")
+
+    # Comparative Summary Table
+    pw_025 = results_proposed[0.25]["pw_rel"]
+    pw_035 = results_proposed[0.35]["pw_rel"]
+    print("\n" + "=" * 100)
+    print("  خلاصه مقایسه‌ای اجرای بازپخش: قاعده فعلی در برابر قواعد پیشنهادی")
+    print("=" * 100)
+    print(f"{'شاخص / متریک':<40} | {'Base (0.60)':<15} | {'Prop (X=0.25)':<15} | {'Prop (X=0.35)':<15}")
+    print("-" * 95)
+    print(f"{'تعداد کل رویدادها (Total Events)':<40} | {len(evs_base):<15} | {results_proposed[0.25]['total_events']:<15} | {results_proposed[0.35]['total_events']:<15}")
+    print(f"{'رویدادهای چندمقاله‌ای (Multi-Article)':<40} | {len(multi_base):<15} | {results_proposed[0.25]['multi_article_events']:<15} | {results_proposed[0.35]['multi_article_events']:<15}")
+    print(f"{'رویدادهای پیگیری (Follow-Up Events)':<40} | {len(follow_up_base):<15} | {results_proposed[0.25]['follow_up_events']:<15} | {results_proposed[0.35]['follow_up_events']:<15}")
+    print(f"{'رویدادهای شکسته (Broken Events)':<40} | {'—':<15} | {results_proposed[0.25]['broken_events']:<15} | {results_proposed[0.35]['broken_events']:<15}")
+    print(f"{'جفت‌های شکسته (Broken Pairs)':<40} | {'—':<15} | {pw_025['broken_pairs_count']:<15} | {pw_035['broken_pairs_count']:<15}")
+    print(f"{'جفت‌های جدید (New Pairs)':<40} | {'—':<15} | {pw_025['new_pairs_count']:<15} | {pw_035['new_pairs_count']:<15}")
+    print(f"{'جفت‌های حفظ‌شده (Retained Pairs)':<40} | {pw_025['pairs_base_count']:<15} | {pw_025['retained_pairs_count']:<15} | {pw_035['retained_pairs_count']:<15}")
+    print(f"{'گروه‌های حاصل از شکست (Resulting Groups)':<40} | {'—':<15} | {results_proposed[0.25]['resulting_groups']:<15} | {results_proposed[0.35]['resulting_groups']:<15}")
+    print(f"{'مقالات جداشده از هسته (Separated Articles)':<40} | {'—':<15} | {results_proposed[0.25]['separated_articles']:<15} | {results_proposed[0.35]['separated_articles']:<15}")
+    print(f"{'مقالات تک‌عضوی جدید (Singleton Articles)':<40} | {'—':<15} | {results_proposed[0.25]['singleton_separated']:<15} | {results_proposed[0.35]['singleton_separated']:<15}")
+    print(f"{'موارد زنجیره‌سازی (Chaining Cases)':<40} | {chaining_base:<15} | {results_proposed[0.25]['chaining_cases']:<15} | {results_proposed[0.35]['chaining_cases']:<15}")
+    print(f"{'توافق دقت با دیتابیس (DB Agreement-P)':<40} | {ctrl_base['precision']:<15.4f} | {results_proposed[0.25]['ctrl']['precision']:<15.4f} | {results_proposed[0.35]['ctrl']['precision']:<15.4f}")
+    print(f"{'توافق پوشش با دیتابیس (DB Agreement-R)':<40} | {ctrl_base['recall']:<15.4f} | {results_proposed[0.25]['ctrl']['recall']:<15.4f} | {results_proposed[0.35]['ctrl']['recall']:<15.4f}")
+    print(f"{'F1 توافق با دیتابیس (DB Agreement-F1)':<40} | {ctrl_base['f1']:<15.4f} | {results_proposed[0.25]['ctrl']['f1']:<15.4f} | {results_proposed[0.35]['ctrl']['f1']:<15.4f}")
+    print("=" * 100)
+
+    # 4. Generate Samples for Manual Review (using X = 0.25 and X = 0.35)
+    print("\n" + "=" * 100)
+    print("  4. SAMPLES FOR MANUAL REVIEW (Comparing Proposed Rules X=0.25 and X=0.35)")
+    print("=" * 100)
+
+    map_p25 = results_proposed[0.25]["map_p"]
+    map_p35 = results_proposed[0.35]["map_p"]
+
+    broken_pairs: list[dict[str, Any]] = []
+    retained_pairs: list[dict[str, Any]] = []
+
+    for b_ev in multi_base:
+        b_arts = [articles_map[aid] for aid in b_ev.article_ids if aid in articles_map]
+        for i in range(len(b_arts)):
+            for j in range(i + 1, len(b_arts)):
+                a1 = b_arts[i]
+                a2 = b_arts[j]
+                sim = calculate_event_similarity(_to_event_candidate(a1), a2.ai_payload)
+                # Strictly filter out chaining-only pairs that do not directly qualify under Base threshold
+                if sim.total_score < 0.60:
+                    continue
+                h_sim = _headline_similarity_display_only(a1.title, a2.title)
+                shared_actor = _has_shared_non_country_entity(
+                    a1.ai_payload.get("actors") or [],
+                    a1.ai_payload.get("location"),
+                    a2.ai_payload.get("actors") or [],
+                    a2.ai_payload.get("location"),
+                )
+                reason_detail = (
+                    f"Shared non-country entity: {shared_actor}; Keywords score: {sim.keywords_score:.3f}"
+                )
+
+                pair_info = {
+                    "base_ev_id": b_ev.id,
+                    "art1": a1,
+                    "art2": a2,
+                    "sim": sim,
+                    "headline_sim": h_sim,
+                    "shared_actor": shared_actor,
+                    "reason_detail": reason_detail,
+                    "decision_base": "merge",
+                    "decision_proposed_x025": "merge" if map_p25[a1.id] == map_p25[a2.id] else "split",
+                    "decision_proposed_x035": "merge" if map_p35[a1.id] == map_p35[a2.id] else "split",
+                }
+                if map_p25[a1.id] != map_p25[a2.id]:
+                    broken_pairs.append(pair_info)
+                else:
+                    retained_pairs.append(pair_info)
+
+    broken_sorted = sorted(broken_pairs, key=lambda x: x["headline_sim"])
+    ten_lowest_broken = broken_sorted[:10]
+    ten_highest_broken = sorted(broken_sorted[-10:], key=lambda x: x["headline_sim"], reverse=True) if len(broken_sorted) >= 10 else []
+
+    retained_sorted = sorted(retained_pairs, key=lambda x: x["sim"].total_score)
+    ten_borderline_retained = retained_sorted[:10]
+
+    def _serialize_sample(idx: int, p: dict[str, Any], tag: str) -> dict[str, Any]:
+        a1 = p["art1"]
+        a2 = p["art2"]
+        sim = p["sim"]
+        return {
+            "sample_id": idx,
+            "category": tag,
+            "base_event_id": p["base_ev_id"],
+            "article_1": {
+                "id": a1.id,
+                "title": a1.title,
+                "source_name": a1.source_name,
+                "collected_at": a1.collected_at.isoformat(),
+                "url": a1.url,
+                "actors": a1.ai_payload.get("actors") or [],
+                "location": a1.ai_payload.get("location") or "",
+                "countries": a1.ai_payload.get("countries") or [],
+            },
+            "article_2": {
+                "id": a2.id,
+                "title": a2.title,
+                "source_name": a2.source_name,
+                "collected_at": a2.collected_at.isoformat(),
+                "url": a2.url,
+                "actors": a2.ai_payload.get("actors") or [],
+                "location": a2.ai_payload.get("location") or "",
+                "countries": a2.ai_payload.get("countries") or [],
+            },
+            "similarity_scores": {
+                "countries": sim.countries_score,
+                "actors": sim.actors_score,
+                "category": sim.category_score,
+                "location": sim.location_score,
+                "keywords": sim.keywords_score,
+                "total_score": round(sim.total_score, 4),
+            },
+            "headline_similarity_display_only": round(p["headline_sim"], 4),
+            "shared_non_country_entity": p["shared_actor"],
+            "decision_base_rule": p["decision_base"],
+            "decision_proposed_x025": p["decision_proposed_x025"],
+            "decision_proposed_x035": p["decision_proposed_x035"],
+            "separation_reason": p["reason_detail"],
+        }
+
+    def _print_sample_pair(idx: int, p: dict[str, Any], tag: str):
+        a1 = p["art1"]
+        a2 = p["art2"]
+        sim = p["sim"]
+        h_sim = p["headline_sim"]
+        print(f"Sample #{idx} [{tag}] — Base Event #{p['base_ev_id']}")
+        print(f"   Article 1 (#{a1.id} - {a1.source_name}): {a1.title[:75]}")
+        print(f"      Published/Collected: {a1.collected_at.isoformat()} | URL: {a1.url}")
+        print(f"      Actors: {a1.ai_payload.get('actors') or []} | Loc: {a1.ai_payload.get('location') or '-'}")
+        print(f"   Article 2 (#{a2.id} - {a2.source_name}): {a2.title[:75]}")
+        print(f"      Published/Collected: {a2.collected_at.isoformat()} | URL: {a2.url}")
+        print(f"      Actors: {a2.ai_payload.get('actors') or []} | Loc: {a2.ai_payload.get('location') or '-'}")
+        print(f"   Component Scores: Countries={sim.countries_score} | Actors={sim.actors_score} | Cat={sim.category_score} | Loc={sim.location_score} | KW={sim.keywords_score}")
+        print(f"   Total Score: {sim.total_score:.3f} | Headline Sim [display-only]: {h_sim:.3f}")
+        print(f"   Decision Base: {p['decision_base']} | Proposed(X=0.25): {p['decision_proposed_x025']} | Proposed(X=0.35): {p['decision_proposed_x035']}")
+        print(f"   Reason: {p['reason_detail']}")
+        print("-" * 90)
+
+    print("\n--- [A] 10 Broken Pairs with Lowest Headline Similarity (Likely Correct Separations) ---")
+    samples_serialized = []
+    for i, p in enumerate(ten_lowest_broken, 1):
+        _print_sample_pair(i, p, "Correct Separation Candidate")
+        samples_serialized.append(_serialize_sample(i, p, "Likely Correct Separation"))
+
+    print("\n--- [B] 10 Broken Pairs with Highest Headline Similarity (Risk of Duplicate News) ---")
+    for i, p in enumerate(ten_highest_broken, 11):
+        _print_sample_pair(i, p, "Risk of False Split Candidate")
+        samples_serialized.append(_serialize_sample(i, p, "Risk of False Split"))
+
+    print("\n--- [C] 10 Borderline Merged Pairs in Both Rules (Lowest Merge Scores) ---")
+    for i, p in enumerate(ten_borderline_retained, 21):
+        _print_sample_pair(i, p, "Retained Borderline Merge")
+        samples_serialized.append(_serialize_sample(i, p, "Retained Borderline Merge"))
+
+    # Save to JSON file with atomic write and automated backup of existing valid file
+    out_json_path = _project_root / "scripts" / "dev_only" / "replay_samples_30.json"
+    save_ok = save_samples_atomically(
+        samples_serialized,
+        out_json_path,
+        backup_timestamp=int(end_utc.timestamp()),
+    )
+    if not save_ok:
+        print("\nERROR: Failed to save replay samples atomically to JSON. Aborting with non-zero exit code.")
+        sys.exit(1)
+
+    wall_finish = datetime.now(UTC)
+    print("\n" + "=" * 100)
+    print(f"  Replay Execution Finished at (UTC): {wall_finish.isoformat()}")
+    print(f"  Fixed Population Window (UTC): [{start_utc.isoformat()} -> {end_utc.isoformat()}]")
+    print(f"  Total Duration: {(wall_finish - wall_start).total_seconds():.2f}s")
+    print("=" * 100)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Replay event matching and calibrate proposed rules.")
+    parser.add_argument("--days", type=int, default=30, help="Number of days to replay (default: 30)")
+    args = parser.parse_args()
+
+    asyncio.run(main_async(args.days))
+
+
+if __name__ == "__main__":
+    main()

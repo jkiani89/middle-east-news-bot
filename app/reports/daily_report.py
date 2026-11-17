@@ -77,6 +77,41 @@ def _format_source_display(source: str, url: str, as_html: bool = True) -> str:
     return clean_src
 
 
+def _format_supplementary_detail(
+    supp_hl: str,
+    supp_sum: str,
+    main_hl: str,
+    main_sum: str,
+) -> str:
+    """Format supplementary detail string, preventing duplication while preserving new info."""
+    def _norm(s: str) -> str:
+        return " ".join((s or "").split()).strip().rstrip(".")
+
+    norm_supp_hl = _norm(supp_hl)
+    norm_supp_sum = _norm(supp_sum)
+    norm_main_hl = _norm(main_hl)
+    norm_main_sum = _norm(main_sum)
+
+    clean_supp_hl = (supp_hl or "").strip()
+    clean_supp_sum = (supp_sum or "").strip()
+
+    has_new_hl = bool(norm_supp_hl and norm_supp_hl != norm_main_hl)
+    has_new_sum = bool(
+        norm_supp_sum
+        and norm_supp_sum != norm_main_sum
+        and norm_supp_sum != norm_supp_hl
+        and norm_supp_sum != norm_main_hl
+    )
+
+    if has_new_hl and has_new_sum:
+        return f"{clean_supp_hl} — {clean_supp_sum}"
+    if has_new_hl:
+        return clean_supp_hl
+    if has_new_sum:
+        return clean_supp_sum
+    return ""
+
+
 def _item_sort_key(it: dict[str, Any]) -> tuple[int, int, float]:
     """Sort key for daily bulletin: importance DESC, source count DESC, recency DESC."""
     imp = int(it.get("importance") or 3)
@@ -391,6 +426,7 @@ async def fetch_report_items(
                 art.source_id
                 for art, _src in linked_arts
                 if getattr(art, "source_id", None) is not None
+                and getattr(art, "status", "summarized") == "summarized"
             }
         )
 
@@ -421,17 +457,22 @@ async def fetch_report_items(
                         "url": s.get("url", ""),
                         "article_id": s.get("article_id"),
                         "added_at": s.get("added_at"),
+                        "headline_fa": s.get("headline_fa", ""),
+                        "summary_fa": s.get("summary_fa", ""),
                     })
 
         # Also add any linked articles not already in additional_sources or primary
         existing_urls = {primary_url} | {s["url"] for s in additional_sources if s.get("url")}
         for art, src in linked_arts[1:]:
             if art.original_url and art.original_url not in existing_urls:
+                art_ai = getattr(art, "ai_payload", None) or {}
                 additional_sources.append({
                     "source": src.name if src else "منبع پیگیری",
                     "url": art.original_url,
                     "article_id": art.id,
                     "added_at": art.collected_at.isoformat() if art.collected_at else None,
+                    "headline_fa": art_ai.get("headline_fa", ""),
+                    "summary_fa": art_ai.get("summary_fa", ""),
                 })
                 existing_urls.add(art.original_url)
 
@@ -507,6 +548,12 @@ async def fetch_report_items(
             logger.info("Excluding non-regional event ID %d ('%s') from bulletin.", event.id, event.title[:40])
             continue
 
+        # Policy: false/debunked events must not be published as credible news. If low importance, exclude.
+        # High importance false events (importance >= 4) remain as retractions/debunking notes.
+        if item.get("verification_status") == "false" and int(item.get("importance") or 0) < 4:
+            logger.info("Excluding low-importance false/debunked event ID %d from bulletin.", event.id)
+            continue
+
         items.append(item)
 
     # Sort items: Importance DESC, Source count DESC, Recency DESC
@@ -516,10 +563,21 @@ async def fetch_report_items(
     events_before_cap = len(items)
     max_items = max(0, settings.max_daily_report_items)
     if max_items and len(items) > max_items:
+        strategic = [it for it in items if int(it.get("importance") or 0) >= 4]
+        regional = [it for it in items if int(it.get("importance") or 0) < 4]
+        if len(strategic) >= max_items:
+            # Policy: strategic news (importance >= 4) must NEVER be dropped by the cap.
+            # If strategic items exceed max_items, preserve ALL strategic items and cap regional to 0.
+            items = strategic
+        else:
+            remaining_slots = max_items - len(strategic)
+            items = strategic + regional[:remaining_slots]
         logger.info(
-            "Capping the daily report at %d of %d eligible events.", max_items, events_before_cap
+            "Capping the daily report at %d of %d eligible events (%d strategic prioritized).",
+            len(items),
+            events_before_cap,
+            len(strategic),
         )
-        items = items[:max_items]
 
     if mock_count > 0 and real_count > 0:
         content_quality = "mixed"
@@ -687,15 +745,19 @@ def format_persian_daily_report(
             verification = item.get("verification_status_fa") or item.get("verification_status", "تأییدشده")
             primary_src = item.get("primary_source") or item.get("source", "منبع رسمی")
             primary_u = item.get("primary_url") or item.get("url", "")
+            is_false = (item.get("verification_status") == "false")
+            display_headline = f"[تکذیبیه / ادعای ردشده] {headline}" if is_false else headline
 
             geo = ", ".join(item.get("countries", [])) or item.get("location", "منطقه")
             acts = ", ".join(item.get("actors", [])) or "نهادهای رسمی"
 
             if as_html:
-                lines.append(f"{idx}. 📌 <b>{esc(headline)}</b>")
+                lines.append(f"{idx}. 📌 <b>{esc(display_headline)}</b>")
                 lines.append(f"   ▫️ درجه اهمیت: {stars} ({importance}/5) | حوزه: <b>{esc(cat)}</b> [{esc(event_type)}]")
                 lines.append(f"   ▫️ جغرافیا و بازیگران: {esc(geo)} | {esc(acts)}")
                 lines.append(f"   ▫️ خلاصه گزیده: {esc(summary_txt)}")
+                if is_false:
+                    lines.append("   ▫️ ⚠️ <b>توجه تحریریه: این ادعا مستنداً تکذیب/رد شده و فاقد اعتبار خبری است.</b>")
                 if item.get("is_live_digest"):
                     lines.append("   ▫️ نوع پوشش: 🔴 <b>پوشش زنده (چندموضوعی)</b>")
                 if item.get("is_insufficient"):
@@ -711,16 +773,25 @@ def format_persian_daily_report(
                     for supp in item["additional_sources"]:
                         supp_src = supp.get("source", "منبع پیگیری")
                         supp_url = supp.get("url", "")
+                        supp_hl = (supp.get("headline_fa") or "").strip()
+                        supp_sum = (supp.get("summary_fa") or "").strip()
                         key = supp_src.strip().lower()
                         if key in seen_sources:
                             continue
                         seen_sources.add(key)
-                        lines.append(f"      • {_format_source_display(supp_src, supp_url, as_html=True)}")
+                        src_display = _format_source_display(supp_src, supp_url, as_html=True)
+                        supp_detail = _format_supplementary_detail(supp_hl, supp_sum, headline, summary_txt)
+                        if supp_detail:
+                            lines.append(f"      • {src_display}: {esc(supp_detail)}")
+                        else:
+                            lines.append(f"      • {src_display}")
             else:
-                lines.append(f"{idx}. 📌 {headline}")
+                lines.append(f"{idx}. 📌 {display_headline}")
                 lines.append(f"   ▫️ درجه اهمیت: {stars} ({importance}/5) | حوزه: {cat} [{event_type}]")
                 lines.append(f"   ▫️ جغرافیا و بازیگران: {geo} | {acts}")
                 lines.append(f"   ▫️ خلاصه گزیده: {summary_txt}")
+                if is_false:
+                    lines.append("   ▫️ ⚠️ توجه تحریریه: این ادعا مستنداً تکذیب/رد شده و فاقد اعتبار خبری است.")
                 if item.get("is_live_digest"):
                     lines.append("   ▫️ نوع پوشش: 🔴 پوشش زنده (چندموضوعی)")
                 if item.get("is_insufficient"):
@@ -734,11 +805,18 @@ def format_persian_daily_report(
                     for supp in item["additional_sources"]:
                         supp_src = supp.get("source", "منبع پیگیری")
                         supp_url = supp.get("url", "")
+                        supp_hl = (supp.get("headline_fa") or "").strip()
+                        supp_sum = (supp.get("summary_fa") or "").strip()
                         key = supp_src.strip().lower()
                         if key in seen_sources:
                             continue
                         seen_sources.add(key)
-                        lines.append(f"      • {_format_source_display(supp_src, supp_url, as_html=False)}")
+                        src_display = _format_source_display(supp_src, supp_url, as_html=False)
+                        supp_detail = _format_supplementary_detail(supp_hl, supp_sum, headline, summary_txt)
+                        if supp_detail:
+                            lines.append(f"      • {src_display}: {supp_detail}")
+                        else:
+                            lines.append(f"      • {src_display}")
             lines.append("")
 
     # Section 2: Regional & Thematic Developments (Importance 2 & 3)
@@ -772,10 +850,14 @@ def format_persian_daily_report(
                 verification = item.get("verification_status_fa") or item.get("verification_status", "تأییدشده")
                 primary_src = item.get("primary_source") or item.get("source", "منبع")
                 primary_u = item.get("primary_url") or item.get("url", "")
+                is_false = (item.get("verification_status") == "false")
+                display_headline = f"[تکذیبیه / ادعای ردشده] {headline}" if is_false else headline
 
                 if as_html:
-                    lines.append(f"  • <b>{esc(headline)}</b> ({stars})")
+                    lines.append(f"  • <b>{esc(display_headline)}</b> ({stars})")
                     lines.append(f"    - خلاصه: {esc(summary_txt)}")
+                    if is_false:
+                        lines.append("    - ⚠️ <b>توجه تحریریه: این ادعا مستنداً تکذیب/رد شده و فاقد اعتبار خبری است.</b>")
                     if item.get("is_live_digest"):
                         lines.append("    - نوع پوشش: 🔴 <b>پوشش زنده (چندموضوعی)</b>")
                     if item.get("is_insufficient"):
@@ -788,14 +870,23 @@ def format_persian_daily_report(
                         for supp in item["additional_sources"]:
                             supp_src = supp.get("source", "منبع")
                             supp_url = supp.get("url", "")
+                            supp_hl = (supp.get("headline_fa") or "").strip()
+                            supp_sum = (supp.get("summary_fa") or "").strip()
                             key = supp_src.strip().lower()
                             if key in seen_sources:
                                 continue
                             seen_sources.add(key)
-                            lines.append(f"      * {_format_source_display(supp_src, supp_url, as_html=True)}")
+                            src_display = _format_source_display(supp_src, supp_url, as_html=True)
+                            supp_detail = _format_supplementary_detail(supp_hl, supp_sum, headline, summary_txt)
+                            if supp_detail:
+                                lines.append(f"      * {src_display}: {esc(supp_detail)}")
+                            else:
+                                lines.append(f"      * {src_display}")
                 else:
-                    lines.append(f"  • {headline} ({stars})")
+                    lines.append(f"  • {display_headline} ({stars})")
                     lines.append(f"    - خلاصه: {summary_txt}")
+                    if is_false:
+                        lines.append("    - ⚠️ توجه تحریریه: این ادعا مستنداً تکذیب/رد شده و فاقد اعتبار خبری است.")
                     if item.get("is_live_digest"):
                         lines.append("    - نوع پوشش: 🔴 پوشش زنده (چندموضوعی)")
                     if item.get("is_insufficient"):
@@ -808,11 +899,18 @@ def format_persian_daily_report(
                         for supp in item["additional_sources"]:
                             supp_src = supp.get("source", "منبع")
                             supp_url = supp.get("url", "")
+                            supp_hl = (supp.get("headline_fa") or "").strip()
+                            supp_sum = (supp.get("summary_fa") or "").strip()
                             key = supp_src.strip().lower()
                             if key in seen_sources:
                                 continue
                             seen_sources.add(key)
-                            lines.append(f"      * {_format_source_display(supp_src, supp_url, as_html=False)}")
+                            src_display = _format_source_display(supp_src, supp_url, as_html=False)
+                            supp_detail = _format_supplementary_detail(supp_hl, supp_sum, headline, summary_txt)
+                            if supp_detail:
+                                lines.append(f"      * {src_display}: {supp_detail}")
+                            else:
+                                lines.append(f"      * {src_display}")
             lines.append("")
 
     if not items:
