@@ -164,14 +164,17 @@ async def _refresh_event_perspectives(
         return False
 
     # Phase Y-13: Perspectives Gate — Require shared non-country actors/locations
+    has_any_actor_data = any(bool(art.get("actors") or art.get("location")) for art in chosen.values())
     passed_gate, shared_entities = check_perspectives_gate(
         list(chosen.values()),
         min_shared_actors=settings.perspective_min_shared_actors,
     )
     if not passed_gate:
+        reason = "insufficient_data" if not has_any_actor_data else "disjoint_entities"
         logger.info(
-            "Event #%d rejected by perspective gate: camps %s share no non-country actor or city.",
+            "Event #%d rejected by perspective gate (reason=%s): camps %s share no non-country actor or city.",
             event_id,
+            reason,
             sorted(chosen),
         )
         return False
