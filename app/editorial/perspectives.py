@@ -23,10 +23,8 @@ from typing import Any
 
 from app.editorial.glossary import canonicalize_approved_names
 from app.editorial.regions import (
-    MIDDLE_EAST_COUNTRIES,
-    MIDDLE_EAST_WATERWAYS,
-    is_middle_east_country,
-    mentions_middle_east_waterway,
+    is_country,
+    is_waterway,
     normalize_place,
 )
 
@@ -150,23 +148,12 @@ def group_perspectives(
     return result
 
 
-_EXCLUDED_COUNTRIES_AND_WATERWAYS: frozenset[str] = frozenset(
-    MIDDLE_EAST_COUNTRIES
-    | MIDDLE_EAST_WATERWAYS
-    | {
-        "آمریکا", "ایالات متحده", "ایالات متحده آمریکا", "روسیه", "چین", "بریتانیا",
-        "فرانسه", "آلمان", "اوکراین", "تاجیکستان", "سودان", "سومالی", "جیبوتی", "هند", "پاکستان",
-        "united states", "usa", "us", "u.s.", "russia", "china", "britain", "uk",
-        "france", "germany", "ukraine", "tajikistan", "sudan", "somalia", "djibouti", "india", "pakistan",
-    }
-)
-
-
 def extract_non_country_entities(article_dict: dict[str, Any]) -> set[str]:
     """Extract non-country actors and specific non-country/non-waterway locations.
 
-    Countries and regional waterways are removed. Approved glossary spellings are
-    canonicalized so spelling variants (e.g. بوتین / پوتین) match as one entity.
+    Sovereign countries (regional & global) and strategic waterways/seas are removed.
+    Approved glossary spellings are canonicalized so spelling variants (e.g. بوتین / پوتین)
+    match as one entity.
     """
     raw_actors = article_dict.get("actors") or []
     location = article_dict.get("location") or ""
@@ -179,9 +166,7 @@ def extract_non_country_entities(article_dict: dict[str, Any]) -> set[str]:
         norm = normalize_place(canon)
         if not norm or len(norm) < 2:
             continue
-        if norm in _EXCLUDED_COUNTRIES_AND_WATERWAYS:
-            continue
-        if is_middle_east_country(norm) or mentions_middle_east_waterway(norm):
+        if is_country(norm) or is_waterway(norm):
             continue
         entities.add(norm)
 

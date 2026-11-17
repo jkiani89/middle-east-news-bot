@@ -179,6 +179,67 @@ def test_perspectives_gate_rejection_yemen_false_merge():
     assert len(shared) == 0
 
 
+def test_perspectives_gate_rejection_global_countries():
+    # Phase Y-13 Audit: Global countries (Japan, South Korea, Brazil, Germany, etc.)
+    # must be excluded as qualifying entities so sharing a country does NOT pass the gate.
+    for country_fa, country_en in [
+        ("ژاپن", "Japan"),
+        ("کره جنوبی", "South Korea"),
+        ("برزیل", "Brazil"),
+        ("آلمان", "Germany"),
+        ("کانادا", "Canada"),
+        ("استرالیا", "Australia"),
+    ]:
+        camp_a = {
+            "source_name": "Source A",
+            "actors": ["وزارت بازرگانی"],
+            "location": country_fa,
+        }
+        camp_b = {
+            "source_name": "Source B",
+            "actors": ["شرکت‌های خصوصی"],
+            "location": country_en,
+        }
+        passed, shared = check_perspectives_gate([camp_a, camp_b], min_shared_actors=1)
+        assert passed is False, f"Country {country_fa}/{country_en} should not pass the gate as a shared location"
+        assert len(shared) == 0
+
+
+def test_perspectives_gate_passes_with_shared_global_city():
+    # Specific non-country cities (e.g. Tokyo, Seoul, Brasilia) DO qualify if shared
+    for city_fa in ["توکیو", "سئول", "برازیلیا"]:
+        camp_a = {
+            "source_name": "Source A",
+            "actors": ["مقامات دولتی"],
+            "location": city_fa,
+        }
+        camp_b = {
+            "source_name": "Source B",
+            "actors": ["سرمایه‌گذاران"],
+            "location": city_fa,
+        }
+        passed, shared = check_perspectives_gate([camp_a, camp_b], min_shared_actors=1)
+        assert passed is True, f"Specific city {city_fa} should pass perspectives gate"
+        assert len(shared) >= 1
+
+
+def test_perspectives_gate_one_camp_has_location_other_empty():
+    # Case: Camp A has specific location 'مأرب', but Camp B has no location and no actors
+    camp_a = {
+        "source_name": "Source A",
+        "actors": [],
+        "location": "مأرب",
+    }
+    camp_b = {
+        "source_name": "Source B",
+        "actors": [],
+        "location": "",
+    }
+    passed, shared = check_perspectives_gate([camp_a, camp_b], min_shared_actors=1)
+    assert passed is False
+    assert len(shared) == 0
+
+
 @pytest.mark.asyncio
 async def test_perspectives_gate_rejection_insufficient_data(caplog):
     import logging

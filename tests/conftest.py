@@ -48,7 +48,7 @@ def ensure_test_schema(sync_test_dsn: str):
     Skips all dependent tests if PostgreSQL is unreachable.
     """
     try:
-        with psycopg.connect(sync_test_dsn, autocommit=True) as conn:
+        with psycopg.connect(sync_test_dsn, autocommit=True, connect_timeout=3) as conn:
             cur = conn.execute("SELECT to_regclass('public.gemini_suspended_keys')")
             row = cur.fetchone()
             exists = row is not None and row[0] is not None
