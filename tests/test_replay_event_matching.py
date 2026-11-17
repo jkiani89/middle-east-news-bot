@@ -316,3 +316,167 @@ async def test_load_articles_from_db_read_only_enforcement(monkeypatch):
     calls = [str(c[0][0]) for c in mock_session.execute.call_args_list if len(c[0]) > 0]
     assert any("SET TRANSACTION READ ONLY" in call for call in calls)
     assert any("SHOW transaction_read_only" in call for call in calls)
+
+
+def test_active_gate_rejection_falls_back_to_historical_candidate():
+    """Verify that when the best active candidate is rejected by the strict gate,
+
+    the incoming article continues to historical candidates (>48h and <=14d),
+    and if a qualifying historical candidate is found, creates a follow_up event.
+    """
+    now = datetime.now(UTC)
+    # Historical Event (5 days ago): Yemen Red Sea missile strike with 'انصارالله'
+    a_hist = ArticleRecord(
+        1, "S1", "T1", "u1", now - timedelta(days=5),
+        {
+            "event_title": "حمله موشکی انصارالله در دریای سرخ",
+            "categories": ["MIL"], "countries": ["یمن"], "actors": ["انصارالله"], "location": "دریای سرخ",
+        },
+        1, False, False,
+    )
+    # Active Event (10 hours ago): Yemen agriculture initiative (shares Yemen, MIL, Yemen location)
+    a_active = ArticleRecord(
+        2, "S2", "T2", "u2", now - timedelta(hours=10),
+        {
+            "event_title": "طرح توسعه کشاورزی در یمن",
+            "categories": ["MIL"], "countries": ["یمن"], "actors": ["وزارت کشاورزی"], "location": "یمن",
+        },
+        2, False, False,
+    )
+    # Incoming Article (1 hour ago): Follow up on Yemen Red Sea missile strike with 'انصارالله'
+    # Active candidate a_active has score 0.60, but fails strict gate (actors disjoint, kw < 0.25)
+    # Historical candidate a_hist has score 0.85 >= 0.80 and passes strict gate!
+    a_incoming = ArticleRecord(
+        3, "S3", "T3", "u3", now - timedelta(hours=1),
+        {
+            "event_title": "گزارش تکمیلی حمله موشکی انصارالله در دریای سرخ",
+            "categories": ["MIL"], "countries": ["یمن"], "actors": ["انصارالله"], "location": "دریای سرخ",
+        },
+        3, False, False,
+    )
+
+    map_p, evs_p, decs_p = run_sequential_replay([a_hist, a_active, a_incoming], require_strict_gate=True, keyword_threshold_x=0.25)
+    assert decs_p[0]["action"] == "create"
+    assert decs_p[1]["action"] == "create"
+    assert decs_p[2]["action"] == "follow_up"
+    assert evs_p[2].is_follow_up is True
+    assert evs_p[2].parent_event_id == evs_p[0].id
+    assert evs_p[2].title.startswith("[پیگیری]")
+
+
+def test_new_pairs_can_occur_and_differs_by_article_order():
+    """Verify that in sequential clustering, proposed strict gate can produce New Pairs
+
+    (when an earlier rejection creates a new event that later articles merge into),
+    and that pairwise relations differ based on arrival order.
+    """
+    from scripts.dev_only.replay_event_matching import compute_pairwise_relations
+
+    now = datetime.now(UTC)
+    # Art 1: Lebanon DIP in Beirut, actor 'نجیب میقاتی'
+    a1 = ArticleRecord(
+        1, "S1", "T1", "u1", now - timedelta(hours=10),
+        {
+            "event_title": "بیانیه نخست‌وزیر لبنان", "categories": ["DIP"], "countries": ["لبنان"], "actors": ["نجیب میقاتی"], "location": "لبنان",
+        },
+        1, False, False,
+    )
+    # Art 2: Lebanon DIP in Beirut, actor 'فراکسیون پارلمان'
+    # Score with a1 = 0.60, but fails gate in Proposed -> creates Event 2!
+    a2 = ArticleRecord(
+        2, "S2", "T2", "u2", now - timedelta(hours=8),
+        {
+            "event_title": "جلسه اضطراری پارلمان لبنان", "categories": ["DIP"], "countries": ["لبنان"], "actors": ["فراکسیون پارلمان"], "location": "لبنان",
+        },
+        2, False, False,
+    )
+    # Art 3: Lebanon DIP, actor 'فراکسیون پارلمان', location 'طرابلس'
+    # In Base: score with a1 is 0.45 < 0.60 -> creates Event 3! (pair (2, 3) NOT in Base)
+    # In Proposed: score with a2 is 0.70 >= 0.60 -> merges into Event 2! (pair (2, 3) IS in Proposed!)
+    a3 = ArticleRecord(
+        3, "S3", "T3", "u3", now - timedelta(hours=6),
+        {
+            "event_title": "دیدار اعضای فراکسیون پارلمان لبنان در طرابلس", "categories": ["DIP"], "countries": ["لبنان"], "actors": ["فراکسیون پارلمان"], "location": "طرابلس",
+        },
+        3, False, False,
+    )
+
+    # Order A: [a1, a2, a3]
+    map_base_a, _, _ = run_sequential_replay([a1, a2, a3], require_strict_gate=False)
+    map_p_a, _, _ = run_sequential_replay([a1, a2, a3], require_strict_gate=True, keyword_threshold_x=0.25)
+    pw_a = compute_pairwise_relations([a1, a2, a3], map_base_a, map_p_a)
+
+    assert pw_a["new_pairs_count"] == 1
+    assert (2, 3) in pw_a["new_pairs"]
+    assert pw_a["broken_pairs_count"] == 1
+    assert (1, 2) in pw_a["broken_pairs"]
+
+    # Order B: [a2, a1, a3]
+    map_base_b, _, _ = run_sequential_replay([a2, a1, a3], require_strict_gate=False)
+    map_p_b, _, _ = run_sequential_replay([a2, a1, a3], require_strict_gate=True, keyword_threshold_x=0.25)
+    pw_b = compute_pairwise_relations([a2, a1, a3], map_base_b, map_p_b)
+
+    assert pw_b["new_pairs_count"] == 0
+    assert pw_b["broken_pairs_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_operational_event_matcher_parity_with_replay_base_and_tie_breaking():
+    """Verify operational EventMatcher and Replay (Base rule) produce identical match decisions
+
+    and resolve ties identically (preferring the newer event by first_seen_at desc).
+    """
+    from app.database.models import Article, Event
+    from app.processors.event_matcher import EventMatcher
+
+    now = datetime.now(UTC)
+    # Older event: Iran (0.25) + DIP (0.20) + Tehran (0.15) = 0.60
+    a1 = ArticleRecord(
+        1, "S1", "T1", "u1", now - timedelta(hours=5),
+        {
+            "event_title": "بیانیه اول", "categories": ["DIP"], "countries": ["ایران"], "actors": ["سفرا"], "location": "تهران",
+        },
+        1, False, False,
+    )
+    # Newer event: Turkey (0.0) + DIP (0.20) + Tehran (0.15) + actor 'کارشناسان' (0.25) = 0.60
+    a2 = ArticleRecord(
+        2, "S2", "T2", "u2", now - timedelta(hours=2),
+        {
+            "event_title": "بیانیه دوم", "categories": ["DIP"], "countries": ["ترکیه"], "actors": ["کارشناسان"], "location": "تهران",
+        },
+        2, False, False,
+    )
+    # Incoming article (1h ago)
+    a3_payload = {
+        "event_title": "بیانیه سوم", "categories": ["DIP"], "countries": ["ایران"], "actors": ["کارشناسان"], "location": "تهران",
+    }
+    a3 = ArticleRecord(3, "S3", "T3", "u3", now - timedelta(hours=1), a3_payload, 3, False, False)
+
+    # 1. Run Replay (Base rule)
+    map_base, evs_base, decs_base = run_sequential_replay([a1, a2, a3], require_strict_gate=False)
+    assert decs_base[2]["action"] == "merge"
+    assert decs_base[2]["event_id"] == evs_base[1].id  # Target is Event 2 (the newer candidate)
+
+    # 2. Run Operational EventMatcher with identical DB candidate events
+    ev1 = Event(
+        id=1, title="بیانیه اول", event_type="DIP", countries=["ایران"], actors=["سفرا"], location="تهران",
+        importance=3, status="active", first_seen_at=now - timedelta(hours=5),
+    )
+    ev2 = Event(
+        id=2, title="بیانیه دوم", event_type="DIP", countries=["ترکیه"], actors=["کارشناسان"], location="تهران",
+        importance=3, status="active", first_seen_at=now - timedelta(hours=2),
+    )
+    matcher = EventMatcher(merge_threshold=0.60)
+    session = AsyncMock()
+    # Mock candidate query returning [ev2, ev1] (ordered by first_seen_at desc)
+    scalars_mock = MagicMock()
+    scalars_mock.all.return_value = [ev2, ev1]
+    session.scalars.return_value = scalars_mock
+    session.scalar.return_value = None
+
+    art3_db = Article(id=3, title="T3", original_url="u3", collected_at=now - timedelta(hours=1))
+    em_res = await matcher.match_or_create_event(session, art3_db, a3_payload, source_name="S3")
+
+    assert em_res.match_type == "auto"
+    assert em_res.event_id == 2  # Identical choice: Event 2 (newer) selected by EventMatcher!
+

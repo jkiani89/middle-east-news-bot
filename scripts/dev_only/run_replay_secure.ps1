@@ -55,11 +55,11 @@ try {
     $pythonExitCode = $LASTEXITCODE
 
     if ($pythonExitCode -ne 0) {
-        Write-Error "Python execution completed with non-zero exit code: $pythonExitCode"
+        Write-Host "`n[!] Python execution completed with non-zero exit code: $pythonExitCode" -ForegroundColor Red
     }
 }
 catch {
-    Write-Error "Replay execution halted with error: $_"
+    Write-Host "`n[!] Replay execution halted with error: $_" -ForegroundColor Red
     if ($pythonExitCode -eq 0) { $pythonExitCode = 1 }
 }
 finally {

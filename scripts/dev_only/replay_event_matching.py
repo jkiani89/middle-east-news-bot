@@ -254,6 +254,8 @@ def run_sequential_replay(
                 and ev.first_seen_at <= window_end
                 and not ev.is_live_digest
             ]
+            # Order by first_seen_at desc for 100% tie-breaking consistency with operational EventMatcher
+            active_cands.sort(key=lambda ev: ev.first_seen_at, reverse=True)
 
             # Find single best candidate by similarity score (identical to operational EventMatcher)
             for cand in active_cands:
@@ -293,6 +295,8 @@ def run_sequential_replay(
                 and ev.first_seen_at < window_start
                 and not ev.is_live_digest
             ]
+            # Order by first_seen_at desc for 100% tie-breaking consistency with operational EventMatcher
+            hist_cands.sort(key=lambda ev: ev.first_seen_at, reverse=True)
             for cand in hist_cands:
                 sim = calculate_event_similarity(cand, analysis_data)
                 if sim.total_score > best_hist_score:
@@ -532,6 +536,54 @@ def find_chaining_cases(events: list[ReplayEvent], articles_map: dict[int, Artic
     return chaining_count
 
 
+def compute_pairwise_relations(
+    articles: list[ArticleRecord],
+    map_base: dict[int, int],
+    map_prop: dict[int, int],
+) -> dict[str, Any]:
+    """Rigorous set-theoretic computation of pairwise relations between Base and Proposed clusterings.
+
+    Pairs_Base = set of (i, j) where i < j and map_base[i] == map_base[j]
+    Pairs_Prop = set of (i, j) where i < j and map_prop[i] == map_prop[j]
+
+    Broken Pairs = Pairs_Base - Pairs_Prop (pairs merged in Base, but separated in Proposed)
+    New Pairs = Pairs_Prop - Pairs_Base (pairs separated in Base, but merged in Proposed)
+    Retained Pairs = Pairs_Base & Pairs_Prop (pairs merged in both)
+    """
+    pairs_base: set[tuple[int, int]] = set()
+    pairs_prop: set[tuple[int, int]] = set()
+    n = len(articles)
+
+    for i in range(n):
+        aid1 = articles[i].id
+        ev_base1 = map_base.get(aid1)
+        ev_prop1 = map_prop.get(aid1)
+        for j in range(i + 1, n):
+            aid2 = articles[j].id
+            ev_base2 = map_base.get(aid2)
+            ev_prop2 = map_prop.get(aid2)
+
+            if ev_base1 is not None and ev_base1 == ev_base2:
+                pairs_base.add((aid1, aid2))
+            if ev_prop1 is not None and ev_prop1 == ev_prop2:
+                pairs_prop.add((aid1, aid2))
+
+    broken_pairs = pairs_base - pairs_prop
+    new_pairs = pairs_prop - pairs_base
+    retained_pairs = pairs_base & pairs_prop
+
+    return {
+        "pairs_base_count": len(pairs_base),
+        "pairs_prop_count": len(pairs_prop),
+        "broken_pairs_count": len(broken_pairs),
+        "new_pairs_count": len(new_pairs),
+        "retained_pairs_count": len(retained_pairs),
+        "broken_pairs": broken_pairs,
+        "new_pairs": new_pairs,
+        "retained_pairs": retained_pairs,
+    }
+
+
 async def main_async(days: int) -> None:
     start_time = datetime.now(UTC)
     print("=" * 100)
@@ -614,6 +666,8 @@ async def main_async(days: int) -> None:
                 separated_articles += (len(b_ev.article_ids) - sizes[0])
                 singleton_separated += sum(1 for s in sizes if s == 1)
 
+        pw_rel = compute_pairwise_relations(articles, map_base, map_p)
+
         results_proposed[x] = {
             "total_events": len(evs_p),
             "multi_article_events": len(multi_p),
@@ -623,6 +677,7 @@ async def main_async(days: int) -> None:
             "separated_articles": separated_articles,
             "singleton_separated": singleton_separated,
             "chaining_cases": chaining_p,
+            "pw_rel": pw_rel,
             "ctrl": ctrl_p,
             "events_p": evs_p,
             "map_p": map_p,
@@ -635,11 +690,16 @@ async def main_async(days: int) -> None:
         print(f"   • Resulting Groups from Split (گروه‌های حاصل از شکست): {resulting_groups_count}")
         print(f"   • Separated Articles from Core (مقالات جداشده از خوشه اصلی): {separated_articles}")
         print(f"   • Singleton Separated Articles (مقالات تفکیک‌شده تک‌عضوی): {singleton_separated}")
+        print(f"   • Broken Pairs (جفت‌های تفکیک‌شده): {pw_rel['broken_pairs_count']}")
+        print(f"   • New Pairs (جفت‌های الحاقی جدید): {pw_rel['new_pairs_count']}")
+        print(f"   • Retained Pairs (جفت‌های حفظ‌شده مشترک): {pw_rel['retained_pairs_count']}")
         print(f"   • Chaining Cases (موارد زنجیره‌سازی): {chaining_p}")
         print(f"   • Pairwise Agreement vs DB Clustering:")
         print(f"        Agreement-Precision: {ctrl_p['precision']:.4f} | Agreement-Recall: {ctrl_p['recall']:.4f} | Agreement-F1: {ctrl_p['f1']:.4f} | FPR: {ctrl_p['fpr']:.4f}")
 
     # Comparative Summary Table
+    pw_025 = results_proposed[0.25]["pw_rel"]
+    pw_035 = results_proposed[0.35]["pw_rel"]
     print("\n" + "=" * 100)
     print("  خلاصه مقایسه‌ای اجرای بازپخش: قاعده فعلی در برابر قواعد پیشنهادی")
     print("=" * 100)
@@ -649,6 +709,9 @@ async def main_async(days: int) -> None:
     print(f"{'رویدادهای چندمقاله‌ای (Multi-Article)':<40} | {len(multi_base):<15} | {results_proposed[0.25]['multi_article_events']:<15} | {results_proposed[0.35]['multi_article_events']:<15}")
     print(f"{'رویدادهای پیگیری (Follow-Up Events)':<40} | {len(follow_up_base):<15} | {results_proposed[0.25]['follow_up_events']:<15} | {results_proposed[0.35]['follow_up_events']:<15}")
     print(f"{'رویدادهای شکسته (Broken Events)':<40} | {'—':<15} | {results_proposed[0.25]['broken_events']:<15} | {results_proposed[0.35]['broken_events']:<15}")
+    print(f"{'جفت‌های شکسته (Broken Pairs)':<40} | {'—':<15} | {pw_025['broken_pairs_count']:<15} | {pw_035['broken_pairs_count']:<15}")
+    print(f"{'جفت‌های جدید (New Pairs)':<40} | {'—':<15} | {pw_025['new_pairs_count']:<15} | {pw_035['new_pairs_count']:<15}")
+    print(f"{'جفت‌های حفظ‌شده (Retained Pairs)':<40} | {pw_025['pairs_base_count']:<15} | {pw_025['retained_pairs_count']:<15} | {pw_035['retained_pairs_count']:<15}")
     print(f"{'گروه‌های حاصل از شکست (Resulting Groups)':<40} | {'—':<15} | {results_proposed[0.25]['resulting_groups']:<15} | {results_proposed[0.35]['resulting_groups']:<15}")
     print(f"{'مقالات جداشده از هسته (Separated Articles)':<40} | {'—':<15} | {results_proposed[0.25]['separated_articles']:<15} | {results_proposed[0.35]['separated_articles']:<15}")
     print(f"{'مقالات تک‌عضوی جدید (Singleton Articles)':<40} | {'—':<15} | {results_proposed[0.25]['singleton_separated']:<15} | {results_proposed[0.35]['singleton_separated']:<15}")
