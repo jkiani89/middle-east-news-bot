@@ -529,9 +529,12 @@ def _item_flowables(
     accent: colors.Color,
     width: float,
 ) -> list[Any]:
-    headline = canonicalize_approved_names(
+    raw_headline = canonicalize_approved_names(
         item.get("headline_fa") or item.get("headline") or item.get("title") or "بدون تیتر"
     )
+    is_false = (item.get("verification_status") == "false")
+    headline = f"[تکذیبیه / ادعای ردشده] {raw_headline}" if is_false else raw_headline
+
     summary = canonicalize_approved_names(item.get("summary_fa") or item.get("summary") or "")
     importance = max(1, min(5, int(item.get("importance") or 3)))
     category = item.get("category_fa") or "عمومی"
@@ -566,9 +569,19 @@ def _item_flowables(
         ),
         Paragraph(_wrap_rtl(" • ".join(meta_bits), styles["meta"], text_width, pad=0), styles["meta"]),
         Paragraph(_wrap_rtl(" • ".join(geo_bits), styles["meta"], text_width, pad=0), styles["meta"]),
+    ]
+    if is_false:
+        cells.extend([
+            Spacer(1, 2),
+            Paragraph(
+                _wrap_rtl("توجه تحریریه: این ادعا مستنداً تکذیب/رد شده و فاقد اعتبار خبری است.", styles["meta"], text_width, pad=0),
+                styles["meta"],
+            ),
+        ])
+    cells.extend([
         Spacer(1, 3),
         Paragraph(_wrap_rtl(summary, styles["body"], text_width, pad=0), styles["body"]),
-    ]
+    ])
     cells.extend(_perspective_blocks(styles, item, text_width))
 
     sources = _sources_text(item)

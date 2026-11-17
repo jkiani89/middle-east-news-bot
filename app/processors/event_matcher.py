@@ -305,6 +305,8 @@ class EventMatcher:
                     "url": article.original_url,
                     "article_id": article.id,
                     "added_at": ref_time.isoformat(),
+                    "headline_fa": analysis_data.get("headline_fa") or article.title,
+                    "summary_fa": analysis_data.get("summary_fa") or "",
                 }
                 if new_source_entry not in sources:
                     sources.append(new_source_entry)

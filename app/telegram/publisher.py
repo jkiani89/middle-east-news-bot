@@ -624,8 +624,8 @@ async def publish_immediate_analysis(
     if admin_only:
         target_channel = str(settings.telegram_admin_chat_id)
         prefix = (
-            "🔒 <b>پیش‌نمایش ادمین — خبر تک‌منبعی با اهمیت بالا</b>\n"
-            "<i>این مورد برای بازبینی ارسال شد و در کانال عمومی منتشر نشد.</i>\n\n"
+            "🔒 <b>پیش‌نمایش ادمین — توقف انتشار فوری (تک‌منبعی با اهمیت بالا)</b>\n"
+            "<i>این خبر در کانال عمومی منتشر نشد؛ در صورت احراز شرایط در بولتن روزانه درج خواهد شد.</i>\n\n"
         )
     else:
         target_channel = channel_id or settings.telegram_channel_id

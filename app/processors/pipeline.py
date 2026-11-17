@@ -50,7 +50,10 @@ async def _count_event_sources(session: AsyncSession, event_id: int) -> int:
         select(func.count(distinct(Article.source_id)))
         .select_from(ArticleEvent)
         .join(Article, Article.id == ArticleEvent.article_id)
-        .where(ArticleEvent.event_id == event_id)
+        .where(
+            ArticleEvent.event_id == event_id,
+            Article.status == "summarized",
+        )
     )
     count = await session.scalar(stmt)
     return count if isinstance(count, int) else 1
@@ -765,6 +768,7 @@ async def process_collected_articles(
                 source_name=source_name,
             )
 
+            article.status = "summarized"
             session.add(
                 ArticleEvent(
                     article_id=article.id,
@@ -807,13 +811,15 @@ async def process_collected_articles(
                                 "url": article.original_url,
                                 "article_id": article.id,
                                 "added_at": (article.collected_at or datetime.now(UTC)).isoformat(),
+                                "headline_fa": result.headline_fa,
+                                "summary_fa": result.summary_fa,
                             }],
                         },
-                                            verification_status=verification_status,
-                    model_name=ai_provider.model_name,
-                    prompt_version=PROMPT_VERSION,
+                        verification_status=verification_status,
+                        model_name=ai_provider.model_name,
+                        prompt_version=PROMPT_VERSION,
+                    )
                 )
-            )
             else:
                 # A second source corroborates an existing event: refresh its label.
                 await session.execute(
@@ -821,8 +827,6 @@ async def process_collected_articles(
                     .where(Summary.event_id == match_res.event_id)
                     .values(verification_status=verification_status)
                 )
-
-            article.status = "summarized"
 
             should_publish = match_res.is_new_event or not settings.immediate_publish_only_new_events
             if should_publish and result.importance >= settings.immediate_publish_min_importance:

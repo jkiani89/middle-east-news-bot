@@ -119,3 +119,46 @@ async def test_mock_content_is_refused_outside_the_test_environment():
                 {"content_quality": "mock"},
                 content_quality="mock",
             )
+
+
+def test_pdf_bulletin_renders_false_and_disputed(tmp_path):
+    items = [
+        {
+            "event_id": 10,
+            "event_type": "MIL",
+            "category_fa": "تحولات نظامی و امنیتی",
+            "importance": 5,
+            "countries": ["سوریه"],
+            "actors": [],
+            "location": "دمشق",
+            "headline_fa": "شایعه هدف قرار گرفتن پایگاه نظامی",
+            "summary_fa": "این ادعا رد شد.",
+            "verification_status": "false",
+            "verification_status_fa": "❌ نادرست / ردشده",
+            "primary_source": "IRNA",
+            "primary_url": "https://irna.ir/news/10",
+        },
+        {
+            "event_id": 11,
+            "event_type": "DIP",
+            "category_fa": "دیپلماسی",
+            "importance": 4,
+            "countries": ["ایران"],
+            "actors": [],
+            "location": "تهران",
+            "headline_fa": "گزارش ادعایی درباره تغییر مذاکرات",
+            "summary_fa": "طرفین روایت‌های متناقضی ارائه دادند.",
+            "verification_status": "disputed",
+            "verification_status_fa": "⚖️ مورد مناقشه",
+            "primary_source": "Reuters",
+            "primary_url": "https://reuters.com/news/11",
+        },
+    ]
+    out = build_daily_report_pdf(
+        date(2026, 11, 14),
+        items,
+        {"content_quality": "real"},
+        tmp_path / "bulletin_false_disputed.pdf",
+    )
+    assert out.exists()
+    assert out.stat().st_size > 5000
