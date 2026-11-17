@@ -24,6 +24,8 @@ import argparse
 import asyncio
 import difflib
 import json
+import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -79,6 +81,7 @@ class ArticleRecord:
     db_event_id: int | None
     is_live_digest: bool
     is_insufficient_data: bool
+    db_event_ids: set[int] = field(default_factory=set)
 
 
 @dataclass
@@ -148,6 +151,7 @@ async def load_articles_from_db(days: int = 7) -> tuple[list[ArticleRecord], boo
                     Article.ai_payload,
                     Source.name,
                     ArticleEvent.event_id,
+                    ArticleEvent.confidence,
                 )
                 .join(Source, Source.id == Article.source_id)
                 .outerjoin(ArticleEvent, ArticleEvent.article_id == Article.id)
@@ -156,22 +160,29 @@ async def load_articles_from_db(days: int = 7) -> tuple[list[ArticleRecord], boo
                     Article.status.not_in(["flagged", "flagged_for_review", "rejected", "expired", "failed"]),
                     Article.ai_payload.is_not(None),
                 )
-                .order_by(Article.collected_at.asc(), Article.id.asc())
+                .order_by(
+                    Article.collected_at.asc(),
+                    Article.id.asc(),
+                    ArticleEvent.confidence.desc().nullslast(),
+                    ArticleEvent.id.desc(),
+                )
             )
 
             rows = (await session.execute(stmt)).all()
 
-    seen_article_ids: set[int] = set()
-    records: list[ArticleRecord] = []
+    records_dict: dict[int, ArticleRecord] = {}
     empty_actor_count = 0
     empty_location_count = 0
     both_empty_count = 0
 
     for r in rows:
-        art_id, title, can_u, orig_u, coll_at, p_load, src_name, ev_id = r
-        if art_id in seen_article_ids:
+        art_id, title, can_u, orig_u, coll_at, p_load, src_name, ev_id, conf = r
+        if art_id in records_dict:
+            # Multi-event article: preserve all associated event IDs in db_event_ids
+            if ev_id is not None:
+                records_dict[art_id].db_event_ids.add(ev_id)
             continue
-        seen_article_ids.add(art_id)
+
         payload = p_load if isinstance(p_load, dict) else {}
         url = can_u or orig_u or ""
 
@@ -191,6 +202,7 @@ async def load_articles_from_db(days: int = 7) -> tuple[list[ArticleRecord], boo
         if not has_actors and not has_location:
             both_empty_count += 1
 
+        ev_set = {ev_id} if ev_id is not None else set()
         rec = ArticleRecord(
             id=art_id,
             source_name=src_name or "",
@@ -198,11 +210,14 @@ async def load_articles_from_db(days: int = 7) -> tuple[list[ArticleRecord], boo
             url=url,
             collected_at=coll_at if coll_at.tzinfo else coll_at.replace(tzinfo=UTC),
             ai_payload=payload,
-            db_event_id=ev_id,
+            db_event_id=ev_id,  # Deterministically the highest-confidence event due to order_by
             is_live_digest=bool(is_digest),
             is_insufficient_data=(not has_actors and not has_location),
+            db_event_ids=ev_set,
         )
-        records.append(rec)
+        records_dict[art_id] = rec
+
+    records = list(records_dict.values())
 
     print(f"Loaded {len(records)} articles across time window:")
     print(f"   • Total Articles Analyzed: {len(records)}")
@@ -420,7 +435,10 @@ def analyze_replay_control(
     replay_mapping: dict[int, int],
 ) -> dict[str, float]:
     """Evaluate pairwise clustering metrics (Precision, Recall, F1, FPR, FNR) vs DB grouping."""
-    valid_articles = [a for a in articles if a.db_event_id is not None and a.id in replay_mapping]
+    valid_articles = [
+        a for a in articles
+        if (bool(a.db_event_ids) or a.db_event_id is not None) and a.id in replay_mapping
+    ]
     n = len(valid_articles)
 
     tp = 0
@@ -432,7 +450,9 @@ def analyze_replay_control(
         for j in range(i + 1, n):
             a1 = valid_articles[i]
             a2 = valid_articles[j]
-            same_db = (a1.db_event_id == a2.db_event_id)
+            e1 = a1.db_event_ids or ({a1.db_event_id} if a1.db_event_id is not None else set())
+            e2 = a2.db_event_ids or ({a2.db_event_id} if a2.db_event_id is not None else set())
+            same_db = bool(e1 & e2)
             same_replay = (replay_mapping[a1.id] == replay_mapping[a2.id])
 
             if same_db and same_replay:
@@ -468,8 +488,9 @@ def compute_keyword_score_distribution(articles: list[ArticleRecord]) -> dict[st
     """Compute min, median, p90 of raw keywords_score for DB merged articles using exact EventMatcher logic."""
     event_groups: dict[int, list[ArticleRecord]] = {}
     for a in articles:
-        if a.db_event_id:
-            event_groups.setdefault(a.db_event_id, []).append(a)
+        e_set = a.db_event_ids or ({a.db_event_id} if a.db_event_id is not None else set())
+        for eid in e_set:
+            event_groups.setdefault(eid, []).append(a)
 
     scores_with_actor: list[float] = []
     scores_without_actor: list[float] = []
@@ -865,13 +886,34 @@ async def main_async(days: int) -> None:
         _print_sample_pair(i, p, "Retained Borderline Merge")
         samples_serialized.append(_serialize_sample(i, p, "Retained Borderline Merge"))
 
-    # Save to JSON file
+    # Save to JSON file with atomic write and automated backup of existing valid file
     out_json_path = _project_root / "scripts" / "dev_only" / "replay_samples_30.json"
+    temp_json_path = out_json_path.with_suffix(".tmp")
     try:
-        with open(out_json_path, "w", encoding="utf-8") as f:
+        # 1. Write to temporary file with flush and fsync
+        with open(temp_json_path, "w", encoding="utf-8") as f:
             json.dump(samples_serialized, f, ensure_ascii=False, indent=2)
-        print(f"\nSaved {len(samples_serialized)} audited sample pairs to {out_json_path}")
+            f.flush()
+            os.fsync(f.fileno())
+
+        # 2. If a valid previous file exists, create a timestamped backup before replacing
+        if out_json_path.exists():
+            bak_path = out_json_path.with_suffix(f".bak_{int(start_time.timestamp())}.json")
+            try:
+                shutil.copy2(out_json_path, bak_path)
+                print(f"Backed up previous samples to {bak_path.name}")
+            except Exception as e_bak:
+                print(f"Notice: Could not create backup of previous samples: {e_bak}")
+
+        # 3. Atomically replace temp file into destination
+        os.replace(temp_json_path, out_json_path)
+        print(f"\nSaved {len(samples_serialized)} audited sample pairs atomically to {out_json_path}")
     except Exception as e:
+        if temp_json_path.exists():
+            try:
+                temp_json_path.unlink()
+            except Exception:
+                pass
         print(f"Warning: Could not save JSON samples: {e}")
 
     end_time = datetime.now(UTC)

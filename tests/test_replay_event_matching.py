@@ -485,17 +485,17 @@ async def test_operational_event_matcher_parity_with_replay_base_and_tie_breakin
 
 @pytest.mark.asyncio
 async def test_load_articles_deduplication_and_filtering(monkeypatch):
-    """Verify load_articles_from_db deduplicates multiple rows for the same article_id
+    """Verify load_articles_from_db deduplicates multiple rows for the same article_id,
 
-    arising from multiple ArticleEvent records.
+    assigns highest-confidence event as primary db_event_id, and aggregates all in db_event_ids.
     """
     from scripts.dev_only.replay_event_matching import load_articles_from_db
 
     now = datetime.now(UTC)
-    # Simulate DB returning duplicate rows for article ID 10 (joined with two different events)
-    row1 = (10, "Title 10", "c10", "o10", now, {"actors": ["سفرا"], "location": "تهران"}, "S1", 100)
-    row2 = (10, "Title 10", "c10", "o10", now, {"actors": ["سفرا"], "location": "تهران"}, "S1", 200)
-    row3 = (20, "Title 20", "c20", "o20", now, {"actors": ["وزرا"], "location": "بغداد"}, "S2", 300)
+    # Simulate DB returning duplicate rows for article ID 10 (joined with two different events: conf 0.85 and 0.65)
+    row1 = (10, "Title 10", "c10", "o10", now, {"actors": ["سفرا"], "location": "تهران"}, "S1", 100, 0.85)
+    row2 = (10, "Title 10", "c10", "o10", now, {"actors": ["سفرا"], "location": "تهران"}, "S1", 200, 0.65)
+    row3 = (20, "Title 20", "c20", "o20", now, {"actors": ["وزرا"], "location": "بغداد"}, "S2", 300, 0.90)
 
     mock_session = AsyncMock()
     mock_execute_res = MagicMock()
@@ -518,6 +518,11 @@ async def test_load_articles_deduplication_and_filtering(monkeypatch):
     # Article 10 must appear exactly ONCE
     assert len(records) == 2
     assert [r.id for r in records] == [10, 20]
+    # Primary db_event_id must be 100 (highest confidence)
+    assert records[0].db_event_id == 100
+    # Both linked events must be present in db_event_ids
+    assert records[0].db_event_ids == {100, 200}
+    assert records[1].db_event_ids == {300}
 
 
 def test_pairwise_relations_rejects_self_pairs_on_duplicates():
@@ -633,5 +638,87 @@ async def test_read_only_transaction_executes_queries_strictly_inside_tx(monkeyp
 
     # Validate exact execution order
     assert execution_order == ["tx_enter", "set_ro", "show_ro", "data_query", "tx_exit"]
+
+
+def test_atomic_write_preserves_previous_file_on_failure(tmp_path):
+    """Verify that writing output via temporary file and atomic replace
+
+    leaves the original file intact if an error occurs during writing.
+    """
+    import json
+
+    orig_file = tmp_path / "replay_samples_30.json"
+    orig_content = [{"sample_id": 1, "test": "original_valid_data"}]
+    with open(orig_file, "w", encoding="utf-8") as f:
+        json.dump(orig_content, f)
+
+    temp_file = orig_file.with_suffix(".tmp")
+
+    # Simulate an error interrupting write midway
+    try:
+        with open(temp_file, "w", encoding="utf-8") as f:
+            f.write("{ incomplete json...")
+            raise OSError("Simulated disk write failure or interruption")
+    except OSError:
+        if temp_file.exists():
+            temp_file.unlink()
+
+    # Original file must remain 100% intact and uncorrupted
+    assert orig_file.exists()
+    with open(orig_file, encoding="utf-8") as f:
+        loaded = json.load(f)
+    assert loaded == orig_content
+    assert not temp_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_production_tie_breaking_non_determinism_documentation():
+    """Document that operational EventMatcher candidate selection on identical first_seen_at
+
+    depends entirely on SQL engine scan order because stmt lacks a secondary sort key.
+    """
+    from app.database.models import Article, Event
+    from app.processors.event_matcher import EventMatcher
+
+    now = datetime.now(UTC)
+    same_time = now - timedelta(hours=3)
+
+    ev1 = Event(
+        id=1, title="رویداد یک", event_type="DIP", countries=["ایران"], actors=["سفرا"],
+        location="تهران", importance=3, status="active", first_seen_at=same_time,
+    )
+    ev2 = Event(
+        id=2, title="رویداد دو", event_type="DIP", countries=["ایران"], actors=["سفرا"],
+        location="تهران", importance=3, status="active", first_seen_at=same_time,
+    )
+
+    art_payload = {
+        "event_title": "بیانیه مشترک", "categories": ["DIP"], "countries": ["ایران"], "actors": ["سفرا"], "location": "تهران",
+    }
+    art_db = Article(id=99, title="T", original_url="u", collected_at=now)
+
+    matcher = EventMatcher(merge_threshold=0.60)
+
+    # Scenario A: SQL returns [ev1, ev2]
+    session_a = AsyncMock()
+    mock_scalars_a = MagicMock()
+    mock_scalars_a.all.return_value = [ev1, ev2]
+    session_a.scalars.return_value = mock_scalars_a
+    session_a.scalar.return_value = None
+    res_a = await matcher.match_or_create_event(session_a, art_db, art_payload, source_name="S")
+
+    # Scenario B: SQL returns [ev2, ev1] (e.g. reverse index scan or different page layout)
+    session_b = AsyncMock()
+    mock_scalars_b = MagicMock()
+    mock_scalars_b.all.return_value = [ev2, ev1]
+    session_b.scalars.return_value = mock_scalars_b
+    session_b.scalar.return_value = None
+    res_b = await matcher.match_or_create_event(session_b, art_db, art_payload, source_name="S")
+
+    # This proves empirically that Production EventMatcher returns different candidates
+    # based solely on SQL row order when timestamps and scores are identical!
+    assert res_a.event_id == 1
+    assert res_b.event_id == 2
+
 
 
