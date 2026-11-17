@@ -49,13 +49,24 @@ You should see the bucket the key is scoped to.
 
 ## 3. Run a Manual Backup
 
+A local run must name its destination explicitly:
+
 ```bash
-bash scripts/backup.sh
+# Backblaze B2 example; use your own bucket name
+BACKUP_REMOTE=b2 BACKUP_BUCKET=newsbot-backups bash scripts/backup.sh
+
+# Cloudflare R2 example
+BACKUP_REMOTE=r2 BACKUP_BUCKET=newsbot-backups bash scripts/backup.sh
 ```
+
+Both variables are required for a local run: the script refuses to guess instead of falling
+back to a default bucket, so a development database cannot be uploaded next to production
+backups. (Inside GitHub Actions the destination comes from
+`scripts/resolve_backup_storage.sh`, and the workflow resolves it before calling the script.)
 
 The dump is written by a `postgres:18-alpine` container, because `pg_dump` refuses to dump a
 server newer than itself and the managed database runs PostgreSQL 18. The script validates
-the dump with `pg_restore --list`, uploads it to `${BACKUP_REMOTE:-b2}:${BACKUP_BUCKET}/db/`,
+the dump with `pg_restore --list`, uploads it to `${BACKUP_REMOTE}:${BACKUP_BUCKET}/db/`,
 and verifies the uploaded object's name and byte size. **It deletes nothing.**
 
 ## 4. Automate Backups
@@ -87,18 +98,29 @@ Nothing is deleted automatically — not by `scripts/backup.sh`, not by
 can never destroy an earlier restore point:
 
 ```bash
-# Preview what is older than 7 days (deletes nothing)
+# Preview what is older than 8 days (deletes nothing)
 bash scripts/prune_backups.sh
 
-# Delete dumps older than 7 days
+# Delete dumps older than 8 days
 bash scripts/prune_backups.sh --yes
 
 # Different retention
 bash scripts/prune_backups.sh --yes --retention-days 14
 ```
 
-`BACKUP_REMOTE` and `BACKUP_BUCKET` must be set (run
-`bash scripts/resolve_backup_storage.sh` first in Actions, or export the same variables
-locally). Pruning is limited to `newsbot-backup-*.dump` under `<remote>:<bucket>/db/`, and
-an empty or malformed destination aborts before any `rclone` call. `--retention-days`
-defaults to `BACKUP_RETENTION_DAYS` (7).
+Safety rules:
+
+- The newest 3 backups (`BACKUP_MIN_KEEP`) are always kept, however old they are, so a
+  long backup outage can never be "cleaned up" into zero restore points.
+- The default retention is 8 days (`BACKUP_RETENTION_DAYS`), which leaves a margin around
+  the 7-day policy boundary; only dumps strictly older than that become eligible.
+- The preview and the deletion use one listing: `--yes` deletes exactly the names the dry
+  run printed, via `rclone delete --files-from-raw`, so nothing outside the preview can go.
+- Pruning is limited to top-level `newsbot-backup-*.dump` under `<remote>:<bucket>/db/`;
+  nested objects and unrelated names abort the run.
+- The listing is read as JSON (`rclone lsjson`) and every name must match the exact
+  `newsbot-backup-<UTC timestamp>.dump` format, so an object whose name contains a
+  newline or other control character aborts instead of injecting a fake delete entry.
+- An empty or suspicious listing, an unknown modtime, a failed listing and an empty or
+  malformed `BACKUP_REMOTE`/`BACKUP_BUCKET` all abort before any `rclone delete`.
+  `rclone` and `python3` must be available where the prune runs.
