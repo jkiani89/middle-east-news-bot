@@ -179,6 +179,32 @@ def test_perspectives_gate_rejection_yemen_false_merge():
     assert len(shared) == 0
 
 
+@pytest.mark.asyncio
+async def test_perspectives_gate_rejection_insufficient_data(caplog):
+    import logging
+
+    from app.processors.pipeline import _refresh_event_perspectives
+
+    summary = SimpleNamespace(details_fa={}, event_id=77)
+    # Articles from 2 camps with NO actors or location data
+    rows = [
+        (11, "Headline A", "Text A", "Reuters", {}),
+        (12, "Headline B", "Text B", "TASS", {}),
+    ]
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=SimpleNamespace(all=lambda: rows)),
+        scalars=AsyncMock(return_value=SimpleNamespace(first=lambda: summary)),
+    )
+    provider = MagicMock()
+
+    with caplog.at_level(logging.INFO):
+        res = await _refresh_event_perspectives(session, 77, "Test Event", provider)
+
+    assert res is False
+    assert "reason=insufficient_data" in caplog.text
+    assert provider.call_count == 0
+
+
 def test_perspectives_gate_passes_with_shared_actor():
     camp_a = {
         "source_name": "Saba News Agency",

@@ -22,7 +22,7 @@ from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, ArticleEvent, DailyReport, Event, Source, Summary
 from app.editorial.glossary import canonicalize_approved_names
-from app.editorial.perspectives import check_perspectives_gate, group_perspectives, orientation_for
+from app.editorial.perspectives import group_perspectives, orientation_for
 from app.editorial.regions import is_middle_east_country, mentions_middle_east_place
 from app.editorial.topics import load_topics, topic_for_event
 
@@ -493,31 +493,6 @@ async def fetch_report_items(
             "topic_fa": topic.name_fa if topic else "سایر تحولات",
             "is_mock": is_mock,
         }
-
-        # Gate perspectives: if actor metadata is available, require shared non-country entities
-        if item["perspectives"] and linked_arts:
-            camp_articles: list[dict[str, Any]] = []
-            seen_camps: set[str] = set()
-            for art, src in linked_arts:
-                if not src:
-                    continue
-                o = orientation_for(src.name)
-                if o.key in seen_camps:
-                    continue
-                seen_camps.add(o.key)
-                p_load = art.ai_payload if isinstance(art.ai_payload, dict) else {}
-                camp_articles.append({
-                    "source_name": src.name,
-                    "actors": p_load.get("actors") or [],
-                    "location": p_load.get("location") or "",
-                })
-            if len(camp_articles) >= 2:
-                passed_gate, _ = check_perspectives_gate(
-                    camp_articles, min_shared_actors=settings.perspective_min_shared_actors
-                )
-                if not passed_gate:
-                    item["perspectives"] = []
-                    item["disagreement_fa"] = ""
 
         if distinct_sources < 2:
             item["verification_status"] = _resolved_verification_status(
