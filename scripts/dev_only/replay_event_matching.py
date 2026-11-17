@@ -1,20 +1,21 @@
 r"""Event Matching Replay and Calibration Analysis for Phase Y-14.
 
-READ-ONLY replay of event clustering over the last 7 days to evaluate proposed
+READ-ONLY replay of event clustering over the last N days to evaluate proposed
 stricter EventMatcher rules:
     Current rule: total_score >= 0.60
     Proposed rule: total_score >= 0.60 AND (shared_non_country_actor >= 1 OR keywords_score >= X)
 
-Strictly read-only: sets default_transaction_read_only = 'on' and verifies it before running.
-Zero database writes, no temporary tables, zero external API calls.
+Strictly read-only: executes SET TRANSACTION READ ONLY in begin() and verifies transaction_read_only = 'on'.
+Zero database writes, no temporary tables, zero external API calls, zero model calls.
 
 Windows PowerShell execution:
-    $pass = Read-Host "Enter DB password" -AsSecureString
-    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($pass)
+    $securePass = Read-Host "Enter Aiven DB password" -AsSecureString
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePass)
     $plainPass = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
-    $env:DATABASE_URL = "postgresql+asyncpg://avnadmin:${plainPass}@your-host.aivencloud.com:port/defaultdb?ssl=require"
-    python scripts/dev_only/replay_event_matching.py --days 7
+    $env:DATABASE_URL = "postgresql+asyncpg://avnadmin:${plainPass}@pg-2f0e4f1c-newsbot-db.e.aivencloud.com:27362/defaultdb?ssl=require"
+    .venv\Scripts\python.exe scripts/dev_only/replay_event_matching.py --days 7
     Remove-Item Env:\DATABASE_URL
+    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
 """
 
 from __future__ import annotations
@@ -23,7 +24,6 @@ import argparse
 import asyncio
 import difflib
 import sys
-import urllib.parse
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -38,14 +38,12 @@ from sqlalchemy import select, text
 
 from app.config import settings
 from app.database.connection import SessionLocal
-from app.database.models import Article, ArticleEvent, Event, Source, Summary
+from app.database.models import Article, ArticleEvent, Event, Source
 from app.editorial.glossary import canonicalize_approved_names
 from app.editorial.liveblog import is_live_digest
 from app.editorial.perspectives import extract_non_country_entities
 from app.processors.event_matcher import (
-    EventMatcher,
     calculate_event_similarity,
-    normalize_text,
     tokenize,
 )
 
@@ -63,6 +61,8 @@ class ReplayEvent:
     first_seen_at: datetime
     last_updated_at: datetime
     is_live_digest: bool
+    is_follow_up: bool = False
+    parent_event_id: int | None = None
     article_ids: list[int] = field(default_factory=list)
 
 
@@ -79,53 +79,84 @@ class ArticleRecord:
     is_insufficient_data: bool
 
 
+@dataclass
+class EventCandidateCompat:
+    """Adapter ensuring calculate_event_similarity can inspect candidate attributes without AttributeError."""
+    title: str
+    event_type: str | None
+    countries: list[str]
+    actors: list[str]
+    location: str | None
+
+
+def _to_event_candidate(item: ArticleRecord | ReplayEvent | Event) -> Any:
+    """Convert an ArticleRecord, ReplayEvent, or Event into a calculate_event_similarity-compatible candidate."""
+    if isinstance(item, (Event, ReplayEvent)):
+        return item
+    payload = getattr(item, "ai_payload", {}) or {}
+    raw_title = payload.get("event_title") or payload.get("headline_fa") or getattr(item, "title", "")
+    return EventCandidateCompat(
+        title=canonicalize_approved_names(raw_title),
+        event_type=(payload.get("categories") or [None])[0],
+        countries=payload.get("countries") or [],
+        actors=payload.get("actors") or [],
+        location=payload.get("location"),
+    )
+
+
 def _headline_similarity_display_only(title_a: str, title_b: str) -> float:
     """Calculate string similarity for display/ranking only (NOT used in matching decisions)."""
     return round(difflib.SequenceMatcher(None, title_a or "", title_b or "").ratio(), 3)
 
 
-def _has_shared_non_country_entity(actors_a: list[str], loc_a: str | None, actors_b: list[str], loc_b: str | None) -> bool:
+def _has_shared_non_country_entity(
+    actors_a: list[str],
+    loc_a: str | None,
+    actors_b: list[str],
+    loc_b: str | None,
+) -> bool:
     set_a = extract_non_country_entities({"actors": actors_a, "location": loc_a or ""})
     set_b = extract_non_country_entities({"actors": actors_b, "location": loc_b or ""})
     return bool(set_a & set_b)
 
 
 async def load_articles_from_db(days: int = 7) -> tuple[list[ArticleRecord], bool]:
-    """Query articles collected in the last `days` days with their linked DB event_id."""
+    """Query articles collected in the last `days` days with strictly read-only transaction."""
     now_utc = datetime.now(UTC)
     start_utc = now_utc - timedelta(days=days)
 
     print(f"Connecting to database to fetch articles from {start_utc.isoformat()} to {now_utc.isoformat()}...")
 
     async with SessionLocal() as session:
-        # Enforce and verify read-only transaction
-        await session.execute(text("SET default_transaction_read_only = 'on'"))
-        check_ro = (await session.execute(text("SHOW default_transaction_read_only"))).scalar()
-        if str(check_ro).lower() != "on":
-            raise RuntimeError(f"Session is NOT read-only! SHOW default_transaction_read_only={check_ro}. Aborting.")
-        print(f"Verified read-only session: default_transaction_read_only = {check_ro}")
+        # Enforce and verify read-only transaction at transaction start
+        async with session.begin():
+            await session.execute(text("SET TRANSACTION READ ONLY"))
+            check_ro = (await session.execute(text("SHOW transaction_read_only"))).scalar()
+            if str(check_ro).lower() != "on":
+                raise RuntimeError(f"Session is NOT read-only! SHOW transaction_read_only={check_ro}. Aborting.")
+            print(f"Verified read-only transaction: transaction_read_only = {check_ro}")
 
-        stmt = (
-            select(
-                Article.id,
-                Article.title,
-                Article.canonical_url,
-                Article.original_url,
-                Article.collected_at,
-                Article.ai_payload,
-                Source.name,
-                ArticleEvent.event_id,
+            stmt = (
+                select(
+                    Article.id,
+                    Article.title,
+                    Article.canonical_url,
+                    Article.original_url,
+                    Article.collected_at,
+                    Article.ai_payload,
+                    Source.name,
+                    ArticleEvent.event_id,
+                )
+                .join(Source, Source.id == Article.source_id)
+                .outerjoin(ArticleEvent, ArticleEvent.article_id == Article.id)
+                .where(
+                    Article.collected_at >= start_utc,
+                    Article.status != "flagged",
+                )
+                .order_by(Article.collected_at.asc())
             )
-            .join(Source, Source.id == Article.source_id)
-            .outerjoin(ArticleEvent, ArticleEvent.article_id == Article.id)
-            .where(
-                Article.collected_at >= start_utc,
-                Article.status != "flagged",
-            )
-            .order_by(Article.collected_at.asc())
-        )
 
-        rows = (await session.execute(stmt)).all()
+            rows = (await session.execute(stmt)).all()
 
     records: list[ArticleRecord] = []
     insufficient_count = 0
@@ -168,9 +199,15 @@ def run_sequential_replay(
     require_strict_gate: bool = False,
     keyword_threshold_x: float = 0.25,
     time_window_hours: int = 48,
+    follow_up_window_days: int = 14,
     merge_threshold: float = 0.60,
+    follow_up_threshold: float = 0.80,
 ) -> tuple[dict[int, int], list[ReplayEvent], list[dict[str, Any]]]:
-    """Run sequential in-memory clustering replicating EventMatcher rules.
+    """Run sequential in-memory clustering replicating 100% of EventMatcher rules.
+
+    Replicates both operational paths:
+        Path 1: Active events within 48h (threshold >= 0.60)
+        Path 2: Historical Follow-up events (48h < t <= 14d, threshold >= 0.80)
 
     Returns:
         article_to_event: map of article_id -> event_id
@@ -190,13 +227,13 @@ def run_sequential_replay(
 
         incoming_is_digest = art.is_live_digest
 
+        # 1. Active candidate events within 48h
         best_candidate: ReplayEvent | None = None
         best_score = 0.0
         best_sim_score: Any = None
         best_shared_actor = False
 
         if not incoming_is_digest:
-            # Active candidate events within 48h
             active_cands = [
                 ev for ev in events
                 if ev.status == "active"
@@ -214,7 +251,6 @@ def run_sequential_replay(
 
                 qualifies = sim.total_score >= merge_threshold
                 if require_strict_gate:
-                    # Strict condition: shared non-country actor OR raw keywords score >= X
                     gate_passed = shared_actor or (sim.keywords_score >= keyword_threshold_x)
                     qualifies = qualifies and gate_passed
 
@@ -224,8 +260,40 @@ def run_sequential_replay(
                     best_sim_score = sim
                     best_shared_actor = shared_actor
 
+        # 2. Historical Follow-up candidate (>48h and <= follow_up_window_days)
+        historical_start = ref_time - timedelta(days=follow_up_window_days)
+        best_hist_event: ReplayEvent | None = None
+        best_hist_score = 0.0
+        best_hist_sim: Any = None
+        best_hist_shared_actor = False
+
+        if not incoming_is_digest and (best_candidate is None or best_score < merge_threshold):
+            hist_cands = [
+                ev for ev in events
+                if ev.status == "active"
+                and ev.first_seen_at >= historical_start
+                and ev.first_seen_at < window_start
+                and not ev.is_live_digest
+            ]
+            for cand in hist_cands:
+                sim = calculate_event_similarity(cand, analysis_data)
+                shared_actor = _has_shared_non_country_entity(
+                    cand.actors, cand.location,
+                    analysis_data.get("actors") or [], analysis_data.get("location")
+                )
+                qualifies = sim.total_score >= follow_up_threshold
+                if require_strict_gate:
+                    gate_passed = shared_actor or (sim.keywords_score >= keyword_threshold_x)
+                    qualifies = qualifies and gate_passed
+
+                if qualifies and sim.total_score > best_hist_score:
+                    best_hist_score = sim.total_score
+                    best_hist_event = cand
+                    best_hist_sim = sim
+                    best_hist_shared_actor = shared_actor
+
         if best_candidate and best_score >= merge_threshold:
-            # Merge
+            # Action: Merge into active event
             best_candidate.article_ids.append(art.id)
             if ref_time > best_candidate.last_updated_at:
                 best_candidate.last_updated_at = ref_time
@@ -243,8 +311,44 @@ def run_sequential_replay(
                 "shared_actor": best_shared_actor,
                 "cand_id": best_candidate.id,
             })
+        elif best_hist_event and best_hist_score >= follow_up_threshold:
+            # Action: Create Follow-up event
+            raw_title = canonicalize_approved_names(analysis_data.get("event_title") or art.title)
+            follow_up_title = f"[پیگیری] {raw_title}"
+            categories = analysis_data.get("categories") or []
+            primary_cat = categories[0] if categories else best_hist_event.event_type
+
+            follow_up_ev = ReplayEvent(
+                id=next_event_id,
+                title=follow_up_title,
+                event_type=primary_cat,
+                countries=[canonicalize_approved_names(c) for c in (analysis_data.get("countries") or best_hist_event.countries)],
+                actors=[canonicalize_approved_names(a) for a in (analysis_data.get("actors") or best_hist_event.actors)],
+                location=analysis_data.get("location") or best_hist_event.location,
+                importance=analysis_data.get("importance", 3) or 3,
+                status="active",
+                first_seen_at=ref_time,
+                last_updated_at=ref_time,
+                is_live_digest=False,
+                is_follow_up=True,
+                parent_event_id=best_hist_event.id,
+                article_ids=[art.id],
+            )
+            events.append(follow_up_ev)
+            article_to_event[art.id] = follow_up_ev.id
+            next_event_id += 1
+
+            decisions.append({
+                "article_id": art.id,
+                "event_id": follow_up_ev.id,
+                "action": "follow_up",
+                "score": best_hist_score,
+                "sim": best_hist_sim,
+                "shared_actor": best_hist_shared_actor,
+                "cand_id": best_hist_event.id,
+            })
         else:
-            # Create new event
+            # Action: Create initial new event
             raw_title = canonicalize_approved_names(analysis_data.get("event_title") or art.title)
             categories = analysis_data.get("categories") or []
             primary_cat = categories[0] if categories else None
@@ -283,35 +387,57 @@ def run_sequential_replay(
     return article_to_event, events, decisions
 
 
-def analyze_replay_control(articles: list[ArticleRecord], replay_mapping: dict[int, int]) -> float:
-    """Compare replay grouping with actual DB grouping."""
-    total_pairs = 0
-    matched_pairs = 0
-
-    valid_articles = [a for a in articles if a.db_event_id is not None]
+def analyze_replay_control(
+    articles: list[ArticleRecord],
+    replay_mapping: dict[int, int],
+) -> dict[str, float]:
+    """Evaluate pairwise clustering metrics (Precision, Recall, F1, FPR, FNR) vs DB grouping."""
+    valid_articles = [a for a in articles if a.db_event_id is not None and a.id in replay_mapping]
     n = len(valid_articles)
 
-    # Sample pairwise comparison
-    for i in range(min(n, 500)):
-        for j in range(i + 1, min(n, 500)):
+    tp = 0
+    fp = 0
+    fn = 0
+    tn = 0
+
+    for i in range(n):
+        for j in range(i + 1, n):
             a1 = valid_articles[i]
             a2 = valid_articles[j]
             same_db = (a1.db_event_id == a2.db_event_id)
-            same_replay = (replay_mapping.get(a1.id) == replay_mapping.get(a2.id))
+            same_replay = (replay_mapping[a1.id] == replay_mapping[a2.id])
 
-            if same_db:
-                total_pairs += 1
-                if same_replay:
-                    matched_pairs += 1
+            if same_db and same_replay:
+                tp += 1
+            elif not same_db and same_replay:
+                fp += 1
+            elif same_db and not same_replay:
+                fn += 1
+            else:
+                tn += 1
 
-    if total_pairs == 0:
-        return 1.0
-    return round(matched_pairs / total_pairs, 4)
+    precision = round(tp / (tp + fp), 4) if (tp + fp) > 0 else 1.0
+    recall = round(tp / (tp + fn), 4) if (tp + fn) > 0 else 1.0
+    f1 = round(2 * precision * recall / (precision + recall), 4) if (precision + recall) > 0 else 0.0
+    fpr = round(fp / (fp + tn), 4) if (fp + tn) > 0 else 0.0
+    fnr = round(fn / (tp + fn), 4) if (tp + fn) > 0 else 0.0
+
+    return {
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "tn": tn,
+        "total_pairs": tp + fp + fn + tn,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "fpr": fpr,
+        "fnr": fnr,
+    }
 
 
 def compute_keyword_score_distribution(articles: list[ArticleRecord]) -> dict[str, Any]:
-    """Compute min, median, p90 of raw keywords_score for DB merged articles."""
-    art_map = {a.id: a for a in articles}
+    """Compute min, median, p90 of raw keywords_score for DB merged articles using exact EventMatcher logic."""
     event_groups: dict[int, list[ArticleRecord]] = {}
     for a in articles:
         if a.db_event_id:
@@ -329,16 +455,19 @@ def compute_keyword_score_distribution(articles: list[ArticleRecord]) -> dict[st
                 a2 = group[j]
                 p1 = a1.ai_payload or {}
                 p2 = a2.ai_payload or {}
-                # Calculate raw keyword similarity
-                toks1 = tokenize(a1.title)
-                toks2 = tokenize(a2.title)
+
+                # Exact EventMatcher keyword comparison: candidate title vs incoming event_title/headline_fa
+                t1 = p1.get("event_title") or p1.get("headline_fa") or a1.title or ""
+                t2 = p2.get("event_title") or p2.get("headline_fa") or a2.title or ""
+                toks1 = tokenize(t1)
+                toks2 = tokenize(t2)
                 inter = len(toks1 & toks2)
                 union = len(toks1 | toks2)
                 kw_sim = round(inter / union, 4) if union else 0.0
 
                 shared = _has_shared_non_country_entity(
                     p1.get("actors") or [], p1.get("location"),
-                    p2.get("actors") or [], p2.get("location")
+                    p2.get("actors") or [], p2.get("location"),
                 )
                 if shared:
                     scores_with_actor.append(kw_sim)
@@ -373,7 +502,7 @@ def find_chaining_cases(events: list[ReplayEvent], articles_map: dict[int, Artic
         has_chaining = False
         for i in range(len(arts)):
             for j in range(i + 2, len(arts)):
-                sim = calculate_event_similarity(arts[i], arts[j].ai_payload)
+                sim = calculate_event_similarity(_to_event_candidate(arts[i]), arts[j].ai_payload)
                 if sim.total_score < 0.60:
                     has_chaining = True
                     break
@@ -386,7 +515,7 @@ def find_chaining_cases(events: list[ReplayEvent], articles_map: dict[int, Artic
 
 async def main_async(days: int) -> None:
     print("=" * 100)
-    print("  PHASE Y-14: EVENT MATCHING REPLAY AND CALIBRATION ANALYSIS")
+    print("  PHASE Y-14: EVENT MATCHING REPLAY AND CALIBRATION ANALYSIS (AUDITED)")
     print(f"  Target: Sequential replay over {days} days of collected articles")
     print("=" * 100)
 
@@ -399,7 +528,7 @@ async def main_async(days: int) -> None:
 
     articles_map = {a.id: a for a in articles}
 
-    # 1. Keywords Score Distribution
+    # 1. Keywords Score Distribution using EventMatcher logic
     dist = compute_keyword_score_distribution(articles)
     print("\n--- 1. Raw Keywords Score Distribution for Merged Articles in DB ---")
     print(f"Articles with shared non-country actors (Count: {dist['with_shared_actors']['count']}):")
@@ -407,49 +536,59 @@ async def main_async(days: int) -> None:
     print(f"Articles WITHOUT shared actors (Count: {dist['without_shared_actors']['count']}):")
     print(f"   Min: {dist['without_shared_actors']['min']} | Median: {dist['without_shared_actors']['median']} | P90: {dist['without_shared_actors']['p90']}")
 
-    # Distribution-derived X value
-    x_dist = dist['with_shared_actors']['median'] or 0.20
+    x_dist = dist["with_shared_actors"]["median"] or 0.20
 
-    # 2. Sequential Replay under Current Rule (Base)
-    print("\n--- 2. Executing Sequential Replay: Current Rule (Merge Threshold = 0.60) ---")
+    # 2. Sequential Replay under Current Rule (Base: Merge Threshold = 0.60)
+    print("\n--- 2. Executing Sequential Replay: Current Rule (Merge Threshold = 0.60, Follow-Up = 0.80) ---")
     map_base, evs_base, decs_base = run_sequential_replay(articles, require_strict_gate=False)
     multi_base = [ev for ev in evs_base if len(ev.article_ids) > 1]
     chaining_base = find_chaining_cases(evs_base, articles_map)
-    control_rate = analyze_replay_control(articles, map_base)
+    ctrl_base = analyze_replay_control(articles, map_base)
 
     print(f"Total resulting events: {len(evs_base)}")
     print(f"Multi-article events: {len(multi_base)}")
     print(f"Chaining cases (A-B & B-C, but sim(A,C) < 0.60): {chaining_base}")
-    print(f"Control match rate vs DB event_id: {control_rate * 100:.1f}%")
-    if control_rate < 0.70:
-        print("   ⚠️ Note: Match rate < 70%. Differences can stem from historical merges prior to 48h or manual adjustments.")
+    print(f"Pairwise Metrics vs DB: Precision={ctrl_base['precision']:.3f} | Recall={ctrl_base['recall']:.3f} | F1={ctrl_base['f1']:.3f} | FPR={ctrl_base['fpr']:.4f}")
 
     # 3. Test Proposed Rules for X in (0.25, 0.35, x_dist)
     x_candidates = [0.25, 0.35, x_dist]
-    results_proposed = {}
+    results_proposed: dict[float, Any] = {}
 
     for x in x_candidates:
         print(f"\n--- 3. Executing Sequential Replay: Proposed Strict Rule with X = {x:.2f} ---")
         map_p, evs_p, decs_p = run_sequential_replay(articles, require_strict_gate=True, keyword_threshold_x=x)
         multi_p = [ev for ev in evs_p if len(ev.article_ids) > 1]
         chaining_p = find_chaining_cases(evs_p, articles_map)
+        ctrl_p = analyze_replay_control(articles, map_p)
 
-        # Count broken events: events that were multi-article in Base but split in Proposed
+        # Rigorous split metrics
         broken_events = 0
         separated_articles = 0
+        singleton_separated = 0
+        resulting_groups_count = 0
 
         for b_ev in multi_base:
-            assigned_groups = {map_p[aid] for aid in b_ev.article_ids if aid in map_p}
+            assigned_groups: dict[int, list[int]] = {}
+            for aid in b_ev.article_ids:
+                if aid in map_p:
+                    assigned_groups.setdefault(map_p[aid], []).append(aid)
+
             if len(assigned_groups) > 1:
                 broken_events += 1
-                separated_articles += (len(b_ev.article_ids) - 1)
+                resulting_groups_count += len(assigned_groups)
+                sizes = sorted([len(g) for g in assigned_groups.values()], reverse=True)
+                separated_articles += (len(b_ev.article_ids) - sizes[0])
+                singleton_separated += sum(1 for s in sizes if s == 1)
 
         results_proposed[x] = {
             "total_events": len(evs_p),
             "multi_article_events": len(multi_p),
             "broken_events": broken_events,
+            "resulting_groups": resulting_groups_count,
             "separated_articles": separated_articles,
+            "singleton_separated": singleton_separated,
             "chaining_cases": chaining_p,
+            "ctrl": ctrl_p,
             "events_p": evs_p,
             "map_p": map_p,
         }
@@ -457,8 +596,10 @@ async def main_async(days: int) -> None:
         print(f"   Total Events: {len(evs_p)} (Base: {len(evs_base)})")
         print(f"   Multi-Article Events: {len(multi_p)} (Base: {len(multi_base)})")
         print(f"   Broken Multi-Article Events: {broken_events}")
-        print(f"   Separated Articles (became singleton or new groups): {separated_articles}")
+        print(f"   Resulting Groups from Split: {resulting_groups_count}")
+        print(f"   Separated Articles (left primary cluster): {separated_articles} (Singletons: {singleton_separated})")
         print(f"   Chaining Cases: {chaining_p}")
+        print(f"   Pairwise Metrics vs DB: Precision={ctrl_p['precision']:.3f} | Recall={ctrl_p['recall']:.3f} | F1={ctrl_p['f1']:.3f} | FPR={ctrl_p['fpr']:.4f}")
 
     # 4. Generate Samples for Manual Review (using X = 0.25)
     print("\n" + "=" * 100)
@@ -468,7 +609,6 @@ async def main_async(days: int) -> None:
     p_eval = results_proposed[0.25]
     map_p = p_eval["map_p"]
 
-    # Collect broken pairs
     broken_pairs: list[dict[str, Any]] = []
     retained_pairs: list[dict[str, Any]] = []
 
@@ -478,7 +618,7 @@ async def main_async(days: int) -> None:
             for j in range(i + 1, len(b_arts)):
                 a1 = b_arts[i]
                 a2 = b_arts[j]
-                sim = calculate_event_similarity(a1, a2.ai_payload)
+                sim = calculate_event_similarity(_to_event_candidate(a1), a2.ai_payload)
                 h_sim = _headline_similarity_display_only(a1.title, a2.title)
 
                 pair_info = {
@@ -493,14 +633,10 @@ async def main_async(days: int) -> None:
                 else:
                     retained_pairs.append(pair_info)
 
-    # Sort broken pairs by headline similarity
     broken_sorted = sorted(broken_pairs, key=lambda x: x["headline_sim"])
-    # 10 lowest headline sim (likely correct separations)
     ten_lowest_broken = broken_sorted[:10]
-    # 10 highest headline sim (likely false splits / duplicate news)
     ten_highest_broken = sorted(broken_sorted[-10:], key=lambda x: x["headline_sim"], reverse=True) if len(broken_sorted) >= 10 else []
 
-    # 10 lowest score retained pairs (borderline merges)
     retained_sorted = sorted(retained_pairs, key=lambda x: x["sim"].total_score)
     ten_borderline_retained = retained_sorted[:10]
 
