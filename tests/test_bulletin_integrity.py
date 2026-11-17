@@ -6,7 +6,7 @@ Verifies:
 3. Perspectives gate: requires shared non-country actor or city; excludes broad countries & waterways.
 4. Canonicalization of approved names (Putin, Trump, Xi Jinping, Shenzhen, APEC) and idempotency.
 5. Persian Lint watchlist includes suspect words in log-only mode.
-6. Daily bulletin text & PDF formatting: Section 1 cap, section titles, minimum importance counter,
+6. Daily bulletin text formatting: Section 1 cap, section titles, minimum importance counter,
    Google News source formatting, deduplication, silent parties toggle, and regional filtering.
 7. Verification that EDITORIAL_SYSTEM_PROMPT and PROMPT_VERSION remain untouched.
 """
@@ -32,7 +32,6 @@ from app.reports.daily_report import (
     format_persian_daily_report,
     has_regional_presence,
 )
-from app.reports.pdf_report import _sources_text
 
 # -----------------------------------------------------------------------------
 # 1. Liveblog / Rolling Digest Detection
@@ -564,21 +563,6 @@ def test_google_news_source_formatting():
     res2 = _format_source_display("Al Jazeera", "https://news.google.com/rss/articles/123", as_html=True)
     assert "Al Jazeera (Google News)" in res2
     assert '<a href="https://news.google.com/rss/articles/123">' in res2
-
-
-def test_pdf_sources_deduplication():
-    item = {
-        "primary_source": "Reuters",
-        "primary_url": "https://reuters.com/article-1",
-        "additional_sources": [
-            {"source": "Reuters", "url": "https://reuters.com/article-2"},
-            {"source": "TASS", "url": "https://tass.com/article-1"},
-        ],
-    }
-    rendered = _sources_text(item)
-    # Reuters should only appear once
-    assert rendered.count("Reuters") == 1
-    assert "TASS" in rendered
 
 
 def test_live_digest_badge_in_report():

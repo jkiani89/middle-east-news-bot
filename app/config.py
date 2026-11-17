@@ -88,6 +88,22 @@ class Settings(BaseSettings):
     # Phase Y-10: six hours covers a dropped 20:00 run plus the next collection cycle,
     # and the window still closes before the following slot (clamped to 1..11).
     slot_grace_hours: int = 6
+    # A slot whose run was dropped is recovered for this long (hours). Anything older is
+    # logged and left alone instead of publishing a stale briefing.
+    slot_recovery_lookback_hours: int = 48
+    # Bound the work of one recovery pass: at most this many missed slots per run.
+    max_recovery_slots_per_run: int = 4
+    # The full 12-hour report is published on Telegraph; Telegram only carries a short
+    # notification with the index link, so message length never truncates the report.
+    # TELEGRAPH_ACCESS_TOKEN comes from https://telegra.ph/api (createAccount). Without it
+    # a throwaway account is created per run and a warning asks the operator to persist one.
+    telegraph_enabled: bool = True
+    telegraph_access_token: str = ""
+    telegraph_author_name: str = "پایش تحولات خاورمیانه"
+    telegraph_author_url: str = ""
+    telegraph_short_name: str = "middle_east_news"
+    telegraph_api_base: str = "https://api.telegra.ph"
+    telegraph_timeout_seconds: float = 20.0
     # Phase Y-9: an article older than this (publication time, else collection time)
     # is not worth an AI call. It is stored as 'expired' so dedup never re-inserts it.
     article_max_age_hours: int = 24

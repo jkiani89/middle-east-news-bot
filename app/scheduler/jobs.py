@@ -32,20 +32,31 @@ from app.reports.daily_report import (
     SLOT_IN_FLIGHT,
     SLOT_PUBLISHED,
     claim_slot,
-    current_slot_hour,
+    current_due_slot,
     generate_and_save_daily_report,
     generate_slot_bulletins,
     mark_slot_published,
+    mark_slot_telegraph,
+    release_slot,
     report_slot_hours,
+    slot_candidates,
     slot_label,
+    slot_report_date,
     slot_status,
 )
-from app.reports.pdf_report import build_daily_report_pdf
-from app.telegram.publisher import (
-    MockPublishRefusedError,
-    publish_daily_report_pdf,
-    publish_report,
+from app.reports.telegraph_report import (
+    TELEGRAM_FAILED,
+    TELEGRAM_PENDING,
+    TELEGRAM_SENT,
+    TELEGRAPH_COMPLETED,
+    TELEGRAPH_DISABLED,
+    TELEGRAPH_FAILED,
+    format_telegram_notification,
+    notification_ready,
+    publish_telegraph_report,
+    record_telegram_status,
 )
+from app.telegram.publisher import MockPublishRefusedError, publish_report
 
 logger = logging.getLogger(__name__)
 
@@ -287,8 +298,9 @@ def _dump_dry_run_briefing(
     text: str,
     items: list[dict[str, Any]],
     metadata: dict[str, Any],
+    notification: str | None = None,
 ) -> None:
-    """Write the dry-run bulletin text and PDF so a test run leaves inspectable evidence.
+    """Write the dry-run bulletin text so a test run leaves inspectable evidence.
 
     Without this, a dry run only logs message counts: nothing of what the reader would
     have received survives, so the narrative matrix cannot be reviewed before a real
@@ -300,63 +312,91 @@ def _dump_dry_run_briefing(
         out_dir.mkdir(parents=True, exist_ok=True)
         stem = f"dry_run_briefing_{report_date.isoformat()}_{label.replace(':', '')}"
         (out_dir / f"{stem}.txt").write_text(text, encoding="utf-8")
-        build_daily_report_pdf(report_date, items, metadata, out_dir / f"{stem}.pdf")
-        logger.info("Dry-run evidence written to %s/%s.{txt,pdf}", out_dir, stem)
+        if notification:
+            (out_dir / f"{stem}.telegram.txt").write_text(notification, encoding="utf-8")
+        if metadata.get("telegraph_index_url"):
+            (out_dir / f"{stem}.telegraph.txt").write_text(
+                str(metadata["telegraph_index_url"]), encoding="utf-8"
+            )
+        logger.info("Dry-run evidence written to %s/%s.txt", out_dir, stem)
     except Exception:
         logger.exception("Could not write dry-run evidence files; the run outcome is unaffected.")
 
 
-async def _publish_slot_briefing(
+async def publish_slot_briefing(
     session: AsyncSession,
     slot_hour: int,
-    bot: Any | None,
-    dry_run: bool,
-) -> int:
-    """Generate and deliver the briefing of one scheduled slot; return messages sent."""
-    rep_date, sections, text, metadata = await generate_slot_bulletins(slot_hour=slot_hour)
+    bot: Any | None = None,
+    dry_run: bool = False,
+    report_date: date | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Publish one 12-hour report: Telegraph pages first, then the Telegram notification.
+
+    The two channels have independent state. Telegraph pages are recorded per slot, so a
+    retry after a failed notification reuses every existing page and only repeats the
+    send. A notification that already succeeded is never sent twice.
+    """
+    rep_date = report_date or slot_report_date(slot_hour)
     label = slot_label(slot_hour)
-    report = await session.scalar(
-        select(DailyReport).where(DailyReport.report_date == rep_date)
-    )
-    record: dict[str, Any] = {}
-    if report is not None and isinstance(report.content, dict):
-        record = ((report.content.get("bulletins") or {}).get(label)) or {}
 
     state = await slot_status(session, rep_date, slot_hour) or {}
-    if state.get("status") == SLOT_PUBLISHED or (
-        record.get("status") == "published" and record.get("message_ids")
-    ):
+    if not force and state.get("status") == SLOT_PUBLISHED:
         logger.info("Briefing %s for %s was already delivered; skipping.", label, rep_date)
-        return 0
-
-    # Another run may be delivering this slot right now (a late catch-up overlapping the
-    # original, or a previous run that GitHub queued). The claim is written before the
-    # first send, so it also covers a run that died mid-delivery: after the timeout the
-    # next run is allowed to retry instead of the slot being stuck forever.
-    if state.get("status") == SLOT_IN_FLIGHT:
+        return {
+            "messages": 0,
+            "telegram_status": TELEGRAM_SENT,
+            "telegraph_status": None,
+            "skipped": "published",
+            "error": None,
+        }
+    if not force and state.get("status") == SLOT_IN_FLIGHT:
         logger.info(
             "Briefing %s for %s is in flight in another run (claimed at %s); skipping.",
             label,
             rep_date,
             state.get("claimed_at"),
         )
-        return 0
+        return {
+            "messages": 0,
+            "telegram_status": "in_flight",
+            "telegraph_status": None,
+            "skipped": "in_flight",
+            "error": None,
+        }
 
-    if not sections:
-        logger.info("Briefing %s for %s has no eligible events; nothing to publish.", label, rep_date)
-        return 0
-
-    content_quality = record.get("content_quality") or metadata.get("content_quality", "real")
+    rep_date, sections, text, metadata = await generate_slot_bulletins(
+        report_date=rep_date, slot_hour=slot_hour
+    )
     items = [item for _key, _name, topic_items in sections for item in topic_items]
 
-    # Claim the slot before the first Telegram call. Recording only after delivery would
-    # let a crash between the two post the same bulletin again on the next catch-up run,
-    # and an unguarded read-then-write would let two runs both take the same slot.
-    if not dry_run:
+    if not items:
+        logger.info("Briefing %s for %s has no events; nothing to publish.", label, rep_date)
+        if not dry_run:
+            # Record the slot so the recovery pass does not re-run an empty window forever.
+            await mark_slot_published(session, rep_date, slot_hour, [])
+        return {
+            "messages": 0,
+            "telegram_status": "empty",
+            "telegraph_status": None,
+            "skipped": "empty",
+            "error": None,
+        }
+
+    # Another run may be delivering this slot right now. The claim is written before the
+    # first external call, so it also covers a run that died mid-delivery: after the
+    # timeout the next run is allowed to retry instead of the slot being stuck forever.
+    if not dry_run and not force:
         outcome = await claim_slot(session, rep_date, slot_hour)
         if outcome == SLOT_PUBLISHED:
             logger.info("Briefing %s for %s was delivered by another run; skipping.", label, rep_date)
-            return 0
+            return {
+                "messages": 0,
+                "telegram_status": TELEGRAM_SENT,
+                "telegraph_status": None,
+                "skipped": "published",
+                "error": None,
+            }
         if outcome != SLOT_CLAIMED:
             logger.info(
                 "Briefing %s for %s could not be claimed (%s); another run holds it.",
@@ -364,69 +404,189 @@ async def _publish_slot_briefing(
                 rep_date,
                 outcome,
             )
-            return 0
+            return {
+                "messages": 0,
+                "telegram_status": "in_flight",
+                "telegraph_status": None,
+                "skipped": outcome,
+                "error": None,
+            }
 
-    sent = await publish_report(
-        report_date=rep_date,
-        items=items,
-        content_quality=content_quality,
-        report_text=text,
-        bot=bot,
-        dry_run=dry_run,
-        persist=False,
+    content_quality = metadata.get("content_quality", "real")
+
+    # 1) Telegraph: the full report lives here. Failure here is recorded, never masked by
+    #    a successful Telegram send.
+    try:
+        telegraph = await publish_telegraph_report(
+            session,
+            report_date=rep_date,
+            slot_hour=slot_hour,
+            metadata=metadata,
+            dry_run=dry_run,
+            force=force,
+            persist=not dry_run,
+        )
+    except Exception as exc:
+        logger.exception("Telegraph publication failed for briefing %s of %s.", label, rep_date)
+        telegraph = {
+            "status": TELEGRAPH_FAILED,
+            "index_url": "",
+            "index_path": "",
+            "failures": [{"scope": "publish", "error": str(exc)}],
+            "window_start": None,
+            "window_end": None,
+        }
+
+    telegraph_status = str(telegraph.get("status") or TELEGRAPH_FAILED)
+
+    # 2) Telegram: a notification that links to the report index (the full text is the
+    #    fallback when Telegraph is switched off by the operator).
+    notification_sections = telegraph.get("sections") or sections
+    if telegraph_status == TELEGRAPH_DISABLED:
+        report_text = text
+    else:
+        report_text = format_telegram_notification(
+            rep_date,
+            slot_hour,
+            str(telegraph.get("index_url") or telegraph.get("index_path") or ""),
+            notification_sections,
+            {
+                **metadata,
+                "window_start": telegraph.get("window_start"),
+                "window_end": telegraph.get("window_end"),
+            },
+        )
+
+    messages = 0
+    message_ids: list[int] = []
+    telegram_status = TELEGRAM_PENDING
+    error: str | None = None
+    ready = notification_ready(telegraph) or telegraph_status == TELEGRAPH_DISABLED
+    if dry_run and telegraph_status == TELEGRAPH_COMPLETED:
+        ready = True
+
+    if not ready:
+        telegram_status = TELEGRAM_FAILED
+        error = f"report index unavailable (telegraph status: {telegraph_status})"
+        logger.error("Skipping the Telegram notification for %s of %s: %s", label, rep_date, error)
+    else:
+        try:
+            sent = await publish_report(
+                report_date=rep_date,
+                items=items,
+                content_quality=content_quality,
+                report_text=report_text,
+                bot=bot,
+                dry_run=dry_run,
+                persist=False,
+            )
+            message_ids = [entry["message_id"] for entry in sent if entry.get("message_id")]
+            messages = len(sent)
+            telegram_status = TELEGRAM_SENT
+        except MockPublishRefusedError as exc:
+            telegram_status = TELEGRAM_FAILED
+            error = str(exc)
+            logger.warning("Telegram notification refused for %s of %s: %s", label, rep_date, exc)
+        except Exception as exc:
+            logger.exception("Telegram notification failed for %s of %s.", label, rep_date)
+            telegram_status = TELEGRAM_FAILED
+            error = str(exc)
+
+    if dry_run:
+        _dump_dry_run_briefing(
+            rep_date,
+            label,
+            text,
+            items,
+            {
+                **metadata,
+                "telegraph_index_url": telegraph.get("index_url"),
+                "telegraph_status": telegraph_status,
+                "telegram_status": telegram_status,
+            },
+            notification=report_text,
+        )
+        return {
+            "messages": messages,
+            "telegram_status": telegram_status,
+            "telegraph_status": telegraph_status,
+            "skipped": None,
+            "error": error,
+            "telegraph_index_url": telegraph.get("index_url"),
+        }
+
+    await mark_slot_telegraph(
+        session, rep_date, slot_hour, telegraph.get("index_url"), telegraph_status
     )
+
+    if telegram_status == TELEGRAM_SENT:
+        await record_telegram_status(
+            session,
+            rep_date,
+            slot_hour,
+            TELEGRAM_SENT,
+            message_ids[0] if message_ids else None,
+        )
+        await mark_slot_published(session, rep_date, slot_hour, message_ids)
+    else:
+        await record_telegram_status(
+            session, rep_date, slot_hour, TELEGRAM_FAILED, None, error
+        )
+        # Release the claim: the next run retries the notification only, because the
+        # Telegraph pages are already recorded and are reused.
+        await release_slot(session, rep_date, slot_hour)
+
     logger.info(
-        "Briefing %s for %s published: %d event(s) in %d section(s), %d message(s).",
+        "Briefing %s for %s: %d event(s) in %d section(s), telegraph=%s, telegram=%s.",
         label,
         rep_date,
         len(items),
         len(sections),
-        len(sent),
+        telegraph_status,
+        telegram_status,
     )
+    return {
+        "messages": messages,
+        "telegram_status": telegram_status,
+        "telegraph_status": telegraph_status,
+        "skipped": None,
+        "error": error,
+        "telegraph_index_url": telegraph.get("index_url"),
+    }
 
-    message_ids = [entry["message_id"] for entry in sent if entry.get("message_id")]
-    if dry_run:
-        _dump_dry_run_briefing(rep_date, label, text, items, metadata)
-        return len(sent)
 
-    pdf_message_id: int | None = None
-    delivered_pdf = record.get("pdf_message_id")
-    if isinstance(delivered_pdf, int) and delivered_pdf > 0:
-        pdf_message_id = delivered_pdf
-        logger.info("Briefing PDF already delivered as message %s; skipping.", pdf_message_id)
-    else:
-        try:
-            pdf_info = await publish_daily_report_pdf(
-                report_date=rep_date,
-                items=items,
-                metadata=metadata,
-                content_quality=content_quality,
-                bot=bot,
-                dry_run=False,
-            )
-            candidate = pdf_info.get("message_id")
-            if isinstance(candidate, int) and candidate > 0:
-                pdf_message_id = candidate
-                message_ids.append(pdf_message_id)
-        except Exception:
-            logger.exception(
-                "Briefing PDF delivery failed; the text bulletin stays delivered."
-            )
-
-    await mark_slot_published(session, rep_date, slot_hour, message_ids, pdf_message_id)
-    return len(sent) + (1 if pdf_message_id else 0)
+async def _publish_slot_briefing(
+    session: AsyncSession,
+    slot_hour: int,
+    bot: Any | None,
+    dry_run: bool,
+    report_date: date | None = None,
+    force: bool = False,
+) -> int:
+    """Backward-compatible wrapper returning the number of Telegram messages sent."""
+    outcome = await publish_slot_briefing(
+        session,
+        slot_hour=slot_hour,
+        bot=bot,
+        dry_run=dry_run,
+        report_date=report_date,
+        force=force,
+    )
+    return int(outcome.get("messages") or 0)
 
 
 async def daily_report(
     bot: Any | None = None,
     dry_run: bool = False,
     slot_hour: int | None = None,
+    report_date: date | None = None,
 ) -> JobLog:
-    """Daily report generation and Telegram publishing.
+    """Daily report generation and publishing.
 
-    With ``slot_hour`` this publishes the scheduled briefing for that slot: one
-    message per run, sectioned by topic. Without it, the original single 24-hour
-    report is produced unchanged.
+    With ``slot_hour`` this publishes the 12-hour report of that slot (Telegraph pages
+    plus the Telegram notification). ``report_date`` names the day the slot started, which
+    is what recovery needs for a slot that was missed. Without ``slot_hour`` the legacy
+    24-hour text report is produced unchanged.
     """
     async with SessionLocal() as session:
         job_log = JobLog(
@@ -441,13 +601,19 @@ async def daily_report(
 
         try:
             if slot_hour is not None:
-                job_log.processed_count = await _publish_slot_briefing(
+                outcome = await publish_slot_briefing(
                     session=session,
                     slot_hour=slot_hour,
                     bot=bot,
                     dry_run=dry_run,
+                    report_date=report_date,
                 )
-                job_log.status = "success"
+                job_log.processed_count = int(outcome.get("messages") or 0)
+                if outcome.get("telegram_status") == TELEGRAM_FAILED:
+                    job_log.status = "failed"
+                    job_log.error_message = str(outcome.get("error") or "telegram delivery failed")[:2000]
+                else:
+                    job_log.status = "success"
                 return job_log
 
             rep_date, items, text = await generate_and_save_daily_report()
@@ -468,51 +634,6 @@ async def daily_report(
                 dry_run=dry_run,
                 session=session,
             )
-            # Phase R-4: the same bulletin is also delivered as a styled PDF.
-            # A PDF failure must never undo an already delivered text report, and a
-            # resumed run (after a partial delivery) must never post the document twice.
-            stored_content = dict(db_report.content or {}) if db_report else {}
-            pdf_message_id = stored_content.get("pdf_message_id")
-            if isinstance(pdf_message_id, int) and pdf_message_id > 0:
-                logger.info(
-                    "Daily bulletin PDF already delivered as message %s; skipping.",
-                    pdf_message_id,
-                )
-            else:
-                try:
-                    pdf_info = await publish_daily_report_pdf(
-                        report_date=rep_date,
-                        items=items,
-                        metadata=stored_content.get("metadata"),
-                        content_quality=content_quality,
-                        bot=bot,
-                        dry_run=dry_run,
-                    )
-                    logger.info("Daily bulletin PDF delivery finished: %s", pdf_info)
-
-                    sent_pdf_id = pdf_info.get("message_id")
-                    if (
-                        not dry_run
-                        and db_report is not None
-                        and isinstance(sent_pdf_id, int)
-                        and sent_pdf_id > 0
-                    ):
-                        stored_content["pdf_message_id"] = sent_pdf_id
-                        db_report.content = stored_content
-                        message_ids = list(db_report.telegram_message_ids or [])
-                        if sent_pdf_id not in message_ids:
-                            message_ids.append(sent_pdf_id)
-                        db_report.telegram_message_ids = message_ids
-                        await session.commit()
-                        logger.info(
-                            "Recorded bulletin PDF message %s for idempotent re-runs.",
-                            sent_pdf_id,
-                        )
-                except Exception:
-                    logger.exception(
-                        "Daily bulletin PDF delivery failed; the text report stays published."
-                    )
-
             job_log.processed_count = len(sent) if sent else 0
             job_log.status = "success"
 
@@ -587,9 +708,86 @@ async def cleanup_gemini_request_log() -> None:
             adapter.close()
 
 
-async def _scheduled_briefing() -> JobLog:
-    """Publish the briefing of the slot that just came due."""
-    return await daily_report(slot_hour=current_slot_hour())
+async def recover_missed_briefings(
+    now: datetime | None = None,
+    bot: Any | None = None,
+    dry_run: bool = False,
+    exclude: set[tuple[date, int]] | None = None,
+) -> list[dict[str, Any]]:
+    """Publish slots that a dropped scheduled run never delivered.
+
+    ``exclude`` carries the slot this run is already publishing, so a report is never
+    treated as missed while the current run is producing it. Slots with a live claim are
+    skipped too, and published slots cost only one cheap status read: they are checked
+    before any report generation (and before any AI backfill call).
+    """
+    excluded = set(exclude or set())
+    budget = max(0, settings.max_recovery_slots_per_run)
+    recovered: list[dict[str, Any]] = []
+    if budget == 0:
+        return recovered
+
+    for rep_date, slot_hour in slot_candidates(now=now):
+        if budget == 0:
+            break
+        if (rep_date, slot_hour) in excluded:
+            continue
+        async with SessionLocal() as session:
+            state = await slot_status(session, rep_date, slot_hour) or {}
+        status = state.get("status")
+        if status in (SLOT_PUBLISHED, SLOT_IN_FLIGHT):
+            continue
+        logger.warning(
+            "Recovering missed briefing %s for %s (slot status: %s).",
+            slot_label(slot_hour),
+            rep_date,
+            status or "missing",
+        )
+        job_log = await daily_report(
+            slot_hour=slot_hour, report_date=rep_date, bot=bot, dry_run=dry_run
+        )
+        recovered.append(
+            {
+                "report_date": rep_date,
+                "slot_hour": slot_hour,
+                "status": job_log.status,
+                "error": job_log.error_message,
+            }
+        )
+        budget -= 1
+    return recovered
+
+
+async def run_scheduled_briefings(
+    bot: Any | None = None,
+    dry_run: bool = False,
+    now: datetime | None = None,
+) -> list[JobLog]:
+    """Publish the slot that just came due, then recover any older missed slot.
+
+    The current slot is excluded from the recovery pass, so a report is never both
+    produced by this run and treated as missed by it. Slots that are already published
+    or claimed are skipped before any report generation happens.
+    """
+    moment = now or datetime.now(ZoneInfo(settings.timezone))
+    logs: list[JobLog] = []
+    due = current_due_slot(moment)
+    if due is not None:
+        rep_date, slot_hour = due
+        logs.append(
+            await daily_report(
+                slot_hour=slot_hour, report_date=rep_date, bot=bot, dry_run=dry_run
+            )
+        )
+    else:
+        logger.info("No briefing slot is currently inside its catch-up window.")
+    await recover_missed_briefings(now=moment, bot=bot, dry_run=dry_run, exclude={due} if due else set())
+    return logs
+
+
+async def _scheduled_briefing() -> list[JobLog]:
+    """APScheduler entrypoint: the due slot plus any missed slot."""
+    return await run_scheduled_briefings()
 
 
 def build_scheduler() -> AsyncIOScheduler:

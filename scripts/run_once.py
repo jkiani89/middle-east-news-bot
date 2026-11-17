@@ -37,6 +37,7 @@ from app.database.connection import SessionLocal  # noqa: E402
 from app.database.models import DailyReport  # noqa: E402
 from app.processors.pipeline import collect_and_process  # noqa: E402
 from app.reports.daily_report import (  # noqa: E402
+    current_due_slot,
     current_slot_hour,
     latest_slot_start,
     slot_label,
@@ -46,6 +47,7 @@ from app.scheduler.jobs import (  # noqa: E402
     cleanup_gemini_request_log,
     daily_report,
     reconcile_interrupted_jobs,
+    run_scheduled_briefings,
 )
 
 logging.basicConfig(
@@ -173,8 +175,14 @@ async def run_batch_pipeline(
     force_daily_report: bool = False,
     dry_run_daily_report: bool = False,
     slot_hour: int | None = None,
+    scheduled_briefings: bool = False,
 ) -> int:
     """Execute the end-to-end batch processing pipeline.
+
+    With ``scheduled_briefings`` the run publishes the slot that just came due and then
+    recovers any slot a dropped scheduled run missed. Naming ``slot_hour`` manually
+    publishes exactly that slot and never runs recovery, so a manual run cannot pick a
+    different window.
 
     Returns exit code (0 on success, non-zero on error).
     """
@@ -196,30 +204,44 @@ async def run_batch_pipeline(
         logger.exception("Error during news collection and processing: %s", exc)
         raise
 
-    # 3. Check and publish daily report if due
-    logger.info("Step 3/4: Checking daily report trigger...")
-    should_publish, reason = await should_run_daily_report(
-        force=force_daily_report, target_hour=slot_hour, slot_hour=slot_hour
-    )
-    logger.info("Daily report decision: run=%s (%s)", should_publish, reason)
-
-    if should_publish:
-        logger.info("Generating and publishing daily intelligence report...")
+    # 3. Check and publish the report of the due slot (and recover missed ones)
+    logger.info("Step 3/4: Checking scheduled briefing trigger...")
+    if scheduled_briefings:
+        logger.info("Publishing the due briefing and recovering missed slots...")
         try:
-            if slot_hour is None:
-                job_log = await daily_report(dry_run=dry_run_daily_report)
-            else:
-                job_log = await daily_report(
-                    dry_run=dry_run_daily_report, slot_hour=slot_hour
+            job_logs = await run_scheduled_briefings(dry_run=dry_run_daily_report)
+            for job_log in job_logs:
+                logger.info(
+                    "Briefing job finished with status '%s' (%d messages).",
+                    job_log.status,
+                    job_log.processed_count or 0,
                 )
-            logger.info(
-                "Daily report finished with status '%s' (%d items sent).",
-                job_log.status,
-                job_log.processed_count or 0,
-            )
         except Exception as exc:
-            logger.exception("Error during daily report publishing: %s", exc)
+            logger.exception("Error during scheduled briefing publishing: %s", exc)
             raise
+    else:
+        should_publish, reason = await should_run_daily_report(
+            force=force_daily_report, target_hour=slot_hour, slot_hour=slot_hour
+        )
+        logger.info("Daily report decision: run=%s (%s)", should_publish, reason)
+
+        if should_publish:
+            logger.info("Generating and publishing the report...")
+            try:
+                if slot_hour is None:
+                    job_log = await daily_report(dry_run=dry_run_daily_report)
+                else:
+                    job_log = await daily_report(
+                        dry_run=dry_run_daily_report, slot_hour=slot_hour
+                    )
+                logger.info(
+                    "Daily report finished with status '%s' (%d items sent).",
+                    job_log.status,
+                    job_log.processed_count or 0,
+                )
+            except Exception as exc:
+                logger.exception("Error during daily report publishing: %s", exc)
+                raise
 
     # 4. Clean up old logs
     logger.info("Step 4/4: Running routine maintenance...")
@@ -258,12 +280,21 @@ def main() -> None:
         env_slot = os.environ.get("REPORT_SLOT_HOUR", "").strip()
         if env_slot.isdigit():
             slot_hour = int(env_slot)
+    scheduled_briefings = False
     if slot_hour is None and os.environ.get("SCHEDULED_BRIEFINGS", "").lower() in (
         "true",
         "1",
         "yes",
     ):
-        slot_hour = current_slot_hour()
+        # The scheduled path resolves the due slot itself and then recovers missed ones.
+        scheduled_briefings = True
+
+    if scheduled_briefings and args.force_daily_report:
+        # A forced manual run publishes the slot that is due right now and skips the
+        # recovery pass, so forcing cannot re-publish historical slots.
+        due = current_due_slot()
+        slot_hour = due[1] if due else current_slot_hour()
+        scheduled_briefings = False
 
     # Immediate per-article publishing must follow the same dry-run switch, otherwise a
     # test run would post real messages to the Telegram channel.
@@ -274,6 +305,7 @@ def main() -> None:
             force_daily_report=args.force_daily_report,
             dry_run_daily_report=args.dry_run_daily_report,
             slot_hour=slot_hour,
+            scheduled_briefings=scheduled_briefings,
         )
     )
     sys.exit(exit_code)

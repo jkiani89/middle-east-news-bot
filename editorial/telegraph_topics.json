@@ -1,0 +1,15 @@
+{
+  "_comment": [
+    "Section order and Persian titles for the Telegraph report index.",
+    "Keys match editorial/topics.json; any event topic not listed here lands in 'other'.",
+    "This file only controls presentation: it can never drop a news item from the report."
+  ],
+  "topics": [
+    { "key": "ir", "name_fa": "ایران و مذاکرات", "order": 10 },
+    { "key": "ye", "name_fa": "یمن و دریای سرخ", "order": 20 },
+    { "key": "ru-ua", "name_fa": "جنگ روسیه و اوکراین", "order": 30 },
+    { "key": "us", "name_fa": "سیاست داخلی آمریکا", "order": 40 },
+    { "key": "me", "name_fa": "خاورمیانه و جهان اسلام", "order": 50 },
+    { "key": "other", "name_fa": "سایر تحولات", "order": 99 }
+  ]
+}

@@ -14,7 +14,6 @@ from app.editorial.content_quality import (
 )
 from app.processors.pipeline import _hydrate_article_body
 from app.reports.daily_report import format_persian_daily_report
-from app.reports.pdf_report import build_daily_report_pdf
 from app.telegram.publisher import ImmediateAnalysis, format_immediate_analysis
 
 
@@ -469,8 +468,8 @@ async def test_quality_recalculated_on_hydration_from_rss_summary_to_full_body(m
     assert hydrated_quality["char_count"] == len(full_body)
 
 
-def test_all_report_formats_render_insufficient_content(tmp_path) -> None:
-    """Verifies that Telegram HTML, Telegram plain text, Immediate Analysis, and PDF all render insufficient_content."""
+def test_all_report_formats_render_insufficient_content() -> None:
+    """Verifies that Telegram HTML/plain text and Immediate Analysis render insufficient_content."""
     insufficient_item = {
         "event_id": 101,
         "title": "گزارش اولیه از حادثه دریایی",
@@ -527,11 +526,6 @@ def test_all_report_formats_render_insufficient_content(tmp_path) -> None:
     assert "کیفیت محتوا:" in imm_output
     assert "اطلاعات ناکافی" in imm_output
 
-    # 4. PDF Bulletin
-    pdf_path = tmp_path / "test_insufficient_bulletin.pdf"
-    build_daily_report_pdf(report_date, [insufficient_item], {"content_quality": "real"}, pdf_path)
-    assert pdf_path.exists()
-    assert pdf_path.stat().st_size > 0
 
 
 def test_independence_of_quality_importance_and_verification() -> None:

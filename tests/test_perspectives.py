@@ -23,7 +23,6 @@ from app.reports.daily_report import (
     format_persian_daily_report,
     perspective_lines,
 )
-from app.reports.pdf_report import build_daily_report_pdf
 
 VALID_MATRIX = {
     "perspectives": [
@@ -151,16 +150,6 @@ def test_bulletin_text_shows_the_matrix_and_hides_it_when_empty():
     assert "مقایسه روایت‌ها" in with_matrix
     assert "به ادعای تاس" in with_matrix
     assert "مقایسه روایت‌ها" not in without_matrix
-
-
-def test_pdf_renders_the_matrix_block(tmp_path):
-    output = build_daily_report_pdf(
-        "2026-11-14",
-        [_item()],
-        {"min_importance": 2},
-        tmp_path / "matrix.pdf",
-    )
-    assert output.stat().st_size > 0
 
 
 @pytest.mark.asyncio
