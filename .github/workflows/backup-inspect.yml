@@ -36,22 +36,41 @@ jobs:
       RCLONE_CONFIG_B2_KEY: ${{ secrets.B2_APPLICATION_KEY }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
-
-      - name: Install dependencies
+      - name: Check required secrets
         run: |
-          python -m pip install --upgrade pip
-          pip install --no-deps 'aiogram==3.22.0'
-          pip install -r requirements.txt
+          set -euo pipefail
+          missing=()
+          [ -z "${RCLONE_CONFIG_B2_ACCOUNT:-}" ] && missing+=("B2_APPLICATION_KEY_ID")
+          [ -z "${RCLONE_CONFIG_B2_KEY:-}" ] && missing+=("B2_APPLICATION_KEY")
+          [ -z "${B2_BUCKET_NAME:-}" ] && missing+=("B2_BUCKET_NAME")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Cannot inspect B2; missing secret(s): ${missing[*]}" >&2
+            exit 1
+          fi
+          echo "Required secrets are present (values are never printed)."
 
-      - name: Verify Telegraph reports (read-only)
+      - name: Install rclone
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rclone
+          rclone version
+
+      - name: Verify the configured bucket is reachable
+        # Probe only the bucket named by B2_BUCKET_NAME. Listing b2: would also request
+        # the account's other buckets and can be denied for a bucket-scoped key; the
+        # rclone/B2 error text can name those buckets, so it is not echoed.
+        run: |
+          set -euo pipefail
+          target="b2:${B2_BUCKET_NAME}"
+          if ! rclone lsd "$target" >/dev/null 2>/tmp/bucket-probe.err; then
+            echo "::error::Backblaze bucket '${B2_BUCKET_NAME}' is not accessible with these credentials." >&2
+            echo "Either B2_BUCKET_NAME does not match a bucket this key can reach, or the key lacks the listBuckets capability (a bucket-scoped key needs it to confirm the bucket exists)." >&2
+            echo "No other bucket names are shown on purpose; re-check the key's bucket scope and capability in the Backblaze console." >&2
+            exit 1
+          fi
+          echo "Bucket is reachable: ${B2_BUCKET_NAME}"
+
+      - name: Verify DB
         env:
           APP_ENV: production
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -59,5 +78,53 @@ jobs:
           TELEGRAPH_ACCESS_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
           TIMEZONE: Asia/Tehran
         run: |
-          echo 'aW1wb3J0IHN5cywgb3MKc3lzLnBhdGguaW5zZXJ0KDAsIG9zLmdldGN3ZCgpKQppbXBvcnQgYXN5bmNpbwpmcm9tIGRhdGV0aW1lIGltcG9ydCBkYXRlCmZyb20gYXBwLmRhdGFiYXNlLmNvbm5lY3Rpb24gaW1wb3J0IFNlc3Npb25Mb2NhbApmcm9tIGFwcC5kYXRhYmFzZS5tb2RlbHMgaW1wb3J0IFRlbGVncmFwaFJlcG9ydApmcm9tIHNxbGFsY2hlbXkgaW1wb3J0IHNlbGVjdAoKc2xvdHMgPSBbKGRhdGUoMjAyNiwxMSwxNSksOCksKGRhdGUoMjAyNiwxMSwxNiksMjApLChkYXRlKDIwMjYsMTEsMTcpLDgpLChkYXRlKDIwMjYsMTEsMTcpLDIwKSwoZGF0ZSgyMDI2LDExLDE4KSw4KV0KCmFzeW5jIGRlZiBtYWluKCk6CiAgICBhc3luYyB3aXRoIFNlc3Npb25Mb2NhbCgpIGFzIHNlc3Npb246CiAgICAgICAgZm9yIHJkLHNoIGluIHNsb3RzOgogICAgICAgICAgICByb3cgPSBhd2FpdCBzZXNzaW9uLnNjYWxhcihzZWxlY3QoVGVsZWdyYXBoUmVwb3J0KS53aGVyZShUZWxlZ3JhcGhSZXBvcnQucmVwb3J0X2RhdGU9PXJkLCBUZWxlZ3JhcGhSZXBvcnQuc2xvdF9ob3VyPT1zaCkpCiAgICAgICAgICAgIGlmIHJvdyBpcyBOb25lOgogICAgICAgICAgICAgICAgcHJpbnQoZid7cmR9IHtzaDowMmR9OjAwIC0+IE5PIFJPVycpCiAgICAgICAgICAgICAgICBjb250aW51ZQogICAgICAgICAgICBwYWdlcyA9IHJvdy50b3BpY19wYWdlcyBvciB7fQogICAgICAgICAgICBwcmludChmJ3tyZH0ge3NoOjAyZH06MDAgLT4gc3RhdHVzPXtyb3cuc3RhdHVzfSBpbmRleF91cmw9e3Jvdy5pbmRleF91cmx9IHBhZ2VzPXtsZW4ocGFnZXMpfScpCiAgICAgICAgICAgIGZvciBrLHYgaW4gcGFnZXMuaXRlbXMoKToKICAgICAgICAgICAgICAgIHByaW50KGYnICB7a306IHt2LmdldCgidXJsIiwiTi9BIil9IChpdGVtcz17di5nZXQoIml0ZW1fY291bnQiLDApfSknKQogICAgICAgIHJvdzYgPSBhd2FpdCBzZXNzaW9uLnNjYWxhcihzZWxlY3QoVGVsZWdyYXBoUmVwb3J0KS53aGVyZShUZWxlZ3JhcGhSZXBvcnQucmVwb3J0X2RhdGU9PWRhdGUoMjAyNiwxMSwxNiksIFRlbGVncmFwaFJlcG9ydC5zbG90X2hvdXI9PTgpKQogICAgICAgIGlmIHJvdzYgaXMgbm90IE5vbmU6CiAgICAgICAgICAgIHByaW50KGYnU0xPVF82X0NIRUNLOiBzdGF0dXM9e3JvdzYuc3RhdHVzfSBwYWdlcz17bGVuKHJvdzYudG9waWNfcGFnZXMgb3Ige30pfScpCiAgICAgICAgZWxzZToKICAgICAgICAgICAgcHJpbnQoJ1NMT1RfNl9DSEVDSzogTk8gUk9XIChub3QgcHJvY2Vzc2VkKScpCgphc3luY2lvLnJ1bihtYWluKCkp' | base64 -d > /tmp/verify.py
-          python /tmp/verify.py
+          python -m pip install --upgrade pip
+          pip install --no-deps 'aiogram==3.22.0'
+          pip install -r requirements.txt
+          python - <<'PYEOF'
+          import asyncio
+          from datetime import date
+          from app.database.connection import SessionLocal
+          from app.database.models import TelegraphReport
+          from sqlalchemy import select
+
+          slots = [
+              (date(2026, 11, 15), 8),
+              (date(2026, 11, 16), 20),
+              (date(2026, 11, 17), 8),
+              (date(2026, 11, 17), 20),
+              (date(2026, 11, 18), 8),
+          ]
+
+          async def main():
+              async with SessionLocal() as session:
+                  for rep_date, slot_hour in slots:
+                      row = await session.scalar(
+                          select(TelegraphReport).where(
+                              TelegraphReport.report_date == rep_date,
+                              TelegraphReport.slot_hour == slot_hour,
+                          )
+                      )
+                      if row is None:
+                          print(f'{rep_date} {slot_hour:02d}:00 -> NO ROW FOUND')
+                          continue
+                      pages = row.topic_pages or {}
+                      print(f'{rep_date} {slot_hour:02d}:00 -> status={row.status} index_url={row.index_url} pages={len(pages)}')
+                      for key, info in pages.items():
+                          print(f'  {key}: {info.get("url", "N/A")} (items={info.get("item_count", 0)})')
+
+                  row6 = await session.scalar(
+                      select(TelegraphReport).where(
+                          TelegraphReport.report_date == date(2026, 11, 16),
+                          TelegraphReport.slot_hour == 8,
+                      )
+                  )
+                  if row6 is not None:
+                      print(f'
+SLOT_6_CHECK: status={row6.status} pages={len(row6.topic_pages or {})}')
+                  else:
+                      print('
+SLOT_6_CHECK: NO ROW (not processed)')
+
+          asyncio.run(main())
+          PYEOF
