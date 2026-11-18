@@ -4,6 +4,8 @@ Runs publish_telegraph_report directly for five explicit slots. Does NOT perform
 collection, scheduling, or Telegram sending. Delete after use.
 """
 from __future__ import annotations
+import sys as _sys
+print('HELLO_TOP_LEVEL', flush=True)
 
 import asyncio
 import json
@@ -71,6 +73,8 @@ async def main() -> None:
                 ),
                 flush=True,
             )
+    import pathlib as _p
+    _p.Path('backfill_results.json').write_text(json.dumps({'ran': True}), encoding='utf-8')
     print(
         json.dumps(
             {
