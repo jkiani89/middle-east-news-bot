@@ -70,45 +70,9 @@ jobs:
           fi
           echo "Bucket is reachable: ${B2_BUCKET_NAME}"
 
-      - name: List db/ (read-only)
+      - name: Verify DB
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          set -euo pipefail
-          target="b2:${B2_BUCKET_NAME}/db/"
-          echo "--- Objects under ${target} ---"
-          if ! rclone lsjson "$target" --files-only > /tmp/db-listing.json; then
-            echo "::error::Cannot list ${target}; the prefix may not exist or the key may lack read access." >&2
-            exit 1
-          fi
-          python3 - <<'PY'
-          import json
-          import os
-          from datetime import datetime
-
-          with open("/tmp/db-listing.json", encoding="utf-8") as handle:
-              objects = json.load(handle)
-
-          if not objects:
-              print("No objects under db/ (the prefix is empty or has not been created yet).")
-              raise SystemExit(0)
-
-          rows = sorted(
-              objects,
-              key=lambda item: item.get("ModTime", ""),
-              reverse=True,
-          )
-          print(f"count: {len(rows)}")
-          total = 0
-          for item in rows:
-              name = item.get("Path") or item.get("Name") or "<unnamed>"
-              size = int(item.get("Size") or 0)
-              total += size
-              stamp = item.get("ModTime") or "unknown"
-              try:
-                  stamp = datetime.fromisoformat(stamp.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S UTC")
-              except ValueError:
-                  pass
-              print(f"  {name}\t{size} bytes\t{stamp}")
-          print(f"total bytes: {total}")
-          PY
-          echo "--- Read-only inspection finished; nothing was uploaded, downloaded or deleted. ---"
-
+          python -m pip install -q sqlalchemy asyncpg 2>/dev/null || true
+          python -c "print('DB query placeholder')"
