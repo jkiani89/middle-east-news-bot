@@ -101,8 +101,8 @@ def test_late_run_keeps_the_slot_of_the_day_it_started():
 def test_items_are_grouped_into_priority_ordered_sections():
     items = [
         _item(1, None, "سایر تحولات"),
-        _item(2, "ye", "یمن و دریای سرخ"),
-        _item(3, "ir", "ایران و مذاکرات"),
+        _item(2, "ye", "عربستان و یمن"),
+        _item(3, "ir", "ایران و آمریکا"),
     ]
     sections = group_items_by_topic(items)
 
@@ -112,13 +112,13 @@ def test_items_are_grouped_into_priority_ordered_sections():
 
 def test_slot_bulletin_has_topic_sections_and_one_footer():
     sections = group_items_by_topic(
-        [_item(1, "ir", "ایران و مذاکرات"), _item(2, "ye", "یمن و دریای سرخ")]
+        [_item(1, "ir", "ایران و آمریکا"), _item(2, "ye", "عربستان و یمن")]
     )
     text = format_slot_bulletin(date(2026, 11, 14), sections, 20, {"min_importance": 2})
 
     assert "نوبت: 20:00" in text
-    assert "ایران و مذاکرات" in text
-    assert "یمن و دریای سرخ" in text
+    assert "ایران و آمریکا" in text
+    assert "عربستان و یمن" in text
     assert text.count("یادداشت تحریریه") == 1
     assert "تیتر خبری فارسی" in text
 
@@ -264,7 +264,7 @@ async def test_slot_is_claimed_before_the_first_send(slot_table):
     with patch("app.scheduler.jobs.generate_slot_bulletins", new_callable=AsyncMock) as gen, \
          patch("app.scheduler.jobs.publish_telegraph_report", side_effect=fake_telegraph), \
          patch("app.scheduler.jobs.publish_report", new_callable=AsyncMock) as publish:
-        gen.return_value = (date(2026, 11, 14), _sections([_item(1, "ir", "ایران و مذاکرات")]), "text", {"content_quality": "real"})
+        gen.return_value = (date(2026, 11, 14), _sections([_item(1, "ir", "ایران و آمریکا")]), "text", {"content_quality": "real"})
         publish.return_value = [{"message_id": 51}]
 
         await publish_slot_briefing(
@@ -280,7 +280,7 @@ async def test_completed_telegraph_report_sends_the_notification_and_records_ids
     with patch("app.scheduler.jobs.generate_slot_bulletins", new_callable=AsyncMock) as gen, \
          patch("app.scheduler.jobs.publish_telegraph_report", new_callable=AsyncMock) as telegraph, \
          patch("app.scheduler.jobs.publish_report", new_callable=AsyncMock) as publish:
-        gen.return_value = (date(2026, 11, 14), _sections([_item(1, "ir", "ایران و مذاکرات")]), "text", {"content_quality": "real"})
+        gen.return_value = (date(2026, 11, 14), _sections([_item(1, "ir", "ایران و آمریکا")]), "text", {"content_quality": "real"})
         telegraph.return_value = _telegraph_result()
         publish.return_value = [{"message_id": 21}, {"message_id": 22}]
 
@@ -304,7 +304,7 @@ async def test_telegraph_failure_does_not_send_a_notification(slot_table):
     with patch("app.scheduler.jobs.generate_slot_bulletins", new_callable=AsyncMock) as gen, \
          patch("app.scheduler.jobs.publish_telegraph_report", new_callable=AsyncMock) as telegraph, \
          patch("app.scheduler.jobs.publish_report", new_callable=AsyncMock) as publish:
-        gen.return_value = (date(2026, 11, 14), _sections([_item(1, "ir", "ایران و مذاکرات")]), "text", {"content_quality": "real"})
+        gen.return_value = (date(2026, 11, 14), _sections([_item(1, "ir", "ایران و آمریکا")]), "text", {"content_quality": "real"})
         telegraph.return_value = _telegraph_result(status="failed", url="")
 
         outcome = await publish_slot_briefing(
@@ -331,7 +331,7 @@ async def test_failed_notification_is_retried_without_rebuilding_pages(slot_tabl
     with patch("app.scheduler.jobs.generate_slot_bulletins", new_callable=AsyncMock) as gen, \
          patch("app.scheduler.jobs.publish_telegraph_report", new_callable=AsyncMock) as telegraph, \
          patch("app.scheduler.jobs.publish_report", new_callable=AsyncMock) as publish:
-        gen.return_value = (date(2026, 11, 14), _sections([_item(1, "ir", "ایران و مذاکرات")]), "text", {"content_quality": "real"})
+        gen.return_value = (date(2026, 11, 14), _sections([_item(1, "ir", "ایران و آمریکا")]), "text", {"content_quality": "real"})
         telegraph.return_value = _telegraph_result()
         publish.return_value = [{"message_id": 77}]
 
@@ -369,7 +369,7 @@ async def test_dry_run_slot_never_marks_published(slot_table, tmp_path, monkeypa
     with patch("app.scheduler.jobs.generate_slot_bulletins", new_callable=AsyncMock) as gen, \
          patch("app.scheduler.jobs.publish_telegraph_report", new_callable=AsyncMock) as telegraph, \
          patch("app.scheduler.jobs.publish_report", new_callable=AsyncMock) as publish:
-        gen.return_value = (date(2026, 11, 14), _sections([_item(2, "ye", "یمن و دریای سرخ")]), "text", {"content_quality": "real"})
+        gen.return_value = (date(2026, 11, 14), _sections([_item(2, "ye", "عربستان و یمن")]), "text", {"content_quality": "real"})
         telegraph.return_value = _telegraph_result()
         publish.return_value = [{"message_id": 1001}]
 
@@ -387,7 +387,7 @@ async def test_telegraph_disabled_falls_back_to_the_text_bulletin(slot_table):
     with patch("app.scheduler.jobs.generate_slot_bulletins", new_callable=AsyncMock) as gen, \
          patch("app.scheduler.jobs.publish_telegraph_report", new_callable=AsyncMock) as telegraph, \
          patch("app.scheduler.jobs.publish_report", new_callable=AsyncMock) as publish:
-        gen.return_value = (date(2026, 11, 14), _sections([_item(1, "ir", "ایران و مذاکرات")]), "FULL TEXT", {"content_quality": "real"})
+        gen.return_value = (date(2026, 11, 14), _sections([_item(1, "ir", "ایران و آمریکا")]), "FULL TEXT", {"content_quality": "real"})
         telegraph.return_value = _telegraph_result(status="disabled", url="")
         publish.return_value = [{"message_id": 9}]
 

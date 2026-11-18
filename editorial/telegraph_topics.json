@@ -5,11 +5,13 @@
     "This file only controls presentation: it can never drop a news item from the report."
   ],
   "topics": [
-    { "key": "ir", "name_fa": "ایران و مذاکرات", "order": 10 },
-    { "key": "ye", "name_fa": "یمن و دریای سرخ", "order": 20 },
-    { "key": "ru-ua", "name_fa": "جنگ روسیه و اوکراین", "order": 30 },
-    { "key": "us", "name_fa": "سیاست داخلی آمریکا", "order": 40 },
-    { "key": "me", "name_fa": "خاورمیانه و جهان اسلام", "order": 50 },
+    { "key": "ru-ua", "name_fa": "روسیه و اوکراین", "order": 10 },
+    { "key": "ir", "name_fa": "ایران و آمریکا", "order": 20 },
+    { "key": "us", "name_fa": "سیاست داخلی آمریکا", "order": 30 },
+    { "key": "ye", "name_fa": "عربستان و یمن", "order": 40 },
+    { "key": "il", "name_fa": "اسرائیل", "order": 50 },
+    { "key": "us-cn", "name_fa": "آمریکا و چین", "order": 60 },
+    { "key": "me", "name_fa": "تحولات خاورمیانه", "order": 70 },
     { "key": "other", "name_fa": "سایر تحولات", "order": 99 }
   ]
 }

@@ -39,7 +39,7 @@ def _item(**overrides: object) -> dict:
     item = {
         "event_id": 1,
         "topic_key": "ye",
-        "topic_fa": "یمن و دریای سرخ",
+        "topic_fa": "عربستان و یمن",
         "importance": 4,
         "event_type": "MAR",
         "category_fa": "دریانوردی و امنیت ترانزیت",
@@ -346,9 +346,9 @@ def test_yemen_prompt_names_the_three_sides_and_the_topic():
             {"source_name": "Reuters", "orientation": "غربی", "text": "درگیری ادامه دارد"},
             {"source_name": "Saba News Agency", "orientation": "انصارالله (حوثی)", "text": "پیشروی در مأرب"},
         ],
-        topic_fa="یمن و دریای سرخ",
+        topic_fa="عربستان و یمن",
     )
-    assert "موضوع بولتن: یمن و دریای سرخ" in prompt
+    assert "موضوع بولتن: عربستان و یمن" in prompt
     assert "یمن گو" in PERSPECTIVES_SYSTEM_PROMPT
     assert "سعودی" in PERSPECTIVES_SYSTEM_PROMPT
 
@@ -368,7 +368,7 @@ async def test_yemen_matrix_names_the_absent_side_in_the_readers_words():
         "درگیری در مأرب",
         provider,
         topic_key="ye",
-        topic_fa="یمن و دریای سرخ",
+        topic_fa="عربستان و یمن",
     )
 
     assert rebuilt is True
@@ -376,7 +376,7 @@ async def test_yemen_matrix_names_the_absent_side_in_the_readers_words():
     assert "دولت یمن (یمن گو)" in silent
     assert "رسانه‌های رسمی عربستان (سعودی)" in silent
     assert "انصارالله (حوثی)" not in silent  # Saba covered this event
-    assert "موضوع بولتن: یمن و دریای سرخ" in provider.last_prompt
+    assert "موضوع بولتن: عربستان و یمن" in provider.last_prompt
 
 
 @pytest.mark.asyncio

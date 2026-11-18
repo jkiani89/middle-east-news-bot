@@ -27,7 +27,7 @@ from app.editorial.liveblog import is_live_digest
 from app.editorial.perspectives import check_perspectives_gate, load_orientations, orientation_for
 from app.editorial.prefilter import prefilter_analysis
 from app.editorial.regions import has_middle_east_nexus, is_primary_actor
-from app.editorial.topics import match_primary_topic
+from app.editorial.topics import match_topics
 from app.processors.event_matcher import EventMatcher
 from app.telegram.publisher import (
     ImmediateAnalysis,
@@ -647,13 +647,15 @@ async def process_collected_articles(
         # The channel now covers several briefings, not only the Middle East: a story
         # is accepted when it is the primary subject of a configured topic. Without a
         # topic it falls back to the audited regional rule below, unchanged.
-        topic = match_primary_topic(
+        topics = match_topics(
             result.countries,
             result.actors,
             result.location,
             result.event_title or article.title,
         )
+        topic = topics[0] if topics else None
         payload_dict["topic_key"] = topic.key if topic else None
+        payload_dict["topic_keys"] = [t.key for t in topics]
         article.ai_payload = payload_dict
 
         if result.is_injection_attempt:
@@ -746,7 +748,7 @@ async def process_collected_articles(
                     prompt_version=PROMPT_VERSION,
                 )
             )
-        elif topic is None and (not result.is_relevant or not has_middle_east_nexus(result.countries, result.location)):
+        elif not topics and (not result.is_relevant or not has_middle_east_nexus(result.countries, result.location)):
             if result.is_relevant:
                 logger.info(
                     "Article ID %d rejected by the editorial gate: no Middle East country or waterway in countries=%s location=%r.",
@@ -757,7 +759,7 @@ async def process_collected_articles(
             else:
                 logger.info("Article ID %d deemed irrelevant to Middle East intelligence. Marked 'rejected'.", article.id)
             article.status = "rejected"
-        elif topic is None and not is_primary_actor(result.countries, result.actors, result.location):
+        elif not topics and not is_primary_actor(result.countries, result.actors, result.location):
             logger.info(
                 "Article ID %d rejected by the editorial gate: Middle East is only a passing mention "
                 "(countries=%s actors=%s location=%r).",
@@ -811,6 +813,7 @@ async def process_collected_articles(
                             "source": source_name,
                             "url": article.original_url,
                             "topic": topic.key if topic else None,
+                            "topics": [t.key for t in topics],
                             "content_quality": content_quality,
                             "article_kind": payload_dict.get("article_kind", "standard"),
                             "is_live_digest": is_digest,

@@ -52,7 +52,7 @@ def _item(
     return {
         "event_id": event_id,
         "topic_key": topic_key,
-        "topic_fa": "ایران و مذاکرات" if topic_key == "ir" else "سایر تحولات",
+        "topic_fa": "ایران و آمریکا" if topic_key == "ir" else "سایر تحولات",
         "headline_fa": headline,
         "summary_fa": summary,
         "primary_source": source,
@@ -144,10 +144,10 @@ def test_topic_page_holds_all_items_of_that_topic():
         _item(2, "خبر دوم ایران", topic_key="ir"),
     ]
     start, end = _window()
-    title, nodes = build_topic_page("ایران و مذاکرات", date(2026, 11, 14), 8, items, start, end)
+    title, nodes = build_topic_page("ایران و آمریکا", date(2026, 11, 14), 8, items, start, end)
     rendered = _text(nodes)
 
-    assert "ایران و مذاکرات" in title
+    assert "ایران و آمریکا" in title
     assert "خبر نخست ایران" in rendered
     assert "خبر دوم ایران" in rendered
     assert rendered.count("لینک اصلی خبر") == 2
@@ -158,7 +158,7 @@ def test_topic_page_marks_a_missing_summary_and_keeps_the_source_link():
     item = _item(7, "خبر بدون خلاصه", summary="")
     item.update({"summary_missing": True, "is_insufficient": True})
     start, end = _window()
-    _title, nodes = build_topic_page("ایران و مذاکرات", date(2026, 11, 14), 8, [item], start, end)
+    _title, nodes = build_topic_page("ایران و آمریکا", date(2026, 11, 14), 8, [item], start, end)
     rendered = _text(nodes)
 
     assert SUMMARY_MISSING_LABEL in rendered
@@ -173,8 +173,8 @@ def test_index_page_links_topic_pages_not_individual_news():
     ]
     sections = group_items_by_telegraph_topic(items)
     topic_pages = {
-        "ir": {"path": "p1", "url": "https://telegra.ph/p1", "name_fa": "ایران و مذاکرات", "item_count": 1},
-        "ye": {"path": "p2", "url": "https://telegra.ph/p2", "name_fa": "یمن و دریای سرخ", "item_count": 1},
+        "ir": {"path": "p1", "url": "https://telegra.ph/p1", "name_fa": "ایران و آمریکا", "item_count": 1},
+        "ye": {"path": "p2", "url": "https://telegra.ph/p2", "name_fa": "عربستان و یمن", "item_count": 1},
     }
     start, end = _window()
     _title, nodes = build_index_page(
@@ -184,8 +184,8 @@ def test_index_page_links_topic_pages_not_individual_news():
 
     assert "https://telegra.ph/p1" in rendered
     assert "https://telegra.ph/p2" in rendered
-    assert "ایران و مذاکرات" in rendered
-    assert "یمن و دریای سرخ" in rendered
+    assert "ایران و آمریکا" in rendered
+    assert "عربستان و یمن" in rendered
     # The index is a table of contents, not a copy of every story.
     assert "خبر نخست" not in rendered
 
@@ -266,7 +266,7 @@ async def test_retry_updates_the_topic_page_instead_of_duplicating_it():
     """A partial report edits the topic page it already published; it never adds a copy."""
     session = _Session()
     first_items = [_item(1, "خبر نخست", topic_key="ir"), _item(2, "خبر دوم", topic_key="ye")]
-    failing = _Client(fail_titles={"یمن و دریای سرخ — گزارش 08:00 2026-11-14"})
+    failing = _Client(fail_titles={"عربستان و یمن — گزارش 08:00 2026-11-14"})
     await publish_telegraph_report(
         session, report_date=date(2026, 11, 14), slot_hour=8, client=failing, items=first_items
     )
@@ -281,7 +281,7 @@ async def test_retry_updates_the_topic_page_instead_of_duplicating_it():
     )
 
     assert result["created"] == 1  # only the missing topic page
-    assert retry.created == [("p1", "یمن و دریای سرخ — گزارش 08:00 2026-11-14")]
+    assert retry.created == [("p1", "عربستان و یمن — گزارش 08:00 2026-11-14")]
     assert [path for path, _title in retry.edited] == [topic_path, index_path]
     assert session.row.topic_pages["ir"]["path"] == topic_path
     assert session.row.topic_pages["ir"]["item_count"] == 2
@@ -307,7 +307,7 @@ async def test_a_story_from_the_previous_report_does_not_remove_this_windows_sto
     )
 
     assert [title for _path, title in later.created] == [
-        "ایران و مذاکرات — گزارش 08:00 2026-11-14",
+        "ایران و آمریکا — گزارش 08:00 2026-11-14",
         "گزارش 08:00 — 2026-11-14",
     ]
     assert result["item_count"] == 1
@@ -317,7 +317,7 @@ async def test_a_story_from_the_previous_report_does_not_remove_this_windows_sto
 async def test_partial_run_creates_only_the_missing_topic_on_retry():
     session = _Session()
     items = [_item(1, "خبر نخست", topic_key="ir"), _item(2, "خبر دوم", topic_key="ye")]
-    failing = _Client(fail_titles={"یمن و دریای سرخ — گزارش 08:00 2026-11-14"})
+    failing = _Client(fail_titles={"عربستان و یمن — گزارش 08:00 2026-11-14"})
 
     first = await publish_telegraph_report(
         session, report_date=date(2026, 11, 14), slot_hour=8, client=failing, items=items
@@ -334,7 +334,7 @@ async def test_partial_run_creates_only_the_missing_topic_on_retry():
 
     assert second["status"] == TELEGRAPH_COMPLETED
     assert [title for _path, title in retry.created] == [
-        "یمن و دریای سرخ — گزارش 08:00 2026-11-14"
+        "عربستان و یمن — گزارش 08:00 2026-11-14"
     ]
     assert retry.edited and retry.edited[0][0] == index_path
     assert set(session.row.topic_pages) == {"ir", "ye"}
@@ -394,6 +394,6 @@ def test_notification_links_the_index_and_names_every_topic():
     )
 
     assert "https://telegra.ph/report-1" in text
-    assert "ایران و مذاکرات" in text
+    assert "ایران و آمریکا" in text
     assert "08:00" in text
     assert "تک‌منبعی" in text

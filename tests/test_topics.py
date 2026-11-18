@@ -22,9 +22,9 @@ from app.editorial.topics import (
 
 def test_topics_load_in_priority_order_with_the_regional_topic_last():
     keys = [topic.key for topic in load_topics()]
-    assert keys == ["ir", "ye", "ru-ua", "us", REGIONAL_TOPIC_KEY]
+    assert keys == ["ru-ua", "ir", "us", "ye", "il", "us-cn", REGIONAL_TOPIC_KEY]
     assert topic_by_key("ye") is not None
-    assert topic_by_key("ye").name_fa == "یمن و دریای سرخ"
+    assert topic_by_key("ye").name_fa == "عربستان و یمن"
 
 
 @pytest.mark.parametrize(
@@ -34,7 +34,7 @@ def test_topics_load_in_priority_order_with_the_regional_topic_last():
         (["Yemen"], ["Houthi forces"], "Sanaa", "Red Sea shipping attack", "ye"),
         (["Ukraine", "Russia"], ["Kremlin"], "Kharkiv", "Drone strike on the power grid", "ru-ua"),
         (["ایالات متحده آمریکا"], ["کنگره"], None, "مناظره بودجه در کنگره", "us"),
-        (["Palestine"], ["UNRWA"], "Gaza city", "Aid convoy enters Gaza", "me"),
+        (["Palestine"], ["UNRWA"], "Gaza city", "Aid convoy enters Gaza", "il"),
     ],
 )
 def test_primary_topic_assignment(countries, actors, location, title, expected):

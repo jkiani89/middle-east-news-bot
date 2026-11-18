@@ -86,14 +86,51 @@ def telegraph_topic(key: str | None) -> TelegraphTopic:
     return TelegraphTopic(OTHER_TOPIC_KEY, OTHER_TOPIC_NAME, 99)
 
 
+def _item_topic_keys(item: dict[str, Any]) -> list[Any]:
+    """Resolve the list of topic keys an item belongs to (multi-topic aware).
+
+    An empty ``topic_keys`` list falls back to ``topic_key`` so a stale item keeps
+    its original subject instead of being silently moved to "other".
+    """
+    keys = item.get("topic_keys")
+    if isinstance(keys, (list, tuple)):
+        if keys:
+            return list(keys)
+        return [item.get("topic_key")]
+    if keys is not None:
+        return [keys]
+    return [item.get("topic_key")]
+
+
+def _item_identity(item: dict[str, Any]) -> Any:
+    """Stable identity for dedup within one section: prefer ``event_id``."""
+    event_id = item.get("event_id")
+    if event_id is not None:
+        return ("event", event_id)
+    return ("id", id(item))
+
+
 def group_items_by_telegraph_topic(
     items: list[dict[str, Any]],
 ) -> list[tuple[str, str, list[dict[str, Any]]]]:
-    """Group items into index sections, preserving the configured order and every item."""
+    """Group items into index sections, preserving the configured order and every item.
+
+    An item may belong to several topics (multi-topic): it is then published in each
+    of those sections. No item is dropped, and duplicates inside one section are
+    collapsed by a stable identity (``event_id`` when available, else object id).
+    """
     grouped: dict[str, list[dict[str, Any]]] = {}
+    seen_in_section: dict[str, set[Any]] = {}
     for item in items:
-        key = telegraph_topic(item.get("topic_key")).key
-        grouped.setdefault(key, []).append(item)
+        for key in _item_topic_keys(item):
+            resolved = telegraph_topic(key).key
+            bucket = grouped.setdefault(resolved, [])
+            seen = seen_in_section.setdefault(resolved, set())
+            identity = _item_identity(item)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            bucket.append(item)
 
     sections: list[tuple[str, str, list[dict[str, Any]]]] = []
     for topic in load_telegraph_topics():

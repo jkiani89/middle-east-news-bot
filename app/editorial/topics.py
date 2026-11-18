@@ -82,7 +82,7 @@ class Topic:
 
 REGIONAL_TOPIC = Topic(
     key=REGIONAL_TOPIC_KEY,
-    name_fa="خاورمیانه و جهان اسلام",
+    name_fa="تحولات خاورمیانه",
     priority=99,
     countries=frozenset(MIDDLE_EAST_COUNTRIES),
     places=tuple(sorted(MIDDLE_EAST_CITIES)),
@@ -147,24 +147,58 @@ def topic_by_key(key: str) -> Topic | None:
     return None
 
 
+def match_topics(
+    countries: list[str] | None,
+    actors: list[str] | None,
+    location: str | None = None,
+    title: str | None = None,
+) -> list[Topic]:
+    """Return every topic the story is primarily about (multi-topic).
+
+    Specific topics are evaluated first; the regional Middle East topic is used only
+    as a fallback when no specific topic matches, so a story is never duplicated
+    into the generic regional section on top of a more specific one. The Iran topic
+    covers the full diplomatic, economic, security and military domain, not only
+    negotiations.
+    """
+    result: list[Topic] = []
+    for topic in load_topics():
+        if topic.key == REGIONAL_TOPIC_KEY:
+            continue
+        if topic.matches_primary(countries, actors, location, title):
+            result.append(topic)
+    if not result:
+        regional = topic_by_key(REGIONAL_TOPIC_KEY)
+        if regional is not None and regional.matches_primary(countries, actors, location, title):
+            result.append(regional)
+    return result
+
+
 def match_primary_topic(
     countries: list[str] | None,
     actors: list[str] | None,
     location: str | None = None,
     title: str | None = None,
 ) -> Topic | None:
-    """Return the most specific topic the story is primarily about, if any."""
-    for topic in load_topics():
-        if topic.matches_primary(countries, actors, location, title):
-            return topic
-    return None
+    """Return the most specific topic the story is primarily about, if any.
+
+    Backward-compatible single-topic entry point; delegates to :func:`match_topics`.
+    """
+    topics = match_topics(countries, actors, location, title)
+    return topics[0] if topics else None
 
 
-def topic_for_event(event: Any) -> Topic | None:
-    """Classify a stored ``Event`` row using its analysis fields."""
-    return match_primary_topic(
+def topics_for_event(event: Any) -> list[Topic]:
+    """Classify a stored ``Event`` row into every matching topic."""
+    return match_topics(
         getattr(event, "countries", None),
         getattr(event, "actors", None),
         getattr(event, "location", None),
         getattr(event, "title", None),
     )
+
+
+def topic_for_event(event: Any) -> Topic | None:
+    """Classify a stored ``Event`` row using its analysis fields (primary topic)."""
+    topics = topics_for_event(event)
+    return topics[0] if topics else None
