@@ -17,6 +17,11 @@ on:
         required: false
         default: 'false'
         type: string
+      check_only:
+        description: 'Read-only check of existing rows'
+        required: false
+        default: 'false'
+        type: string
 
 jobs:
   backfill:
@@ -37,6 +42,7 @@ jobs:
       DRY_RUN: ${{ github.event.inputs.dry_run }}
       PERSIST: ${{ github.event.inputs.persist }}
       FORCE: ${{ github.event.inputs.force }}
+      CHECK_ONLY: ${{ github.event.inputs.check_only }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

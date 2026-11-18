@@ -38,9 +38,24 @@ SLOTS = [
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() in ("true", "1", "yes")
 FORCE = os.environ.get("FORCE", "false").lower() in ("true", "1", "yes")
 PERSIST = os.environ.get("PERSIST", "true").lower() in ("true", "1", "yes")
+CHECK_ONLY = os.environ.get("CHECK_ONLY", "false").lower() in ("true", "1", "yes")
 
 
 async def main() -> None:
+    if CHECK_ONLY:
+        print("CHECK_ONLY_MODE", flush=True)
+        from sqlalchemy import select
+        from app.database.models import TelegraphReport
+        for rd, sh in SLOTS:
+            async with SessionLocal() as session:
+                stmt = select(TelegraphReport).where(TelegraphReport.report_date == rd, TelegraphReport.slot_hour == sh)
+                row = (await session.execute(stmt)).scalar_one_or_none()
+                if row is None:
+                    print(json.dumps({"slot": f"{rd} {sh:02d}:00", "row": None}, ensure_ascii=False), flush=True)
+                else:
+                    print(json.dumps({"slot": f"{rd} {sh:02d}:00", "status": row.status, "index_url": row.index_url, "topics": list((row.topic_pages or {}).keys()), "item_counts": {k: (v or {}).get("item_count") for k, v in (row.topic_pages or {}).items()}}, ensure_ascii=False), flush=True)
+        print("CHECK_DONE", flush=True)
+        return
     print("MAIN_STARTED", flush=True)
     print("SLOTS_LEN=" + str(len(SLOTS)), flush=True)
     results = []
