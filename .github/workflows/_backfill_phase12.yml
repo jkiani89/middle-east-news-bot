@@ -1,0 +1,46 @@
+name: Temporary Phase 1+2 Backfill
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (no Telegraph writes, no DB persist)'
+        required: false
+        default: 'true'
+        type: string
+      persist:
+        description: 'Persist to DB'
+        required: false
+        default: 'false'
+        type: string
+      force:
+        description: 'Force re-publish even if complete'
+        required: false
+        default: 'false'
+        type: string
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      APP_ENV: production
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      TELEGRAPH_ACCESS_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
+      TELEGRAPH_ENABLED: ${{ vars.TELEGRAPH_ENABLED || 'true' }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_PRIMARY_MODEL: ${{ vars.GEMINI_PRIMARY_MODEL || 'gemini-3.5-flash-lite' }}
+      GEMINI_FALLBACK_MODEL: ${{ vars.GEMINI_FALLBACK_MODEL || 'gemini-3.1-flash-lite' }}
+      GEMINI_ENABLE_FALLBACK: ${{ vars.GEMINI_ENABLE_FALLBACK || 'true' }}
+      TIMEZONE: ${{ vars.TIMEZONE || 'Asia/Tehran' }}
+      DRY_RUN: ${{ github.event.inputs.dry_run }}
+      PERSIST: ${{ github.event.inputs.persist }}
+      FORCE: ${{ github.event.inputs.force }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python scripts/_backfill_phase12.py
