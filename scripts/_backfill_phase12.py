@@ -1,18 +1,15 @@
-"""Temporary backfill helper for Phase 1+2 topic taxonomy.
-
-Runs publish_telegraph_report directly for five explicit slots. Does NOT perform
-collection, scheduling, or Telegram sending. Delete after use.
-"""
+"""Temporary backfill helper for Phase 1+2 topic taxonomy. Delete after use."""
 from __future__ import annotations
-import sys as _sys
-print('HELLO_TOP_LEVEL', flush=True)
 
 import asyncio
 import json
 import os
 import sys
+import traceback
 from datetime import date
 from pathlib import Path
+
+print("HELLO_TOP_LEVEL", flush=True)
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -24,9 +21,11 @@ if env_file.is_file():
 
     load_dotenv(env_file)
 
+print("IMPORTING_APP", flush=True)
 from app.config import settings  # noqa: E402
 from app.database.connection import SessionLocal  # noqa: E402
 from app.reports.telegraph_report import publish_telegraph_report  # noqa: E402
+print("IMPORTED_APP", flush=True)
 
 SLOTS = [
     (date(2026, 11, 15), 8),
@@ -42,59 +41,53 @@ PERSIST = os.environ.get("PERSIST", "true").lower() in ("true", "1", "yes")
 
 
 async def main() -> None:
-    print('MAIN_STARTED', flush=True)
-    print('SLOTS_LEN=' + str(len(SLOTS)), flush=True)
+    print("MAIN_STARTED", flush=True)
+    print("SLOTS_LEN=" + str(len(SLOTS)), flush=True)
+    results = []
     for rd, sh in SLOTS:
-        print('LOOP_ITER=' + str(rd) + ' ' + str(sh), flush=True)
-        async with SessionLocal() as session:
-            result = await publish_telegraph_report(
-                session,
-                report_date=rd,
-                slot_hour=sh,
-                dry_run=DRY_RUN,
-                force=FORCE,
-                persist=PERSIST,
-            )
-            print(
-                json.dumps(
-                    {
-                        "slot": f"{rd.isoformat()} {sh:02d}:00",
-                        "status": result.get("status"),
-                        "index_url": result.get("index_url", ""),
-                        "item_count": result.get("item_count", 0),
-                        "created": result.get("created", 0),
-                        "updated": result.get("updated", 0),
-                        "reused": result.get("reused", 0),
-                        "failures": result.get("failures", []),
-                        "sections": result.get("sections", []),
-                        "pages": {
-                            k: (v or {}).get("item_count")
-                            for k, v in (result.get("pages") or {}).items()
-                        },
+        print("LOOP_ITER=" + str(rd) + " " + str(sh), flush=True)
+        try:
+            async with SessionLocal() as session:
+                print("SESSION_OPENED", flush=True)
+                result = await publish_telegraph_report(
+                    session,
+                    report_date=rd,
+                    slot_hour=sh,
+                    dry_run=DRY_RUN,
+                    force=FORCE,
+                    persist=PERSIST,
+                )
+                print("RESULT_OK", flush=True)
+                rec = {
+                    "slot": f"{rd.isoformat()} {sh:02d}:00",
+                    "status": result.get("status"),
+                    "index_url": result.get("index_url", ""),
+                    "item_count": result.get("item_count", 0),
+                    "created": result.get("created", 0),
+                    "updated": result.get("updated", 0),
+                    "reused": result.get("reused", 0),
+                    "failures": result.get("failures", []),
+                    "sections": result.get("sections", []),
+                    "pages": {
+                        k: (v or {}).get("item_count")
+                        for k, v in (result.get("pages") or {}).items()
                     },
-                    ensure_ascii=False,
-                ),
-                flush=True,
-            )
-    import pathlib as _p
-    _p.Path('backfill_results.json').write_text(json.dumps({'ran': True}), encoding='utf-8')
-    print(
-        json.dumps(
-            {
-                "summary": True,
-                "dry_run": DRY_RUN,
-                "force": FORCE,
-                "persist": PERSIST,
-                "slots": len(SLOTS),
-            },
-            ensure_ascii=False,
-        ),
-        flush=True,
+                }
+                print(json.dumps(rec, ensure_ascii=False), flush=True)
+                results.append(rec)
+        except Exception as exc:
+            print("EXCEPTION_CAUGHT", flush=True)
+            print(repr(exc), flush=True)
+            traceback.print_exc()
+            raise
+    print("ALL_DONE", flush=True)
+    Path("backfill_results.json").write_text(
+        json.dumps({"dry_run": DRY_RUN, "force": FORCE, "persist": PERSIST, "results": results}, ensure_ascii=False),
+        encoding="utf-8",
     )
+    print("WROTE_FILE", flush=True)
 
 
-print('NAME_VALUE=' + repr(__name__), flush=True)
-if __name__ == "__main__":
-    print('ENTERING_MAIN', flush=True)
-    asyncio.run(main())
-    print('MAIN_DONE', flush=True)
+print("CALLING_MAIN", flush=True)
+asyncio.run(main())
+print("SCRIPT_FINISHED", flush=True)
