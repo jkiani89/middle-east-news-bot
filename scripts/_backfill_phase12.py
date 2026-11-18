@@ -90,5 +90,8 @@ async def main() -> None:
     )
 
 
+print('NAME_VALUE=' + repr(__name__), flush=True)
 if __name__ == "__main__":
+    print('ENTERING_MAIN', flush=True)
     asyncio.run(main())
+    print('MAIN_DONE', flush=True)
