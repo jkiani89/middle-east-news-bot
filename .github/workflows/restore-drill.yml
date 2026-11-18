@@ -1,0 +1,85 @@
+name: Restore Drill (isolated)
+
+# Restores one stored dump into a throwaway PostgreSQL on the runner and validates the
+# result. It reads a single object with rclone, never writes to the bucket, never reads
+# DATABASE_URL and uploads no artifacts. Production is unreachable by construction: the
+# only database this job knows is the service container on 127.0.0.1.
+
+on:
+  workflow_dispatch:
+    inputs:
+      backup_filename:
+        description: 'Dump to drill, e.g. newsbot-backup-2026-11-17-202309.dump'
+        required: true
+        type: string
+
+concurrency:
+  group: restore-drill
+  cancel-in-progress: false
+
+jobs:
+  drill:
+    name: Restore drill into a throwaway database
+    # Manual runs can be started from any branch, so restrict execution to main.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      BACKUP_REMOTE: b2
+      BACKUP_BUCKET: ${{ secrets.B2_BUCKET_NAME }}
+      BACKUP_FILENAME: ${{ inputs.backup_filename }}
+      # rclone reads its remote from the environment, so no config file is written.
+      RCLONE_CONFIG_B2_TYPE: b2
+      RCLONE_CONFIG_B2_ACCOUNT: ${{ secrets.B2_APPLICATION_KEY_ID }}
+      RCLONE_CONFIG_B2_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+      # Throwaway database only; DATABASE_URL is deliberately absent and the script
+      # refuses to run if it ever appears in the environment.
+      DRILL_PGHOST: 127.0.0.1
+      DRILL_PGPORT: '5432'
+      DRILL_PGDATABASE: newsbot_restore_check
+      DRILL_PGUSER: drill
+      DRILL_PGPASSWORD: drill_password
+
+    services:
+      postgres:
+        # Same major version as the server that produced the dumps (scripts/backup.sh).
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: newsbot_restore_check
+          POSTGRES_USER: drill
+          POSTGRES_PASSWORD: drill_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U drill -d newsbot_restore_check"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate the requested filename
+        # Defense in depth: reject anything that is not one flat dump name before it can
+        # reach a path or a remote. The script validates the same pattern again.
+        run: |
+          set -euo pipefail
+          if ! [[ "$BACKUP_FILENAME" =~ ^newsbot-backup-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}\.dump$ ]]; then
+            echo "::error::Invalid backup_filename; expected newsbot-backup-YYYY-MM-DD-HHMMSS.dump" >&2
+            exit 1
+          fi
+          echo "Filename accepted."
+
+      - name: Install rclone
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rclone
+          rclone version
+
+      - name: Run the restore drill
+        # The filename reaches the script as a quoted argument through the environment,
+        # never interpolated into the command line.
+        run: bash scripts/restore_drill.sh "$BACKUP_FILENAME"
