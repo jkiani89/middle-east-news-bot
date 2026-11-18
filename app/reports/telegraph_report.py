@@ -410,9 +410,17 @@ def format_telegram_notification(
     index_url: str,
     sections: list[tuple[str, str, list[dict[str, Any]]]],
     metadata: dict[str, Any] | None = None,
+    topic_pages: dict[str, dict[str, Any]] | None = None,
 ) -> str:
-    """HTML notification that points Telegram readers at the full Telegraph report."""
+    """HTML notification that points Telegram readers at the full Telegraph report.
+
+    The index link leads to the whole 12-hour report and every topic is listed with a
+    direct link to its own page, so a reader reaches a subject in one tap instead of
+    going through the index first. A topic whose page URL is missing (dry run, partial
+    publication) is still listed by name with its item count, never dropped.
+    """
     metadata = metadata or {}
+    pages = topic_pages or {}
     total = sum(len(topic_items) for _key, _name, topic_items in sections)
     label = slot_label(slot_hour)
     window_start = metadata.get("window_start")
@@ -423,9 +431,13 @@ def format_telegram_notification(
             f"\n🕒 بازه: {_format_local_time(window_start)} تا {_format_local_time(window_end)}"
         )
 
-    section_lines = [f"• {name}: {len(topic_items)} خبر" for _key, name, topic_items in sections]
+    section_lines: list[str] = []
+    for key, name, topic_items in sections:
+        page_url = str((pages.get(key) or {}).get("url") or "")
+        label_html = f'<a href="{page_url}">{name}</a>' if _is_http_url(page_url) else name
+        section_lines.append(f"• {label_html}: {len(topic_items)} خبر")
     link_html = (
-        f'<a href="{index_url}">مطالعه کامل گزارش در Telegraph</a>'
+        f'<a href="{index_url}">صفحه اصلی گزارش در Telegraph</a>'
         if _is_http_url(index_url)
         else "لینک گزارش در دسترس نیست."
     )
