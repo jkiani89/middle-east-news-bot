@@ -1,0 +1,114 @@
+name: Backfill Telegraph (temporary)
+
+on: workflow_dispatch
+
+concurrency:
+  group: backfill-telegraph-temp
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    name: Backfill Telegraph for 5 slots
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_ENV: production
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      TELEGRAPH_ENABLED: ${{ vars.TELEGRAPH_ENABLED || 'true' }}
+      TELEGRAPH_ACCESS_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
+      TIMEZONE: Asia/Tehran
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Pre-flight check
+        run: |
+          python - <<'PY'
+          from app.config import settings
+          assert settings.telegraph_enabled is True, "TELEGRAPH_ENABLED must be true"
+          assert bool(settings.telegraph_access_token), "TELEGRAPH_ACCESS_TOKEN must be present"
+          print(f"TELEGRAPH_ENABLED={settings.telegraph_enabled}")
+          print("TOKEN_PRESENT=True")
+          print("PRE_FLIGHT_OK")
+          PY
+
+      - name: Backfill 5 slots (sequential, stop on failure)
+        run: |
+          python - <<'PY'
+          import asyncio
+          import sys
+          from datetime import date
+
+          from app.config import settings
+          from app.database.connection import SessionLocal
+          from app.reports.telegraph_report import publish_telegraph_report
+
+          slots = [
+              (date(2026, 11, 15), 8),
+              (date(2026, 11, 16), 20),
+              (date(2026, 11, 17), 8),
+              (date(2026, 11, 17), 20),
+              (date(2026, 11, 18), 8),
+          ]
+
+          async def main():
+              async with SessionLocal() as session:
+                  for idx, (rep_date, slot_hour) in enumerate(slots, 1):
+                      print(f"\n{'='*60}")
+                      print(f"Slot {idx}/5: {rep_date} {slot_hour:02d}:00")
+                      print(f"{'='*60}")
+
+                      result = await publish_telegraph_report(
+                          session,
+                          report_date=rep_date,
+                          slot_hour=slot_hour,
+                          dry_run=False,
+                          persist=True,
+                          force=False,
+                      )
+
+                      status = result.get("status", "unknown")
+                      created = result.get("created", 0)
+                      updated = result.get("updated", 0)
+                      reused = result.get("reused", 0)
+                      failures = result.get("failures", [])
+                      items = result.get("item_count", 0)
+                      skipped = result.get("skipped", False)
+
+                      print(f"STATUS={status}")
+                      print(f"CREATED={created}")
+                      print(f"UPDATED={updated}")
+                      print(f"REUSED={reused}")
+                      print(f"FAILURES={len(failures)}")
+                      print(f"ITEMS={items}")
+                      print(f"SKIPPED={skipped}")
+
+                      if failures:
+                          for f in failures:
+                              print(f"  FAILURE_DETAIL={f}")
+
+                      if status != "telegraph_completed" or failures:
+                          print(f"\n!!! STOP: Slot {rep_date} {slot_hour:02d}:00 did not complete successfully.")
+                          print("Remaining slots will NOT be executed.")
+                          print("Manual investigation required before retry.")
+                          sys.exit(1)
+
+                      print(f"Slot {rep_date} {slot_hour:02d}:00 completed successfully.")
+
+                  print(f"\n{'='*60}")
+                  print("ALL 5 SLOTS COMPLETED SUCCESSFULLY")
+                  print(f"{'='*60}")
+
+          asyncio.run(main())
+          PY
