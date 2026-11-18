@@ -46,16 +46,16 @@ jobs:
           print("PRE_FLIGHT_OK")
           PY
 
-      - name: Backfill 5 slots (sequential, stop on failure)
+      - name: Verify DB and Telegraph status
         run: |
           python - <<'PY'
           import asyncio
-          import sys
+          import json
           from datetime import date
 
-          from app.config import settings
           from app.database.connection import SessionLocal
-          from app.reports.telegraph_report import publish_telegraph_report
+          from app.database.models import TelegraphReport
+          from sqlalchemy import select
 
           slots = [
               (date(2026, 11, 15), 8),
@@ -67,51 +67,34 @@ jobs:
 
           async def main():
               async with SessionLocal() as session:
-                  for idx, (rep_date, slot_hour) in enumerate(slots, 1):
-                      print(f"\n{'='*60}")
-                      print(f"Slot {idx}/5: {rep_date} {slot_hour:02d}:00")
-                      print(f"{'='*60}")
-
-                      result = await publish_telegraph_report(
-                          session,
-                          report_date=rep_date,
-                          slot_hour=slot_hour,
-                          dry_run=False,
-                          persist=True,
-                          force=False,
+                  for rep_date, slot_hour in slots:
+                      row = await session.scalar(
+                          select(TelegraphReport).where(
+                              TelegraphReport.report_date == rep_date,
+                              TelegraphReport.slot_hour == slot_hour,
+                          )
                       )
+                      if row is None:
+                          print(f'{rep_date} {slot_hour:02d}:00 -> NO ROW FOUND')
+                          continue
+                      pages = row.topic_pages or {}
+                      print(f'{rep_date} {slot_hour:02d}:00 -> status={row.status} index_url={row.index_url} pages={len(pages)}')
+                      for key, info in pages.items():
+                          print(f'  {key}: {info.get("url", "N/A")} (items={info.get("item_count", 0)})')
 
-                      status = result.get("status", "unknown")
-                      created = result.get("created", 0)
-                      updated = result.get("updated", 0)
-                      reused = result.get("reused", 0)
-                      failures = result.get("failures", [])
-                      items = result.get("item_count", 0)
-                      skipped = result.get("skipped", False)
-
-                      print(f"STATUS={status}")
-                      print(f"CREATED={created}")
-                      print(f"UPDATED={updated}")
-                      print(f"REUSED={reused}")
-                      print(f"FAILURES={len(failures)}")
-                      print(f"ITEMS={items}")
-                      print(f"SKIPPED={skipped}")
-
-                      if failures:
-                          for f in failures:
-                              print(f"  FAILURE_DETAIL={f}")
-
-                      if status != "telegraph_completed" or failures:
-                          print(f"\n!!! STOP: Slot {rep_date} {slot_hour:02d}:00 did not complete successfully.")
-                          print("Remaining slots will NOT be executed.")
-                          print("Manual investigation required before retry.")
-                          sys.exit(1)
-
-                      print(f"Slot {rep_date} {slot_hour:02d}:00 completed successfully.")
-
-                  print(f"\n{'='*60}")
-                  print("ALL 5 SLOTS COMPLETED SUCCESSFULLY")
-                  print(f"{'='*60}")
+                  # Verify slot 6 was NOT processed
+                  row6 = await session.scalar(
+                      select(TelegraphReport).where(
+                          TelegraphReport.report_date == date(2026, 11, 16),
+                          TelegraphReport.slot_hour == 8,
+                      )
+                  )
+                  if row6 is not None:
+                      print(f'
+SLOT_6_CHECK: status={row6.status} pages={len(row6.topic_pages or {})}')
+                  else:
+                      print('
+SLOT_6_CHECK: NO ROW (not processed)')
 
           asyncio.run(main())
           PY
