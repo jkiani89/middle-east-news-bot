@@ -27,13 +27,19 @@ from app.database.connection import SessionLocal  # noqa: E402
 from app.reports.telegraph_report import publish_telegraph_report  # noqa: E402
 print("IMPORTED_APP", flush=True)
 
-SLOTS = [
-    (date(2026, 11, 15), 8),
-    (date(2026, 11, 16), 20),
-    (date(2026, 11, 17), 8),
-    (date(2026, 11, 17), 20),
-    (date(2026, 11, 18), 8),
-]
+_slot_date_env = os.environ.get("SLOT_DATE", "").strip()
+_slot_hour_env = os.environ.get("SLOT_HOUR", "").strip()
+if _slot_date_env and _slot_hour_env:
+    _y, _m, _d = _slot_date_env.split("-")
+    SLOTS = [(date(int(_y), int(_m), int(_d)), int(_slot_hour_env))]
+else:
+    SLOTS = [
+        (date(2026, 11, 15), 8),
+        (date(2026, 11, 16), 20),
+        (date(2026, 11, 17), 8),
+        (date(2026, 11, 17), 20),
+        (date(2026, 11, 18), 8),
+    ]
 
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() in ("true", "1", "yes")
 FORCE = os.environ.get("FORCE", "false").lower() in ("true", "1", "yes")

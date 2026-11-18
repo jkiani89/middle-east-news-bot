@@ -22,6 +22,16 @@ on:
         required: false
         default: 'false'
         type: string
+      slot_date:
+        description: 'Single slot date YYYY-MM-DD (empty = all 5)'
+        required: false
+        default: ''
+        type: string
+      slot_hour:
+        description: 'Single slot hour 8 or 20'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   backfill:
@@ -43,6 +53,8 @@ jobs:
       PERSIST: ${{ github.event.inputs.persist }}
       FORCE: ${{ github.event.inputs.force }}
       CHECK_ONLY: ${{ github.event.inputs.check_only }}
+      SLOT_DATE: ${{ github.event.inputs.slot_date }}
+      SLOT_HOUR: ${{ github.event.inputs.slot_hour }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
