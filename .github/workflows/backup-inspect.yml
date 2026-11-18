@@ -36,41 +36,22 @@ jobs:
       RCLONE_CONFIG_B2_KEY: ${{ secrets.B2_APPLICATION_KEY }}
 
     steps:
-      - name: Check required secrets
-        run: |
-          set -euo pipefail
-          missing=()
-          [ -z "${RCLONE_CONFIG_B2_ACCOUNT:-}" ] && missing+=("B2_APPLICATION_KEY_ID")
-          [ -z "${RCLONE_CONFIG_B2_KEY:-}" ] && missing+=("B2_APPLICATION_KEY")
-          [ -z "${B2_BUCKET_NAME:-}" ] && missing+=("B2_BUCKET_NAME")
-          if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::Cannot inspect B2; missing secret(s): ${missing[*]}" >&2
-            exit 1
-          fi
-          echo "Required secrets are present (values are never printed)."
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Install rclone
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y rclone
-          rclone version
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
 
-      - name: Verify the configured bucket is reachable
-        # Probe only the bucket named by B2_BUCKET_NAME. Listing b2: would also request
-        # the account's other buckets and can be denied for a bucket-scoped key; the
-        # rclone/B2 error text can name those buckets, so it is not echoed.
+      - name: Install dependencies
         run: |
-          set -euo pipefail
-          target="b2:${B2_BUCKET_NAME}"
-          if ! rclone lsd "$target" >/dev/null 2>/tmp/bucket-probe.err; then
-            echo "::error::Backblaze bucket '${B2_BUCKET_NAME}' is not accessible with these credentials." >&2
-            echo "Either B2_BUCKET_NAME does not match a bucket this key can reach, or the key lacks the listBuckets capability (a bucket-scoped key needs it to confirm the bucket exists)." >&2
-            echo "No other bucket names are shown on purpose; re-check the key's bucket scope and capability in the Backblaze console." >&2
-            exit 1
-          fi
-          echo "Bucket is reachable: ${B2_BUCKET_NAME}"
+          python -m pip install --upgrade pip
+          pip install --no-deps 'aiogram==3.22.0'
+          pip install -r requirements.txt
 
-      - name: Verify DB
+      - name: Verify Telegraph reports (read-only)
         env:
           APP_ENV: production
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -78,7 +59,4 @@ jobs:
           TELEGRAPH_ACCESS_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
           TIMEZONE: Asia/Tehran
         run: |
-          python -m pip install --upgrade pip
-          pip install --no-deps 'aiogram==3.22.0'
-          pip install -r requirements.txt
           python scripts/audit_backfill.py
