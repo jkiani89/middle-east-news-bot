@@ -58,22 +58,8 @@ async def main() -> None:
                     persist=PERSIST,
                 )
                 print("RESULT_OK", flush=True)
-                rec = {
-                    "slot": f"{rd.isoformat()} {sh:02d}:00",
-                    "status": result.get("status"),
-                    "index_url": result.get("index_url", ""),
-                    "item_count": result.get("item_count", 0),
-                    "created": result.get("created", 0),
-                    "updated": result.get("updated", 0),
-                    "reused": result.get("reused", 0),
-                    "failures": result.get("failures", []),
-                    "sections": result.get("sections", []),
-                    "pages": {
-                        k: (v or {}).get("item_count")
-                        for k, v in (result.get("pages") or {}).items()
-                    },
-                }
-                print(json.dumps(rec, ensure_ascii=False), flush=True)
+                rec = {"slot": f"{rd.isoformat()} {sh:02d}:00", "status": result.get("status"), "item_count": result.get("item_count", 0)}
+                print("SLOT_DONE " + str(rec), flush=True)
                 results.append(rec)
         except Exception as exc:
             print("EXCEPTION_CAUGHT", flush=True)
