@@ -59,7 +59,21 @@ async def main() -> None:
                 if row is None:
                     print(json.dumps({"slot": f"{rd} {sh:02d}:00", "row": None}, ensure_ascii=False), flush=True)
                 else:
-                    print(json.dumps({"slot": f"{rd} {sh:02d}:00", "status": row.status, "index_url": row.index_url, "topics": list((row.topic_pages or {}).keys()), "item_counts": {k: (v or {}).get("item_count") for k, v in (row.topic_pages or {}).items()}}, ensure_ascii=False), flush=True)
+                    tp = row.topic_pages or {}
+                    print(json.dumps({
+                        "slot": f"{rd.isoformat()} {sh:02d}:00",
+                        "status": row.status,
+                        "telegram_status": getattr(row, "telegram_status", None),
+                        "index_url": row.index_url,
+                        "index_path": row.index_path,
+                        "updated_at": str(row.updated_at),
+                        "error_message": row.error_message,
+                        "topic_count": len(tp),
+                        "topics": {
+                            k: {"url": (v or {}).get("url", ""), "n": (v or {}).get("item_count")}
+                            for k, v in tp.items()
+                        },
+                    }, ensure_ascii=False), flush=True)
         print("CHECK_DONE", flush=True)
         return
     print("MAIN_STARTED", flush=True)
@@ -79,8 +93,21 @@ async def main() -> None:
                     persist=PERSIST,
                 )
                 print("RESULT_OK", flush=True)
-                rec = {"slot": f"{rd.isoformat()} {sh:02d}:00", "status": result.get("status"), "item_count": result.get("item_count", 0)}
-                print("SLOT_DONE " + str(rec), flush=True)
+                rec = {
+                    "slot": f"{rd.isoformat()} {sh:02d}:00",
+                    "status": result.get("status"),
+                    "item_count": result.get("item_count", 0),
+                    "created": result.get("created", 0),
+                    "updated": result.get("updated", 0),
+                    "reused": result.get("reused", 0),
+                    "index_url": result.get("index_url", ""),
+                    "pages": {
+                        k: {"url": (v or {}).get("url", ""), "n": (v or {}).get("item_count")}
+                        for k, v in (result.get("pages") or {}).items()
+                    },
+                    "failures": result.get("failures", []),
+                }
+                print("SLOT_DONE " + json.dumps(rec, ensure_ascii=False), flush=True)
                 results.append(rec)
         except Exception as exc:
             print("EXCEPTION_CAUGHT", flush=True)
