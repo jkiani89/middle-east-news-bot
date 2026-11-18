@@ -74,6 +74,57 @@ jobs:
         env:
           APP_ENV: production
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAPH_ENABLED: ${{ vars.TELEGRAPH_ENABLED || 'true' }}
+          TELEGRAPH_ACCESS_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
           TIMEZONE: Asia/Tehran
         run: |
-          python -c "print('hello from python')"
+          python -m pip install --upgrade pip
+          pip install --no-deps 'aiogram==3.22.0'
+          pip install -r requirements.txt
+          python - <<'PY'
+          import asyncio
+          from datetime import date
+          from app.database.connection import SessionLocal
+          from app.database.models import TelegraphReport
+          from sqlalchemy import select
+
+          slots = [
+              (date(2026, 11, 15), 8),
+              (date(2026, 11, 16), 20),
+              (date(2026, 11, 17), 8),
+              (date(2026, 11, 17), 20),
+              (date(2026, 11, 18), 8),
+          ]
+
+          async def main():
+              async with SessionLocal() as session:
+                  for rep_date, slot_hour in slots:
+                      row = await session.scalar(
+                          select(TelegraphReport).where(
+                              TelegraphReport.report_date == rep_date,
+                              TelegraphReport.slot_hour == slot_hour,
+                          )
+                      )
+                      if row is None:
+                          print(f'{rep_date} {slot_hour:02d}:00 -> NO ROW FOUND')
+                          continue
+                      pages = row.topic_pages or {}
+                      print(f'{rep_date} {slot_hour:02d}:00 -> status={row.status} index_url={row.index_url} pages={len(pages)}')
+                      for key, info in pages.items():
+                          print(f'  {key}: {info.get("url", "N/A")} (items={info.get("item_count", 0)})')
+
+                  row6 = await session.scalar(
+                      select(TelegraphReport).where(
+                          TelegraphReport.report_date == date(2026, 11, 16),
+                          TelegraphReport.slot_hour == 8,
+                      )
+                  )
+                  if row6 is not None:
+                      print(f'
+SLOT_6_CHECK: status={row6.status} pages={len(row6.topic_pages or {})}')
+                  else:
+                      print('
+SLOT_6_CHECK: NO ROW (not processed)')
+
+          asyncio.run(main())
+          PY
