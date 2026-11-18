@@ -42,7 +42,10 @@ PERSIST = os.environ.get("PERSIST", "true").lower() in ("true", "1", "yes")
 
 
 async def main() -> None:
+    print('MAIN_STARTED', flush=True)
+    print('SLOTS_LEN=' + str(len(SLOTS)), flush=True)
     for rd, sh in SLOTS:
+        print('LOOP_ITER=' + str(rd) + ' ' + str(sh), flush=True)
         async with SessionLocal() as session:
             result = await publish_telegraph_report(
                 session,
