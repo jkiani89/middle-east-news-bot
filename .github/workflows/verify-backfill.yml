@@ -1,6 +1,13 @@
 name: Verify Backfill (temporary)
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      run_verify:
+        description: 'Run verification'
+        required: false
+        default: 'true'
+        type: string
 
 concurrency:
   group: verify-backfill-temp
