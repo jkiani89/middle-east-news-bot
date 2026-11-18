@@ -163,7 +163,12 @@ class TelegraphReport(Base):
     telegram_status: Mapped[str] = mapped_column(String(30), default="pending", nullable=False)
     index_path: Mapped[str | None] = mapped_column(Text)
     index_url: Mapped[str | None] = mapped_column(Text)
-    # event_id (as text) -> {path, url, title, topic_key} for every published subject page.
+    # topic_key -> one record per published topic, holding every part of it:
+    #   {name_fa, path, url, item_count, layout_version, layout_hash, part_count,
+    #    planned_item_count, published_item_count, links_complete,
+    #    parts: [{part, path, url, item_count, bytes, retired?, pending_create?}]}
+    # ``path``/``url`` mirror part 1, so readers written before pagination keep working.
+    # A flat record {path, url, name_fa, item_count} is read as the single part 1.
     topic_pages: Mapped[dict] = mapped_column(JSONB, default=dict)
     telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
     error_message: Mapped[str | None] = mapped_column(Text)

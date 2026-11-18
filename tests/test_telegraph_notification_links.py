@@ -95,6 +95,48 @@ def test_no_topic_pages_degrades_to_names_only_and_keeps_the_index_link() -> Non
     assert "• عربستان و یمن: 1 خبر" in text
 
 
+def test_a_paginated_topic_lists_its_page_count_and_every_part_link() -> None:
+    pages = _pages()
+    pages["ir"] = {
+        "name_fa": "ایران و آمریکا",
+        "item_count": 120,
+        "part_count": 3,
+        "layout_version": 2,
+        "parts": [
+            {"part": 1, "url": "https://telegra.ph/iran-p1"},
+            {"part": 2, "url": "https://telegra.ph/iran-p2"},
+            {"part": 3, "url": "https://telegra.ph/iran-p3"},
+        ],
+    }
+
+    text = format_telegram_notification(
+        REPORT_DATE,
+        8,
+        "https://telegra.ph/report-index-11-18",
+        [("ir", "ایران و آمریکا", [{"headline_fa": "خبر"}] * 120)],
+        WINDOW,
+        topic_pages=pages,
+    )
+
+    assert "120 خبر در ۳ صفحه" in text
+    for part in (1, 2, 3):
+        assert f'<a href="https://telegra.ph/iran-p{part}">' in text
+
+
+def test_a_legacy_flat_topic_entry_still_links_its_single_page() -> None:
+    text = format_telegram_notification(
+        REPORT_DATE,
+        8,
+        "https://telegra.ph/report-index-11-18",
+        [("ir", "ایران و آمریکا", [{"headline_fa": "خبر"}, {"headline_fa": "خبر دو"}])],
+        WINDOW,
+        topic_pages={"ir": {"path": "iran-legacy", "url": "https://telegra.ph/iran-legacy"}},
+    )
+
+    assert '<a href="https://telegra.ph/iran-legacy">ایران و آمریکا</a>: 2 خبر' in text
+    assert "صفحه" not in text.split("خبر")[1]
+
+
 def test_missing_index_url_states_it_instead_of_emitting_a_broken_link() -> None:
     text = format_telegram_notification(
         REPORT_DATE,

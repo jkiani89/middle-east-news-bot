@@ -13,14 +13,22 @@ from app.editorial.telegraph_topics import (
     group_items_by_telegraph_topic,
     load_telegraph_topics,
 )
-from app.reports.telegraph_client import TelegraphError, TelegraphPage, build_content
+from app.reports.telegraph_client import (
+    TelegraphContentTooLargeError,
+    TelegraphError,
+    TelegraphPage,
+    build_content,
+)
+from app.reports.telegraph_pagination import plan_topic_parts
 from app.reports.telegraph_report import (
     SUMMARY_MISSING_LABEL,
     TELEGRAPH_COMPLETED,
     TELEGRAPH_PARTIAL,
     build_index_page,
+    build_item_block,
     build_topic_page,
     format_telegram_notification,
+    normalize_topic_entry,
     notification_ready,
     publish_telegraph_report,
 )
@@ -86,27 +94,53 @@ class _Session:
 
 
 class _Client:
-    def __init__(self, fail_titles: set[str] | None = None):
+    def __init__(self, fail_titles: set[str] | None = None, existing_pages: list[dict] | None = None):
         self.created: list[tuple[str, str]] = []
         self.edited: list[tuple[str, str]] = []
+        self.contents: dict[str, list[dict]] = {}
         self.fail_titles = fail_titles or set()
+        self.existing_pages = existing_pages or []
         self.accounts = 0
 
     async def ensure_token(self) -> str:
         self.accounts += 1
         return "token"
 
+    async def list_pages(self, offset: int = 0, limit: int = 200) -> list[dict]:
+        return list(self.existing_pages)[offset : offset + limit]
+
+    async def list_pages_until_end(self):
+        """The whole account listing, paged exactly like the real client."""
+        pages, offset = [], 0
+        while True:
+            batch = await self.list_pages(offset=offset, limit=200)
+            pages.extend(batch)
+            if len(batch) < 200:
+                return pages, True
+            offset += 200
+
+    async def get_page(self, path: str, return_content: bool = False) -> dict:
+        nodes = self.contents.get(path)
+        if nodes is None:
+            raise TelegraphError(f"page {path} not found")
+        payload = {"path": path, "url": f"https://telegra.ph/{path}"}
+        if return_content:
+            payload["content"] = json.dumps(nodes, ensure_ascii=False)
+        return payload
+
     async def create_page(self, title, content, author_name=None, author_url=None):
         if title in self.fail_titles:
             raise TelegraphError(f"create failed for {title}")
         path = f"p{len(self.created) + 1}"
         self.created.append((path, title))
+        self.contents[path] = content
         return TelegraphPage(path=path, url=f"https://telegra.ph/{path}", title=title)
 
     async def edit_page(self, path, title, content, author_name=None):
         if title in self.fail_titles:
             raise TelegraphError(f"edit failed for {title}")
         self.edited.append((path, title))
+        self.contents[path] = content
         return TelegraphPage(path=path, url=f"https://telegra.ph/{path}", title=title)
 
 
@@ -190,6 +224,29 @@ def test_index_page_links_topic_pages_not_individual_news():
     assert "خبر نخست" not in rendered
 
 
+def test_a_flat_legacy_topic_record_is_read_as_part_one():
+    """The record written before pagination is part 1 of today's layout."""
+    entry = normalize_topic_entry(
+        {"path": "old1", "url": "https://telegra.ph/old1", "name_fa": "ایران و آمریکا", "item_count": 7}
+    )
+
+    assert entry["part_count"] == 1
+    assert entry["layout_version"] == 1
+    assert entry["path"] == "old1"
+    assert entry["parts"] == [
+        {"part": 1, "path": "old1", "url": "https://telegra.ph/old1", "item_count": 7, "legacy": True}
+    ]
+
+
+def test_a_topic_that_does_not_fit_is_planned_in_several_parts():
+    items = [dict(_item(n), summary_fa="خ" * 1200) for n in range(1, 26)]
+
+    parts = plan_topic_parts(items, block_builder=build_item_block, overhead_bytes=900)
+
+    assert len(parts) > 1
+    assert sum(part.item_count for part in parts) == len(items)
+
+
 def test_index_page_reports_missing_summary_transparency():
     sections = group_items_by_telegraph_topic([_item(1)])
     start, end = _window()
@@ -209,11 +266,17 @@ def test_index_page_reports_missing_summary_transparency():
     assert "بازبینی تحریریه" in rendered
 
 
-def test_oversized_page_content_is_trimmed_below_the_telegraph_cap():
+def test_oversized_page_content_raises_instead_of_dropping_news():
+    """The old behaviour trimmed trailing blocks; a lost block is a lost news item."""
     nodes = [{"tag": "p", "children": ["x" * 2000]} for _ in range(60)]
-    serialised = build_content(nodes)
-    assert len(serialised.encode("utf-8")) <= 64 * 1024
-    assert json.loads(serialised)
+
+    with pytest.raises(TelegraphContentTooLargeError) as excinfo:
+        build_content(nodes)
+
+    assert excinfo.value.size > excinfo.value.limit
+    assert excinfo.value.limit == 64 * 1024
+    # A page that fits is still serialised verbatim.
+    assert json.loads(build_content(nodes[:2])) == nodes[:2]
 
 
 @pytest.mark.asyncio
@@ -324,7 +387,10 @@ async def test_partial_run_creates_only_the_missing_topic_on_retry():
     )
 
     assert first["status"] == TELEGRAPH_PARTIAL
-    assert set(session.row.topic_pages) == {"ir"}
+    # The unrecorded create leaves a recovery marker, not a published page.
+    assert set(session.row.topic_pages) == {"ir", "ye"}
+    assert session.row.topic_pages["ye"]["parts"][0]["pending_create"]
+    assert session.row.topic_pages["ye"]["published_item_count"] == 0
     index_path = session.row.index_path
 
     retry = _Client()

@@ -26,12 +26,35 @@ logger = logging.getLogger(__name__)
 MAX_TITLE_CHARS = 256
 # Telegraph rejects a page whose serialised content exceeds 64 KB.
 MAX_CONTENT_BYTES = 64 * 1024
-_CONTENT_TRIM_BUFFER = 512
+# getPageList returns one window at a time; recovery must walk all of them.
+PAGE_LIST_PAGE_SIZE = 200
+# Safety valve for a pathological account (10,000 pages). Reaching it makes the listing
+# "incomplete", which forbids creating a page rather than guessing. Each of the two
+# confirming walks in ``list_pages_until_end`` may use this many requests.
+MAX_PAGE_LIST_REQUESTS = 50
 _SHORT_NAME_RE = re.compile(r"[^A-Za-z0-9_]")
 
 
 class TelegraphError(RuntimeError):
     """Any failure talking to the Telegraph API."""
+
+
+class TelegraphContentTooLargeError(TelegraphError):
+    """A page cannot fit its content inside Telegraph's 64 KB limit.
+
+    Publishing is refused instead of silently dropping trailing blocks: a page that
+    loses news is worse than a page that reports it could not be published.
+    """
+
+    def __init__(self, size: int, limit: int, *, detail: str = "") -> None:
+        self.size = size
+        self.limit = limit
+        self.detail = detail
+        suffix = f" ({detail})" if detail else ""
+        super().__init__(
+            f"page content is {size} bytes, which exceeds the {limit}-byte Telegraph "
+            f"limit{suffix}; split the topic into smaller parts instead of trimming it"
+        )
 
 
 class TelegraphNotConfiguredError(TelegraphError):
@@ -61,19 +84,26 @@ def author_short_name(name: str | None = None) -> str:
     return cleaned or "middle_east_news"
 
 
-def build_content(nodes: list[dict[str, Any]]) -> str:
-    """Serialise node content, dropping trailing blocks until it fits Telegraph's cap.
+def measure_content(nodes: list[dict[str, Any]]) -> int:
+    """Size in bytes of the content exactly as it would be sent to Telegraph."""
+    return len(json.dumps([node for node in nodes if node], ensure_ascii=False).encode("utf-8"))
 
-    A single oversized page would otherwise fail the whole subject, so the content is
-    trimmed (never the title or the source link, which come first) instead.
+
+def build_content(nodes: list[dict[str, Any]]) -> str:
+    """Serialise node content verbatim and refuse an oversized page.
+
+    There is no trimming here on purpose: every news block carries its title, summary,
+    source, time, verification label and original link, so dropping the tail of a page
+    silently deletes news. Callers split a big subject into several pages instead
+    (:mod:`app.reports.telegraph_pagination`) and this function is the last guard that
+    turns an unsplittable page into a visible failure.
     """
-    trimmed = [node for node in nodes if node]
-    while trimmed:
-        serialised = json.dumps(trimmed, ensure_ascii=False)
-        if len(serialised.encode("utf-8")) <= MAX_CONTENT_BYTES - _CONTENT_TRIM_BUFFER:
-            return serialised
-        trimmed.pop()
-    return "[]"
+    kept = [node for node in nodes if node]
+    serialised = json.dumps(kept, ensure_ascii=False)
+    size = len(serialised.encode("utf-8"))
+    if size > MAX_CONTENT_BYTES:
+        raise TelegraphContentTooLargeError(size, MAX_CONTENT_BYTES)
+    return serialised
 
 
 class TelegraphClient:
@@ -185,6 +215,155 @@ class TelegraphClient:
             return_content="true" if return_content else None,
         )
         return result if isinstance(result, dict) else {}
+
+    async def _walk_page_list(self) -> tuple[list[dict[str, Any]], int | None, bool]:
+        """One pass over ``getPageList``, proven against a pinned ``total_count``.
+
+        Returns ``(pages, pinned_total, proven)``. ``total_count`` is pinned from the
+        first response and every later window must report exactly that value: an account
+        that changed during the walk can shift the offsets, so a window list alone proves
+        nothing. A repeated page path is the visible symptom of such a shift. The pass is
+        only proven when no path repeated, the collected pages equal the pinned count, and
+        a fresh read after the walk still reports the same count.
+        """
+        pages: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        total: int | None = None
+        repeated_path = False
+        walked_to_end = False
+        offset = 0
+        for _ in range(MAX_PAGE_LIST_REQUESTS):
+            batch, reported = await self.list_page_window(
+                offset=offset, limit=PAGE_LIST_PAGE_SIZE
+            )
+            if reported is None:
+                logger.warning(
+                    "getPageList did not report total_count at offset %s; the listing is unproven.",
+                    offset,
+                )
+                return pages, total, False
+            if total is None:
+                total = reported
+            elif reported != total:
+                logger.warning(
+                    "getPageList reported total_count %s at offset %s but %s earlier; "
+                    "the account changed during the walk and the listing is unproven.",
+                    reported,
+                    offset,
+                    total,
+                )
+                return pages, total, False
+            for page in batch:
+                path = str(page.get("path") or "")
+                if path and path in seen:
+                    repeated_path = True
+                seen.add(path)
+            pages.extend(batch)
+            if len(batch) < PAGE_LIST_PAGE_SIZE:
+                walked_to_end = True
+                break
+            offset += PAGE_LIST_PAGE_SIZE
+        if not walked_to_end:
+            logger.warning(
+                "getPageList still returned full pages after %s requests; the listing is incomplete.",
+                MAX_PAGE_LIST_REQUESTS,
+            )
+            return pages, total, False
+        if repeated_path:
+            logger.warning(
+                "getPageList returned a repeated page path; the window offsets shifted during "
+                "the walk and the listing is unproven."
+            )
+            return pages, total, False
+        if len(pages) != total:
+            logger.warning(
+                "getPageList returned %s pages but total_count is %s; the listing is unproven.",
+                len(pages),
+                total,
+            )
+            return pages, total, False
+        _confirmation, confirmed_total = await self.list_page_window(offset=0, limit=1)
+        if confirmed_total != total:
+            logger.warning(
+                "getPageList reported total_count %s after the walk but %s during it; "
+                "the account changed and the listing is unproven.",
+                confirmed_total,
+                total,
+            )
+            return pages, total, False
+        return pages, total, True
+
+    async def list_pages_until_end(self) -> tuple[list[dict[str, Any]], bool]:
+        """Every page owned by this account, newest first, proven by two walks.
+
+        ``getPageList`` is paged, so a single call can only ever show a window of the
+        account's pages: concluding "the page does not exist" from one window is how a
+        crashed create turns into a duplicate page. One walk is not enough either, because
+        a page created or deleted during the walk shifts the offsets and can drop a page
+        while ``total_count`` still matches what was collected. So the account is walked
+        twice and the result is trusted only when both walks are internally proven, agree
+        on ``total_count`` and return exactly the same set of page paths.
+
+        ``complete`` is False for every unproven case (missing or changing
+        ``total_count``, a repeated path, the safety valve, differing walks, a failure of
+        the second walk); the caller then refuses to publish on an unproven absence.
+        """
+        first_pages, first_total, first_proven = await self._walk_page_list()
+        if not first_proven:
+            return first_pages, False
+        try:
+            second_pages, second_total, second_proven = await self._walk_page_list()
+        except TelegraphError as exc:
+            logger.warning(
+                "The second getPageList walk failed (%s); the listing is unproven.", exc
+            )
+            return first_pages, False
+        if not second_proven:
+            logger.warning(
+                "The second getPageList walk could not prove the listing; the first walk is "
+                "not trusted on its own."
+            )
+            return first_pages, False
+        if second_total != first_total:
+            logger.warning(
+                "The two getPageList walks disagree on total_count (%s vs %s); "
+                "the listing is unproven.",
+                first_total,
+                second_total,
+            )
+            return first_pages, False
+        first_paths = {str(page.get("path") or "") for page in first_pages}
+        second_paths = {str(page.get("path") or "") for page in second_pages}
+        if first_paths != second_paths:
+            logger.warning(
+                "The two getPageList walks returned different pages; the listing is unproven."
+            )
+            return first_pages, False
+        return first_pages, True
+
+    async def list_page_window(
+        self, offset: int = 0, limit: int = 200
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """One window of this account's pages, plus the account's reported total count."""
+        token = await self.ensure_token()
+        result = await self._call("getPageList", access_token=token, offset=offset, limit=limit)
+        pages: list[dict[str, Any]] = []
+        total: int | None = None
+        if isinstance(result, list):
+            pages = [page for page in result if isinstance(page, dict)]
+        elif isinstance(result, dict):
+            batch = result.get("pages")
+            if isinstance(batch, list):
+                pages = [page for page in batch if isinstance(page, dict)]
+            reported = result.get("total_count")
+            if isinstance(reported, int) and not isinstance(reported, bool):
+                total = reported
+        return pages, total
+
+    async def list_pages(self, offset: int = 0, limit: int = 200) -> list[dict[str, Any]]:
+        """One window of this account's pages, newest first (used to recover a lost create)."""
+        pages, _total = await self.list_page_window(offset=offset, limit=limit)
+        return pages
 
 
 def _page_from_result(result: Any, fallback_title: str) -> TelegraphPage:
