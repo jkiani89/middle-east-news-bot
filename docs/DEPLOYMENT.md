@@ -87,6 +87,29 @@ Set these as **Repository Variables** (Settings → Secrets and variables → Ac
 
 > These three are wired in `.github/workflows/cron.yml` as `${{ vars.X || '<default>' }}`, so the repository variable of the same name overrides the safe default (`log` / `true` / `5`) without editing the workflow. Set them under Settings → Secrets and variables → Actions → **Variables**; leave them unset to keep the defaults.
 
+### Telegraph Report Pages (optional)
+
+The 12-hour briefing can be published as Telegraph pages: **one page per topic** plus an
+index page, with the Telegram message carrying the index link **and a direct link to every
+topic page**. While it is disabled, the full bulletin text is sent to Telegram instead and
+nothing else changes.
+
+1. Create a Telegraph account and copy its `access_token` (Telegraph cannot recover an
+   account without it, so keep it):
+   `curl -X POST https://api.telegra.ph/createAccount -d short_name=middle_east_news -d author_name=Middle_East_News`
+2. Store the token as the repository **secret** `TELEGRAPH_ACCESS_TOKEN`
+   (Settings → Secrets and variables → Actions → Secrets).
+3. Set the repository **variable** `TELEGRAPH_ENABLED=true`
+   (Settings → Secrets and variables → Actions → Variables).
+
+Optional repository variables: `TELEGRAPH_AUTHOR_NAME`, `TELEGRAPH_AUTHOR_URL`,
+`TELEGRAPH_SHORT_NAME`.
+
+> **Safety guard:** in `APP_ENV=production` a run without `TELEGRAPH_ACCESS_TOKEN` never
+> creates a throwaway account (its pages could never be edited afterwards); the report is
+> recorded as `disabled` and the full text ships to Telegram exactly as before. Never
+> commit the token — it belongs only in the secret store.
+
 ### Required Backup Secrets (for `backup.yml`)
 
 | Secret Name | Description | Example Value |

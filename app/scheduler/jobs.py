@@ -455,6 +455,7 @@ async def publish_slot_briefing(
                 "window_start": telegraph.get("window_start"),
                 "window_end": telegraph.get("window_end"),
             },
+            topic_pages=telegraph.get("pages") or {},
         )
 
     messages = 0
