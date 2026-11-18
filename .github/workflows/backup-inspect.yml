@@ -1,4 +1,4 @@
-name: Inspect Backup Storage (read-only)
+name: Verify Backfill (temporary)
 
 # Manual, read-only inspection of the backup bucket: it verifies the credentials, checks
 # that the configured bucket exists, and lists the objects under db/. It never dumps,
@@ -28,86 +28,80 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
-      # rclone reads its remote configuration from RCLONE_CONFIG_<REMOTE>_* variables, so
-      # no config file and no secret is written to disk.
-      RCLONE_CONFIG_B2_TYPE: b2
-      RCLONE_CONFIG_B2_ACCOUNT: ${{ secrets.B2_APPLICATION_KEY_ID }}
-      RCLONE_CONFIG_B2_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+      APP_ENV: production
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      TELEGRAPH_ENABLED: ${{ vars.TELEGRAPH_ENABLED || 'true' }}
+      TELEGRAPH_ACCESS_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
+      TIMEZONE: Asia/Tehran
 
     steps:
-      - name: Check required secrets
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
         run: |
-          set -euo pipefail
-          missing=()
-          [ -z "${RCLONE_CONFIG_B2_ACCOUNT:-}" ] && missing+=("B2_APPLICATION_KEY_ID")
-          [ -z "${RCLONE_CONFIG_B2_KEY:-}" ] && missing+=("B2_APPLICATION_KEY")
-          [ -z "${B2_BUCKET_NAME:-}" ] && missing+=("B2_BUCKET_NAME")
-          if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::Cannot inspect B2; missing secret(s): ${missing[*]}" >&2
-            exit 1
-          fi
-          echo "Required secrets are present (values are never printed)."
+          python -m pip install --upgrade pip
+          pip install --no-deps 'aiogram==3.22.0'
+          pip install -r requirements.txt
 
-      - name: Install rclone
+      - name: Verify DB and Telegraph status
+        env:
+          APP_ENV: production
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAPH_ENABLED: ${{ vars.TELEGRAPH_ENABLED || 'true' }}
+          TELEGRAPH_ACCESS_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
+          TIMEZONE: Asia/Tehran
         run: |
-          sudo apt-get update
-          sudo apt-get install -y rclone
-          rclone version
+          python - <<'PY'
+          import asyncio
+          from datetime import date
+          from app.database.connection import SessionLocal
+          from app.database.models import TelegraphReport
+          from sqlalchemy import select
 
-      - name: Verify the configured bucket is reachable
-        # Probe only the bucket named by B2_BUCKET_NAME. Listing b2: would also request
-        # the account's other buckets and can be denied for a bucket-scoped key; the
-        # rclone/B2 error text can name those buckets, so it is not echoed.
-        run: |
-          set -euo pipefail
-          target="b2:${B2_BUCKET_NAME}"
-          if ! rclone lsd "$target" >/dev/null 2>/tmp/bucket-probe.err; then
-            echo "::error::Backblaze bucket '${B2_BUCKET_NAME}' is not accessible with these credentials." >&2
-            echo "Either B2_BUCKET_NAME does not match a bucket this key can reach, or the key lacks the listBuckets capability (a bucket-scoped key needs it to confirm the bucket exists)." >&2
-            echo "No other bucket names are shown on purpose; re-check the key's bucket scope and capability in the Backblaze console." >&2
-            exit 1
-          fi
-          echo "Bucket is reachable: ${B2_BUCKET_NAME}"
+          slots = [
+              (date(2026, 11, 15), 8),
+              (date(2026, 11, 16), 20),
+              (date(2026, 11, 17), 8),
+              (date(2026, 11, 17), 20),
+              (date(2026, 11, 18), 8),
+          ]
 
-      - name: List db/ (read-only)
-        run: |
-          set -euo pipefail
-          target="b2:${B2_BUCKET_NAME}/db/"
-          echo "--- Objects under ${target} ---"
-          if ! rclone lsjson "$target" --files-only > /tmp/db-listing.json; then
-            echo "::error::Cannot list ${target}; the prefix may not exist or the key may lack read access." >&2
-            exit 1
-          fi
-          python3 - <<'PY'
-          import json
-          import os
-          from datetime import datetime
+          async def main():
+              async with SessionLocal() as session:
+                  for rep_date, slot_hour in slots:
+                      row = await session.scalar(
+                          select(TelegraphReport).where(
+                              TelegraphReport.report_date == rep_date,
+                              TelegraphReport.slot_hour == slot_hour,
+                          )
+                      )
+                      if row is None:
+                          print(f'{rep_date} {slot_hour:02d}:00 -> NO ROW FOUND')
+                          continue
+                      pages = row.topic_pages or {}
+                      print(f'{rep_date} {slot_hour:02d}:00 -> status={row.status} index_url={row.index_url} pages={len(pages)}')
+                      for key, info in pages.items():
+                          print(f'  {key}: {info.get("url", "N/A")} (items={info.get("item_count", 0)})')
 
-          with open("/tmp/db-listing.json", encoding="utf-8") as handle:
-              objects = json.load(handle)
+                  row6 = await session.scalar(
+                      select(TelegraphReport).where(
+                          TelegraphReport.report_date == date(2026, 11, 16),
+                          TelegraphReport.slot_hour == 8,
+                      )
+                  )
+                  if row6 is not None:
+                      print(f'
+SLOT_6_CHECK: status={row6.status} pages={len(row6.topic_pages or {})}')
+                  else:
+                      print('
+SLOT_6_CHECK: NO ROW (not processed)')
 
-          if not objects:
-              print("No objects under db/ (the prefix is empty or has not been created yet).")
-              raise SystemExit(0)
-
-          rows = sorted(
-              objects,
-              key=lambda item: item.get("ModTime", ""),
-              reverse=True,
-          )
-          print(f"count: {len(rows)}")
-          total = 0
-          for item in rows:
-              name = item.get("Path") or item.get("Name") or "<unnamed>"
-              size = int(item.get("Size") or 0)
-              total += size
-              stamp = item.get("ModTime") or "unknown"
-              try:
-                  stamp = datetime.fromisoformat(stamp.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S UTC")
-              except ValueError:
-                  pass
-              print(f"  {name}\t{size} bytes\t{stamp}")
-          print(f"total bytes: {total}")
+          asyncio.run(main())
           PY
-          echo "--- Read-only inspection finished; nothing was uploaded, downloaded or deleted. ---"
