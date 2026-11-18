@@ -1,0 +1,51 @@
+name: Audit Backfill (temporary)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: audit-backfill
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Run diagnose_backfill.py against Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      APP_ENV: production
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      TELEGRAPH_ENABLED: ${{ vars.TELEGRAPH_ENABLED || 'false' }}
+      TELEGRAPH_ACCESS_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
+      TIMEZONE: ${{ vars.TIMEZONE || 'Asia/Tehran' }}
+    steps:
+      - name: Checkout diagnose-run branch
+        uses: actions/checkout@v4
+        with:
+          ref: diagnose-run
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.15'
+          allow-prereleases: true
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-deps 'aiogram==3.22.0'
+          pip install -r requirements.txt
+
+      - name: Run diagnostic
+        run: python scripts/diagnose_backfill.py | tee diagnose_output.txt
+
+      - name: Upload diagnostic output
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diagnose-output
+          path: diagnose_output.txt
+          retention-days: 7
