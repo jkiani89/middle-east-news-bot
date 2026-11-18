@@ -9,6 +9,8 @@ concurrency:
 jobs:
   backfill:
     name: Backfill Telegraph for 5 slots
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
