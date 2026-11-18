@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database.models import Article, ArticleEvent, Event, Source, TelegraphReport, utcnow
 from app.editorial.telegraph_topics import group_items_by_telegraph_topic
-from app.editorial.topics import topic_for_event
+from app.editorial.topics import topic_for_event, topics_for_event
 from app.reports.daily_report import (
     current_slot_hour,
     fetch_report_items,
@@ -104,6 +104,7 @@ def _article_item(article: Article, source: Source | None) -> dict[str, Any]:
         "verification_status": "unconfirmed",
         "verification_status_fa": "❓ تأییدنشده (بدون خلاصه تحریریه)",
         "topic_key": None,
+        "topic_keys": [],
         "topic_fa": "سایر تحولات",
         "additional_sources": [],
         "is_insufficient": True,
@@ -118,11 +119,13 @@ def _event_item_without_summary(
     """A collected event whose summary is not ready: publish its own facts, flagged."""
     item = _article_item(article, source)
     topic = topic_for_event(event)
+    item_topics = topics_for_event(event)
     item.update(
         {
             "event_id": int(event.id),
             "headline_fa": str(event.title or item["headline_fa"]).strip(),
             "topic_key": topic.key if topic else None,
+            "topic_keys": [t.key for t in item_topics] if item_topics else ([topic.key] if topic else []),
             "topic_fa": topic.name_fa if topic else "سایر تحولات",
             "importance": event.importance,
             "countries": list(event.countries or []),
@@ -358,7 +361,15 @@ def build_index_page(
     """Build the index page linking to every topic page of one report."""
     metadata = metadata or {}
     label = slot_label(slot_hour)
-    total = sum(len(topic_items) for _key, _name, topic_items in sections)
+    # Unique news items across all sections (multi-topic items are counted once).
+    unique_ids: set[Any] = set()
+    for _key, _name, topic_items in sections:
+        for item in topic_items:
+            uid = item.get("event_id")
+            if uid is None:
+                uid = id(item)
+            unique_ids.add(uid)
+    total = len(unique_ids)
     title = f"گزارش {label} — {report_date.isoformat()}"
 
     start_text = window_start.astimezone(ZoneInfo(settings.timezone)).strftime("%Y-%m-%d %H:%M")
@@ -421,7 +432,14 @@ def format_telegram_notification(
     """
     metadata = metadata or {}
     pages = topic_pages or {}
-    total = sum(len(topic_items) for _key, _name, topic_items in sections)
+    unique_ids: set[Any] = set()
+    for _key, _name, topic_items in sections:
+        for item in topic_items:
+            uid = item.get("event_id")
+            if uid is None:
+                uid = id(item)
+            unique_ids.add(uid)
+    total = len(unique_ids)
     label = slot_label(slot_hour)
     window_start = metadata.get("window_start")
     window_end = metadata.get("window_end")

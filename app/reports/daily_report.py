@@ -24,7 +24,7 @@ from app.database.models import Article, ArticleEvent, DailyReport, Event, Sourc
 from app.editorial.glossary import canonicalize_approved_names
 from app.editorial.perspectives import group_perspectives, orientation_for
 from app.editorial.regions import is_middle_east_country, mentions_middle_east_place
-from app.editorial.topics import load_topics, topic_for_event
+from app.editorial.topics import load_topics, topic_for_event, topics_for_event
 
 logger = logging.getLogger(__name__)
 
@@ -485,6 +485,7 @@ async def fetch_report_items(
         )
 
         topic = topic_for_event(event)
+        topics = topics_for_event(event)
 
         primary_art = linked_arts[0][0] if linked_arts else None
         primary_src = linked_arts[0][1] if linked_arts else None
@@ -580,6 +581,7 @@ async def fetch_report_items(
             "total_sources_count": max(1 + len(additional_sources), distinct_sources),
             "distinct_sources_count": distinct_sources,
             "topic_key": topic.key if topic else None,
+            "topic_keys": [t.key for t in topics] if topics else ([topic.key] if topic else []),
             "topic_fa": topic.name_fa if topic else "سایر تحولات",
             "is_mock": is_mock,
             "language_warning": language_warning,
@@ -1002,15 +1004,38 @@ async def _build_daily_report_with_session(
 def group_items_by_topic(
     items: list[dict[str, Any]],
 ) -> list[tuple[str, str, list[dict[str, Any]]]]:
-    """Group items into briefing sections, in configured topic priority order."""
+    """Group items into briefing sections, in configured topic priority order.
+
+    Multi-topic aware: an item may belong to several sections.
+    """
     names: dict[str, str] = {topic.key: topic.name_fa for topic in load_topics()}
     grouped: dict[str, list[dict[str, Any]]] = {key: [] for key in names}
+    seen_in_section: dict[str, set[Any]] = {key: set() for key in names}
     for item in items:
-        key = item.get("topic_key") or "other"
-        if key not in names:
-            names[key] = item.get("topic_fa") or "سایر تحولات"
-            grouped.setdefault(key, [])
-        grouped[key].append(item)
+        keys = item.get("topic_keys")
+        if isinstance(keys, (list, tuple)):
+            if not keys:
+                keys = [item.get("topic_key")]
+        elif keys is None:
+            keys = [item.get("topic_key")]
+        else:
+            keys = [keys]
+        if not keys:
+            keys = [None]
+        for key in keys:
+            resolved = key or "other"
+            if resolved not in names:
+                names[resolved] = item.get("topic_fa") or "سایر تحولات"
+                grouped.setdefault(resolved, [])
+                seen_in_section.setdefault(resolved, set())
+            bucket = grouped.setdefault(resolved, [])
+            seen = seen_in_section.setdefault(resolved, set())
+            event_id = item.get("event_id")
+            identity = ("event", event_id) if event_id is not None else ("id", id(item))
+            if identity in seen:
+                continue
+            seen.add(identity)
+            bucket.append(item)
     return [(key, names[key], grouped[key]) for key in names if grouped.get(key)]
 
 
@@ -1097,6 +1122,8 @@ async def _backfill_perspectives(
     provider = None
     changed = False
     for item in items:
+        if not item.get("event_id"):
+            continue
         if item.get("perspectives") or budget == 0:
             continue
         names = [item.get("primary_source") or ""] + [
@@ -1156,10 +1183,14 @@ async def generate_slot_bulletins(
         slot_hour = current_slot_hour()
 
     async with SessionLocal() as session:
-        rep_date, items, metadata = await fetch_report_items(
+        # Phase 2: the active briefing path uses the complete window (no 15-item
+        # cap, no regional filter, no importance threshold) so every collected
+        # story of the slot is published, including unlinked and unsummarised ones.
+        from app.reports.telegraph_report import fetch_complete_window_items
+
+        rep_date, items, metadata = await fetch_complete_window_items(
             session,
             report_date=report_date,
-            min_importance=min_importance,
             slot_hour=slot_hour,
         )
         await _backfill_perspectives(session, items)

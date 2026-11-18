@@ -1,62 +1,19 @@
 {
   "_comment": [
-    "Briefing topics. A story belongs to the first topic (lowest priority number) whose",
-    "primary-subject rule it satisfies. The Middle East topic is built from",
-    "app/editorial/regions.py so the audited regional gate keeps its exact behaviour.",
+    "Briefing topics. A story belongs to every topic whose primary-subject rule it",
+    "satisfies (multi-topic), so one story can appear in several related sections.",
+    "The Middle East topic is built from app/editorial/regions.py and injected by code.",
     "countries/actors/places/keywords are matched case-insensitively in both Persian and English."
   ],
   "topics": [
     {
-      "key": "ir",
-      "name_fa": "ایران و مذاکرات",
-      "priority": 1,
-      "min_importance": 2,
-      "countries": ["ایران", "iran"],
-      "actors": [
-        "خامنه‌ای", "khamenei", "رئیس‌جمهور ایران", "president of iran", "سپاه پاسداران",
-        "irgc", "وزارت امور خارجه ایران", "iran foreign ministry", "مجلس شورای اسلامی",
-        "iran parliament", "قوه قضائیه ایران", "atomic energy organization of iran", "aeoi"
-      ],
-      "places": [
-        "تهران", "tehran", "اصفهان", "isfahan", "تبریز", "tabriz", "مشهد", "mashhad",
-        "شیراز", "shiraz", "بندرعباس", "bandar abbas", "نطنز", "natanz", "فردو", "fordow",
-        "بوشهر", "bushehr", "خارک", "kharg", "جزیره خارک", "اهواز", "ahvaz", "قشم", "qeshm"
-      ],
-      "keywords": [
-        "برجام", "jcpoa", "مذاکرات هسته‌ای", "nuclear talks", "تحریم", "sanctions",
-        "آژانس بین‌المللی انرژی اتمی", "iaea", "حجاب", "hijab", "اعتراض", "protest",
-        "انتخابات ایران", "iran election", "قیمت ارز", "بازار تهران"
-      ]
-    },
-    {
-      "key": "ye",
-      "name_fa": "یمن و دریای سرخ",
-      "priority": 2,
-      "min_importance": 2,
-      "countries": ["یمن", "yemen"],
-      "actors": [
-        "انصارالله", "ansarallah", "ansar allah", "حوثی", "حوثی‌ها", "houthi", "houthis",
-        "دولت نجات ملی", "کمیته انقلابی", "revolutionary committee", "ائتلاف عربستان",
-        "saudi-led coalition", "التحالف", "ارتش یمن", "yemeni army"
-      ],
-      "places": [
-        "صنعا", "sanaa", "sana'a", "عدن", "aden", "الحدیده", "hodeidah", "حدیده", "مأرب",
-        "marib", "تعز", "taiz", "صعده", "saada", "سیئون", "seiyun", "المکلا", "mukalla",
-        "باب‌المندب", "bab al-mandeb", "دریای سرخ", "red sea"
-      ],
-      "keywords": [
-        "یمن", "yemen", "دریای سرخ", "red sea", "باب‌المندب", "bab al-mandeb",
-        "کشتیرانی", "shipping", "حملات دریایی", "naval attack", "بندر", "port"
-      ]
-    },
-    {
       "key": "ru-ua",
-      "name_fa": "جنگ روسیه و اوکراین",
-      "priority": 3,
+      "name_fa": "روسیه و اوکراین",
+      "priority": 1,
       "min_importance": 2,
       "countries": ["اوکراین", "ukraine", "روسیه", "russia", "بلاروس", "belarus"],
       "actors": [
-        "پوتین", "putin", "زلنسکی", "zelensky", "زلنسکی", "کرملین", "kremlin",
+        "پوتین", "putin", "زلنسکی", "zelensky", "کرملین", "kremlin",
         "ناتو", "nato", "وزارت دفاع روسیه", "russian defense ministry", "واگنر", "wagner",
         "ارتش اوکراین", "ukrainian army", "شورای امنیت ملی اوکراین"
       ],
@@ -73,23 +30,127 @@
       ]
     },
     {
+      "key": "ir",
+      "name_fa": "ایران و آمریکا",
+      "priority": 2,
+      "min_importance": 2,
+      "countries": ["ایران", "iran"],
+      "actors": [
+        "خامنه‌ای", "khamenei", "رئیس‌جمهور ایران", "president of iran", "سپاه پاسداران",
+        "irgc", "سپاه", "revolutionary guard", "وزارت امور خارجه ایران", "iran foreign ministry",
+        "مجلس شورای اسلامی", "iran parliament", "قوه قضائیه ایران", "atomic energy organization of iran",
+        "aeoi", "ارتش", "army", "نیروی دریایی", "navy", "نیروی هوایی", "air force",
+        "فرمانده", "commander", "وزیر دفاع", "defense minister", "ستاد کل", "armed forces",
+        "نیروهای مسلح", "سپاه پاسداران انقلاب اسلامی"
+      ],
+      "places": [
+        "تهران", "tehran", "اصفهان", "isfahan", "تبریز", "tabriz", "مشهد", "mashhad",
+        "شیراز", "shiraz", "بندرعباس", "bandar abbas", "نطنز", "natanz", "فردو", "fordow",
+        "بوشهر", "bushehr", "خارک", "kharg", "جزیره خارک", "اهواز", "ahvaz", "قشم", "qeshm",
+        "خلیج فارس", "persian gulf", "تنگه هرمز", "strait of hormuz", "دریای عمان", "gulf of oman"
+      ],
+      "keywords": [
+        "برجام", "jcpoa", "مذاکرات هسته‌ای", "nuclear talks", "تحریم", "sanctions",
+        "آژانس بین‌المللی انرژی اتمی", "iaea", "حجاب", "hijab", "اعتراض", "protest",
+        "انتخابات ایران", "iran election", "قیمت ارز", "بازار تهران",
+        "مذاکرات", "negotiations", "تنش", "tension", "حمله", "attack", "رزمایش", "exercise",
+        "استقرار", "deployment", "تهدید", "threat", "جنگ", "war", "پاسخ", "retaliation",
+        "نظامی", "military", "امنیتی", "security", "موشک", "missile", "پهپاد", "drone",
+        "ناو", "carrier", "ناوگان", "fleet", "هسته‌ای", "nuclear", "میانجی", "mediation",
+        "دیپلماسی", "diplomacy", "اسرائیل", "israel", "آمریکا", "america", "united states"
+      ]
+    },
+    {
       "key": "us",
       "name_fa": "سیاست داخلی آمریکا",
-      "priority": 4,
+      "priority": 3,
       "min_importance": 3,
       "countries": ["ایالات متحده آمریکا", "آمریکا", "united states", "usa", "u.s."],
       "actors": [
         "ترامپ", "trump", "کنگره", "congress", "کاخ سفید", "white house", "دیوان عالی",
         "supreme court", "وزارت دادگستری آمریکا", "justice department", "پنتاگون",
         "pentagon", "دموکرات", "democrat", "جمهوری‌خواه", "republican", "فرماندار",
-        "governor"
+        "governor", "بایدن", "biden", "سناتور", "senator"
       ],
       "places": [],
       "keywords": [
         "انتخابات", "election", "کنگره", "congress", "دموکرات", "democrat",
         "جمهوری‌خواه", "republican", "فرمان اجرایی", "executive order", "بودجه",
         "shutdown", "تعطیلی دولت", "مهاجرت", "immigration", "استیضاح", "impeachment",
-        "دادگاه عالی", "supreme court"
+        "دادگاه عالی", "supreme court", "سیاست داخلی", "domestic"
+      ]
+    },
+    {
+      "key": "ye",
+      "name_fa": "عربستان و یمن",
+      "priority": 4,
+      "min_importance": 2,
+      "countries": ["یمن", "yemen", "عربستان", "saudi arabia", "عربستان سعودی"],
+      "actors": [
+        "انصارالله", "ansarallah", "ansar allah", "حوثی", "حوثی‌ها", "houthi", "houthis",
+        "دولت نجات ملی", "کمیته انقلابی", "revolutionary committee", "ائتلاف عربستان",
+        "saudi-led coalition", "التحالف", "ارتش یمن", "yemeni army", "محمد بن سلمان",
+        "mohammed bin salman", "ریاض", "riyadh", "دولت یمن", "yemeni government",
+        "سعودی", "saudi"
+      ],
+      "places": [
+        "صنعا", "sanaa", "sana'a", "عدن", "aden", "الحدیده", "hodeidah", "حدیده", "مأرب",
+        "marib", "تعز", "taiz", "صعده", "saada", "سیئون", "seiyun", "المکلا", "mukalla",
+        "باب‌المندب", "bab al-mandeb", "دریای سرخ", "red sea", "ریاض", "riyadh",
+        "جده", "jeddah", "مکه", "mecca", "مدینه", "medina"
+      ],
+      "keywords": [
+        "یمن", "yemen", "دریای سرخ", "red sea", "باب‌المندب", "bab al-mandeb",
+        "کشتیرانی", "shipping", "حملات دریایی", "naval attack", "بندر", "port",
+        "عربستان", "saudi", "ائتلاف", "coalition", "حوثی", "houthi"
+      ]
+    },
+    {
+      "key": "il",
+      "name_fa": "اسرائیل",
+      "priority": 5,
+      "min_importance": 2,
+      "countries": ["اسرائیل", "israel", "فلسطین", "palestine", "غزه", "gaza"],
+      "actors": [
+        "نتانیاهو", "netanyahu", "ارتش اسرائیل", "idf", "نیروهای دفاعی اسرائیل",
+        "hamas", "حماس", "جهاد اسلامی", "islamic jihad", "حزب‌الله", "hezbollah",
+        "کابینه اسرائیل", "israeli cabinet", "وزیر دفاع اسرائیل", "israeli defense minister",
+        "کنست", "knesset", "رئیس‌جمهور اسرائیل"
+      ],
+      "places": [
+        "تل‌آویو", "tel aviv", "اورشلیم", "jerusalem", "غزه", "gaza", "رام‌الله", "ramallah",
+        "کرانه باختری", "west bank", "حیفا", "haifa", "بئر شبع", "beersheba",
+        "اشکلون", "ashkelon", "سدروت", "sderot", "جنین", "jenin", "نابلس", "nablus",
+        "بیت‌لحم", "bethlehem", "خان یونس", "khan younis", "رفح", "rafah"
+      ],
+      "keywords": [
+        "اسرائیل", "israel", "فلسطین", "palestine", "غزه", "gaza", "حماس", "hamas",
+        "آتش‌بس", "ceasefire", "گروگان", "hostage", "حمله", "attack", "موشک", "rocket",
+        "گنبد آهنین", "iron dome", "اشغال", "occupation", " شهرک", "settlement",
+        "جنگ", "war", "نوار غزه", "gaza strip", "کرانه باختری", "west bank"
+      ]
+    },
+    {
+      "key": "us-cn",
+      "name_fa": "آمریکا و چین",
+      "priority": 6,
+      "min_importance": 2,
+      "countries": ["چین", "china", "ایالات متحده آمریکا", "آمریکا", "united states", "usa"],
+      "actors": [
+        "شی جین پینگ", "xi jinping", "ترامپ", "trump", "بایدن", "biden", "کاخ سفید",
+        "white house", "کنگره", "congress", "پنتاگون", "pentagon", "وزارت خارجه چین",
+        "chinese foreign ministry", "وزارت بازرگانی", "commerce department"
+      ],
+      "places": [
+        "پکن", "beijing", "واشنگتن", "washington", "تایوان", "taiwan", "دریای چین جنوبی",
+        "south china sea", "دریای چین شرقی", "east china sea", "تنگه تایوان", "taiwan strait",
+        "هنگ کنگ", "hong kong", "شانگهای", "shanghai"
+      ],
+      "keywords": [
+        "چین", "china", "تایوان", "taiwan", "تعرفه", "tariff", "جنگ تجاری", "trade war",
+        "دریای چین جنوبی", "south china sea", "تحریم", "sanctions", "فناوری", "technology",
+        "نیمه‌هادی", "semiconductor", "هوآوی", "huawei", "تیک‌تاک", "tiktok",
+        "روابط چین و آمریکا", "us-china", "رقابت", "competition", "جاسوسی", "espionage"
       ]
     }
   ]

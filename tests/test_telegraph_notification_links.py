@@ -19,15 +19,15 @@ WINDOW = {
 
 def _sections() -> list[tuple[str, str, list[dict[str, object]]]]:
     return [
-        ("ir", "ایران و مذاکرات", [{"headline_fa": "خبر یک"}, {"headline_fa": "خبر دو"}]),
-        ("ye", "یمن و دریای سرخ", [{"headline_fa": "خبر سه"}]),
+        ("ir", "ایران و آمریکا", [{"headline_fa": "خبر یک"}, {"headline_fa": "خبر دو"}]),
+        ("ye", "عربستان و یمن", [{"headline_fa": "خبر سه"}]),
     ]
 
 
 def _pages() -> dict[str, dict[str, object]]:
     return {
-        "ir": {"url": "https://telegra.ph/iran-11-18", "name_fa": "ایران و مذاکرات", "item_count": 2},
-        "ye": {"url": "https://telegra.ph/yemen-11-18", "name_fa": "یمن و دریای سرخ", "item_count": 1},
+        "ir": {"url": "https://telegra.ph/iran-11-18", "name_fa": "ایران و آمریکا", "item_count": 2},
+        "ye": {"url": "https://telegra.ph/yemen-11-18", "name_fa": "عربستان و یمن", "item_count": 1},
     }
 
 
@@ -43,8 +43,8 @@ def test_notification_links_the_index_and_every_topic_page() -> None:
 
     assert '<a href="https://telegra.ph/report-index-11-18">' in text
     assert "صفحه اصلی گزارش در Telegraph" in text
-    assert '<a href="https://telegra.ph/iran-11-18">ایران و مذاکرات</a>' in text
-    assert '<a href="https://telegra.ph/yemen-11-18">یمن و دریای سرخ</a>' in text
+    assert '<a href="https://telegra.ph/iran-11-18">ایران و آمریکا</a>' in text
+    assert '<a href="https://telegra.ph/yemen-11-18">عربستان و یمن</a>' in text
 
 
 def test_every_section_keeps_its_item_count_next_to_its_link() -> None:
@@ -57,8 +57,8 @@ def test_every_section_keeps_its_item_count_next_to_its_link() -> None:
         topic_pages=_pages(),
     )
 
-    assert '<a href="https://telegra.ph/iran-11-18">ایران و مذاکرات</a>: 2 خبر' in text
-    assert '<a href="https://telegra.ph/yemen-11-18">یمن و دریای سرخ</a>: 1 خبر' in text
+    assert '<a href="https://telegra.ph/iran-11-18">ایران و آمریکا</a>: 2 خبر' in text
+    assert '<a href="https://telegra.ph/yemen-11-18">عربستان و یمن</a>: 1 خبر' in text
     assert "3 خبر در 2 موضوع" in text
 
 
@@ -75,8 +75,8 @@ def test_topic_without_a_page_url_is_still_listed_by_name() -> None:
         topic_pages=pages,
     )
 
-    assert '<a href="https://telegra.ph/iran-11-18">ایران و مذاکرات</a>' in text
-    assert "• یمن و دریای سرخ: 1 خبر" in text
+    assert '<a href="https://telegra.ph/iran-11-18">ایران و آمریکا</a>' in text
+    assert "• عربستان و یمن: 1 خبر" in text
     assert "telegra.ph/yemen" not in text
 
 
@@ -91,8 +91,8 @@ def test_no_topic_pages_degrades_to_names_only_and_keeps_the_index_link() -> Non
 
     assert text.count("<a href=") == 1
     assert '<a href="https://telegra.ph/report-index-11-18">' in text
-    assert "• ایران و مذاکرات: 2 خبر" in text
-    assert "• یمن و دریای سرخ: 1 خبر" in text
+    assert "• ایران و آمریکا: 2 خبر" in text
+    assert "• عربستان و یمن: 1 خبر" in text
 
 
 def test_missing_index_url_states_it_instead_of_emitting_a_broken_link() -> None:
@@ -108,4 +108,4 @@ def test_missing_index_url_states_it_instead_of_emitting_a_broken_link() -> None
     assert "لینک گزارش در دسترس نیست." in text
     assert "telegra.ph/report-index" not in text
     # The topic links are independent of the index page and must survive it.
-    assert '<a href="https://telegra.ph/iran-11-18">ایران و مذاکرات</a>' in text
+    assert '<a href="https://telegra.ph/iran-11-18">ایران و آمریکا</a>' in text
