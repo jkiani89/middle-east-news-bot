@@ -70,61 +70,45 @@ jobs:
           fi
           echo "Bucket is reachable: ${B2_BUCKET_NAME}"
 
-      - name: Verify DB status
-        env:
-          APP_ENV: production
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          TELEGRAPH_ENABLED: ${{ vars.TELEGRAPH_ENABLED || 'true' }}
-          TELEGRAPH_ACCESS_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
-          TIMEZONE: Asia/Tehran
+      - name: List db/ (read-only)
         run: |
-          python -m pip install --upgrade pip
-          pip install --no-deps 'aiogram==3.22.0'
-          pip install -r requirements.txt
-          python - <<'PY'
-          import asyncio
-          from datetime import date
-          from app.database.connection import SessionLocal
-          from app.database.models import TelegraphReport
-          from sqlalchemy import select
+          set -euo pipefail
+          target="b2:${B2_BUCKET_NAME}/db/"
+          echo "--- Objects under ${target} ---"
+          if ! rclone lsjson "$target" --files-only > /tmp/db-listing.json; then
+            echo "::error::Cannot list ${target}; the prefix may not exist or the key may lack read access." >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime
 
-          slots = [
-              (date(2026, 11, 15), 8),
-              (date(2026, 11, 16), 20),
-              (date(2026, 11, 17), 8),
-              (date(2026, 11, 17), 20),
-              (date(2026, 11, 18), 8),
-          ]
+          with open("/tmp/db-listing.json", encoding="utf-8") as handle:
+              objects = json.load(handle)
 
-          async def main():
-              async with SessionLocal() as session:
-                  for rep_date, slot_hour in slots:
-                      row = await session.scalar(
-                          select(TelegraphReport).where(
-                              TelegraphReport.report_date == rep_date,
-                              TelegraphReport.slot_hour == slot_hour,
-                          )
-                      )
-                      if row is None:
-                          print(f'{rep_date} {slot_hour:02d}:00 -> NO ROW FOUND')
-                          continue
-                      pages = row.topic_pages or {}
-                      print(f'{rep_date} {slot_hour:02d}:00 -> status={row.status} index_url={row.index_url} pages={len(pages)}')
-                      for key, info in pages.items():
-                          print(f'  {key}: {info.get("url", "N/A")} (items={info.get("item_count", 0)})')
+          if not objects:
+              print("No objects under db/ (the prefix is empty or has not been created yet).")
+              raise SystemExit(0)
 
-                  row6 = await session.scalar(
-                      select(TelegraphReport).where(
-                          TelegraphReport.report_date == date(2026, 11, 16),
-                          TelegraphReport.slot_hour == 8,
-                      )
-                  )
-                  if row6 is not None:
-                      print(f'
-SLOT_6_CHECK: status={row6.status} pages={len(row6.topic_pages or {})}')
-                  else:
-                      print('
-SLOT_6_CHECK: NO ROW (not processed)')
-
-          asyncio.run(main())
+          rows = sorted(
+              objects,
+              key=lambda item: item.get("ModTime", ""),
+              reverse=True,
+          )
+          print(f"count: {len(rows)}")
+          total = 0
+          for item in rows:
+              name = item.get("Path") or item.get("Name") or "<unnamed>"
+              size = int(item.get("Size") or 0)
+              total += size
+              stamp = item.get("ModTime") or "unknown"
+              try:
+                  stamp = datetime.fromisoformat(stamp.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S UTC")
+              except ValueError:
+                  pass
+              print(f"  {name}\t{size} bytes\t{stamp}")
+          print(f"total bytes: {total}")
           PY
+          echo "--- Read-only inspection finished; nothing was uploaded, downloaded or deleted. ---"
+
