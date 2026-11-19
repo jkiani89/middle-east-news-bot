@@ -687,3 +687,98 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 **نتیجه:** finding `3-4` بسته شد. `audit_ro` دیگر `TEMPORARY` روی `defaultdb` ندارد.
 `_aiven_repl` و `_aiven_rewind` TEMP را از طریق grant صریح حفظ کردند (blast radius صفر).
 هیچ رمز/DSN در خروجی چاپ نشد (گذرواژه‌ها mask شده‌اند).
+
+---
+
+## ۱۴. بررسی مستقل: `rolreplication` و عضویت `avnadmin → audit_ro`
+
+> وضعیت: **فقط بررسی (read-only) — هیچ تغییر production تا زمان اثبات ضرورت و تأیید اصلاح.**
+
+### ۱۴.۱ یافتهٔ existing (از preflight 3b/3c)
+
+از خروجی preflight production (۲۰۲۶-۱۱-۱۹):
+
+```
+=== 3b. MEMBERSHIP EDGES ===
+member_role  | granted_role | admin_option | inherits_now | can_set_role | granted_role_has_temp
+-------------+--------------+--------------+--------------+--------------+----------------------
+avnadmin     | audit_ro     | True         | True         | True         | True
+avnadmin     | avnadmin_group | True       | True         | True         | True
+_avnadmin_monitor | pg_monitor | False      | True         | True         | True
+_avnadmin_monitor | pg_use_reserved_connections | False | True | True | True
+```
+
+و `audit_ro: rolsuper=f, rolreplication=t, rolcreatedb=f, rolcreaterole=f, rolbypassrls=f`.
+
+### ۱۴.۲ تحلیل codebase (مستقل، بدون دسترسی به production)
+
+جست‌وجوی کل مخزن (`grep -rn` برای `replication`, `logical_decoding`, `slot`, `streaming`,
+`SET ROLE`, `pg_replication`):
+
+- **هیچ استفادهٔ replication در کد پروژه:** تمام اتصال‌ها از asyncpg/psycopg برای کوئری‌های
+  عادی (SELECT/INSERT/UPDATE) استفاده می‌کنند. هیچ `pg_create_logical_replication_slot`،
+  هیچ `pg_replication_slots` query، هیچ streaming replication. فایل‌های مرتبط:
+  `app/database.py`, `alembic/`, `scripts/`, `g5_handoff/g5_probe*.py` — هیچ replication.
+- **audit_ro فقط به‌عنوان probe read-only استفاده می‌شود:** `g5_probe_fix3.py` با `audit_ro`
+  کوئری‌های فقط‌خواندنی روی کاتالوگ اجرا می‌کند. هیچ نیازی به replication.
+- **avnadmin کاربر اصلی app است:** `DATABASE_URL` با `avnadmin` تنظیم شده (`.env.example`،
+  `docs/DEPLOYMENT.md`). membership در `audit_ro` برای app ضروری نیست — app مستقیماً
+  به جداول دسترسی دارد، نه از طریق audit_ro.
+- **نتیجهٔ codebase:** نه `rolreplication` و نه membership `avnadmin→audit_ro` توسط
+  هیچ کدی استفاده نمی‌شوند. هر دو «over-provisioned» هستند.
+
+### ۱۴.۳ چرا avnadmin عضو audit_ro است؟
+
+- `avnadmin` به‌عنوان owner دیتابیس ساخته شده (Aiven template). membership در `audit_ro`
+  احتمالاً یک artifact از provisioning اولیهٔ Aiven است — یا اینکه Aiven به‌طور پیش‌فرض
+  owner را در نقش‌های read-only membership می‌دهد.
+- `admin_option=true` یعنی avnadmin می‌تواند دیگران را به audit_ro اضافه کند — قابلیتی
+  که برای owner دیتابیس غیرضروری است.
+- `inherits_now=true` یعنی avnadmin به‌طور خودکار privilegeهای audit_ro را به ارث می‌برد.
+  قبل از fix 3-4، این شامل TEMPORARY (از طریق PUBLIC) بود — اما حالا audit_ro TEMP ندارد،
+  پس این inheritance بی‌اثر شده است.
+- `can_set_role=true` یعنی avnadmin می‌تواند `SET ROLE audit_ro` اجرا کند — capability
+  که برای یک read-only probe role غیرضروری است.
+
+### ۱۴.۴ ارزیابی ضرورت (بدون تغییر production)
+
+| مورد | ضرورت | شواهد | تصمیم |
+|---|---|---|---|
+| `audit_ro.rolreplication` | **غیرضروری** | هیچ replication در codebase؛ audit_ro فقط probe read-only | candidate برای `ALTER ROLE audit_ro NOREPLICATION` (اختیاری) |
+| `avnadmin → audit_ro` membership | **غیرضروری** | app مستقیماً به جداول دسترسی دارد؛ membership فقط privilegeهای audit_ro (که حالا TEMP ندارد) را به ارث می‌برد | candidate برای `REVOKE audit_ro FROM avnadmin` (اختیاری) |
+| `avnadmin.admin_option on audit_ro` | **غیرضروری** | owner دیتابیس نیازی به اعطای audit_ro به دیگران ندارد | candidate برای `REVOKE ADMIN OPTION FOR audit_ro FROM avnadmin` |
+
+### ۱۴.۵ ابزار بررسی (read-only)
+
+فایل: `g5_handoff/INVESTIGATE_ROLREP_AND_MEMBERSHIP.sql` (read-only، verify-full)
+Runner: `g5_handoff/RUN_G5_INVESTIGATE.ps1`
+
+این ابزار بررسی می‌کند (بدون تغییر):
+- A1: audit_ro role attributes (rolreplication, rolsuper, etc.)
+- A2: replication slots (server-wide)
+- A3: replication-related privileges برای audit_ro
+- A4: replication slots summary
+- A5: publications
+- A6: subscriptions
+- B1: membership edge avnadmin→audit_ro (admin_option, inherit, set)
+- B2: تمام members of audit_ro
+- B3: تمام roles که avnadmin عضو آنهاست
+- B4: effective privileges avnadmin از audit_ro به ارث می‌برد
+- B5: schema-level privileges inherited
+- B6: table-level SELECT privileges inherited
+- C1: roles که audit_ro عضو آنهاست (reverse)
+- C2: objects owned by audit_ro
+- C3: default privileges of audit_ro
+
+### ۱۴.۶ وضعیت
+
+- **هیچ تغییری روی production انجام نشده** (نه NOREPLICATION، نه REVOKE membership).
+- هر دو candidate (NOREPLICATION و REVOKE membership) **اختیاری** و **خارج از معیارهای G5** هستند.
+- قبل از هر اصلاح، باید:
+  1. ابزار investigation روی production اجرا شود (verify-full) و خروجی بررسی شود.
+  2. ضرورت اثبات شود (codebase analysis بالا: هیچ استفاده‌ای ندارند).
+  3. تأیید صریح انسانی برای هر ALTER/REVOKE.
+- پس از تأیید، fix SQL جداگانه (با guards و assertها) ساخته خواهد شد،
+  الگوی FIX_AUDIT_RO_v4.sql رعایت می‌شود.
+
+**«ابزار investigation آماده؛ هیچ تغییر production تا زمان تأیید.»**

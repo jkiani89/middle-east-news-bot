@@ -1522,3 +1522,21 @@ thread داخلی SDK با `wait_for` لغو نمی‌شود و در پس‌زم
 - **hash فایل‌های اجراشده:** g5_admin.py=8163ecbf…09dee1، PREFLIGHT_AUDIT_RO_v3.sql=0c27e5e3…59ec20،
   FIX_AUDIT_RO_v4.sql=0c85a2e2…41ce8، g5_probe_fix3.py=a3aeb1fe…ad0643d، aiven-ca.pem=70e57f33…fbcea4.
 - **وضعیت:** «3-4 = PASS (production evidence)؛ G5 audit closed».
+
+### ۱۰. بررسی مستقل rolreplication و عضویت avnadmin→audit_ro — ۲۰۲۶-۱۱-۱۹
+- **هدف:** بررسی مستقل دو مورد «اختیاری/خارج از معیار G5»: `audit_ro.rolreplication=t` و
+  membership `avnadmin → audit_ro` (admin_option=true, inherits_now=true, can_set_role=true).
+- **تحلیل codebase:** جست‌وجوی کل مخزن برای `replication`, `logical_decoding`, `slot`, `streaming`,
+  `SET ROLE`, `pg_replication` — هیچ استفادهٔ replication در کد پروژه. audit_ro فقط probe
+  read-only است. avnadmin کاربر اصلی app است که مستقیماً به جداول دسترسی دارد.
+- **نتیجهٔ codebase:** نه `rolreplication` و نه membership `avnadmin→audit_ro` توسط هیچ کدی
+  استفاده نمی‌شوند — هر دو «over-provisioned».
+- **ارزیابی ضرورت:** هر دو غیرضروری (candidate برای NOREPLICATION و REVOKE membership).
+- **ابزار read-only ساخته شد:** `g5_handoff/INVESTIGATE_ROLREP_AND_MEMBERSHIP.sql` +
+  `g5_handoff/RUN_G5_INVESTIGATE.ps1` (verify-full، فقط SELECT، BEGIN READ ONLY/ROLLBACK).
+  بررسی می‌کند: role attributes, replication slots, replication privileges, publications,
+  subscriptions, membership edges, inherited privileges, schema/table-level inherited access,
+  reverse membership, owned objects, default privileges.
+- **وضعیت:** هیچ تغییر production. هر دو candidate اختیاری و خارج از معیارهای G5.
+  قبل از هر اصلاح: اجرای investigation + اثبات ضرورت + تأیید صریح انسانی.
+- **مستندات:** بند ۱۴ جدید در `docs/G5_AUDIT.md`.
