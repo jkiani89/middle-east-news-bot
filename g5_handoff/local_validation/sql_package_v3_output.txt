@@ -1,0 +1,270 @@
+### initdb
+waiting for server to start.... done
+server started
+### mimic production topology (throwaway)
+
+########## 1) PREFLIGHT v3 as avnadmin (read-only) ##########
+=== 0. CONTEXT, GUARDS AND READ-ONLY PROOF ===
+  run_as  | session_user |    db     | server_version | tx_read_only | in_recovery | ssl | tls_version | db_owner 
+----------+--------------+-----------+----------------+--------------+-------------+-----+-------------+----------
+ avnadmin | avnadmin     | defaultdb | 16.2           | on           | f           | f   |             | avnadmin
+(1 row)
+
+=== 1. DATABASE ACL AND OWNER ===
+  datname  |  owner   |                               datacl                               | public_temp | public_connect | public_create 
+-----------+----------+--------------------------------------------------------------------+-------------+----------------+---------------
+ defaultdb | avnadmin | {=Tc/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | t           | t              | f
+(1 row)
+
+=== 2. THE PUBLIC ENTRY, EXPLODED (grantee 0 = PUBLIC) ===
+ grantee | privilege_type | is_grantable | granted_by 
+---------+----------------+--------------+------------
+       0 | CONNECT        | f            | avnadmin
+       0 | TEMPORARY      | f            | avnadmin
+(2 rows)
+
+=== 3. EVERY ROLE: EFFECTIVE vs EXPLICIT TEMPORARY ===
+           rolname           | rolcanlogin | rolsuper | rolreplication | effective_temp | direct_temp 
+-----------------------------+-------------+----------+----------------+----------------+-------------
+ _avnadmin_monitor           | t           | f        | f              | t              | t
+ audit_ro                    | t           | f        | f              | t              | f
+ avnadmin                    | t           | f        | f              | t              | t
+ postgres                    | t           | t        | t              | t              | f
+ pg_checkpoint               | f           | f        | f              | t              | f
+ pg_create_subscription      | f           | f        | f              | t              | f
+ pg_database_owner           | f           | f        | f              | t              | f
+ pg_execute_server_program   | f           | f        | f              | t              | f
+ pg_monitor                  | f           | f        | f              | t              | f
+ pg_read_all_data            | f           | f        | f              | t              | f
+ pg_read_all_settings        | f           | f        | f              | t              | f
+ pg_read_all_stats           | f           | f        | f              | t              | f
+ pg_read_server_files        | f           | f        | f              | t              | f
+ pg_signal_backend           | f           | f        | f              | t              | f
+ pg_stat_scan_tables         | f           | f        | f              | t              | f
+ pg_use_reserved_connections | f           | f        | f              | t              | f
+ pg_write_all_data           | f           | f        | f              | t              | f
+ pg_write_server_files       | f           | f        | f              | t              | f
+(18 rows)
+
+=== 3b. MEMBERSHIP EDGES OF LOGIN ROLES (USAGE = inherited now, SET = usable via SET ROLE) ===
+ member_role | granted_role | admin_option | inherits_now | can_set_role | granted_role_has_temp 
+-------------+--------------+--------------+--------------+--------------+-----------------------
+(0 rows)
+
+=== 3c. CAPABILITY PER LOGIN ROLE AFTER THE REVOKE (the decision table) ===
+      rolname      | temp_now | temp_explicit |     keeps_via_set_role      |  impact_after_revoke   
+-------------------+----------+---------------+-----------------------------+------------------------
+ _avnadmin_monitor | t        | t             |                             | KEEPS (explicit grant)
+ avnadmin          | t        | t             |                             | KEEPS (owner)
+ postgres          | t        | f             | _avnadmin_monitor, avnadmin | KEEPS (superuser)
+ audit_ro          | t        | f             |                             | LOSES
+(4 rows)
+
+=== 4. SUMMARY (STOP-CRITERION INPUTS) ===
+ login_roles_that_lose_temp | login_roles_temp_only_from_public_or_membership | total_login_roles | predefined_nologin_roles_ignored 
+----------------------------+-------------------------------------------------+-------------------+----------------------------------
+                          1 |                                               1 |                 4 |                               14
+(1 row)
+
+=== 5. TEMP RELATIONS PRESENT RIGHT NOW (session impact signal; 0 = nobody is mid-temp-work) ===
+ temp_relations | temp_schemas 
+----------------+--------------
+              0 |            0
+(1 row)
+
+=== 6. FULL ACL BASELINE (diff this against the AFTER snapshot) ===
+    db     |                          datacl_baseline                           |      grantee      | privilege_type | is_grantable | granted_by 
+-----------+--------------------------------------------------------------------+-------------------+----------------+--------------+------------
+ defaultdb | {=Tc/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | PUBLIC            | CONNECT        | f            | avnadmin
+ defaultdb | {=Tc/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | PUBLIC            | TEMPORARY      | f            | avnadmin
+ defaultdb | {=Tc/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | _avnadmin_monitor | CONNECT        | f            | avnadmin
+ defaultdb | {=Tc/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | _avnadmin_monitor | TEMPORARY      | f            | avnadmin
+ defaultdb | {=Tc/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | avnadmin          | CONNECT        | f            | avnadmin
+ defaultdb | {=Tc/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | avnadmin          | CREATE         | f            | avnadmin
+ defaultdb | {=Tc/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | avnadmin          | TEMPORARY      | f            | avnadmin
+(7 rows)
+
+=== 7. DOES ANY SERVICE NEED TEMP? (code-level answer: NO - see docs/G5_AUDIT.md) ===
+=== END OF PREFLIGHT (read-only; transaction rolled back) ===
+
+########## 2) READ-ONLY PROOF: a write inside the transaction must fail with 25006 ##########
+ guard 
+-------
+ on
+(1 row)
+
+psql:/tmp/g5v3_rodtest.sql:3: ERROR:  cannot execute CREATE TABLE in a read-only transaction
+read_only_write_attempt_exit=3 (non-zero = the server refused the write)
+PROOF: server rejected the write (read-only transaction)
+
+########## 3) probe fix3 BEFORE the remedy ##########
+=== sql_before_v3 (/workspace/chats/648c5b2db038779ef20307d3/g5_handoff/g5_probe_fix3.py) ===
+probe_version: fix3
+verdict      : FAIL
+per_section  : {"identity": "FAIL", "read_only_txn": "PASS", "1A": "PASS", "1B": "PASS", "1C": "PASS", "1D": "PASS", "1E": "PASS", "2": "NOT_APPLICABLE", "3-4": "FAIL", "3-4b": "PASS", "3-6": "PASS", "3-7": "PASS", "3-7b": "PASS", "3-8": "PASS"}
+identity     : FAIL/unknown here is environmental (local build has no SSL); criteria-verdict excluding identity: FAIL
+3-4 rows     : [{"can_connect": true, "can_temp": true, "can_create_schema": false}]
+3-7 rows     : []
+3-4b rows    : [{"nspname": "information_schema", "usage": true, "can_create": false}, {"nspname": "pg_catalog", "usage": true, "can_create": false}, {"nspname": "public", "usage": true, "can_create": false}]
+1D row count : 1
+1A/1B/1C/1E  : 0 0 0 0
+tro_after    : [{"tro": "on", "xid_assigned": null}]
+
+
+########## 4) ROLLBACK PROOF: make the monitor role depend on PUBLIC, so the post-REVOKE assert must fail ##########
+(1 row)
+
+                           datacl_before                           
+-------------------------------------------------------------------
+ {=Tc/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=c/avnadmin}
+(1 row)
+
+=== 2. CHANGE (single ACL bit; conditional no-op safeguard) ===
+psql:/workspace/chats/648c5b2db038779ef20307d3/g5_handoff/FIX_AUDIT_RO_v3.sql:69: NOTICE:  G5: avnadmin already holds TEMPORARY explicitly - no GRANT issued
+=== 3. POST-CONDITIONS, ASSERTED INSIDE THE TRANSACTION (violation = rollback) ===
+psql:/workspace/chats/648c5b2db038779ef20307d3/g5_handoff/FIX_AUDIT_RO_v3.sql:105: ERROR:  G5: _avnadmin_monitor lost TEMPORARY - provider role would break
+CONTEXT:  PL/pgSQL function inline_code_block line 10 at RAISE
+fix_with_broken_assert_exit=3 (non-zero expected)
+                      datacl_after_failed_fix                      | public_temp_still_true 
+-------------------------------------------------------------------+------------------------
+ {=Tc/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=c/avnadmin} | t
+(1 row)
+
+
+########## 5) restore the monitor grant, run the real FIX v3 ##########
+=== 0. GUARDS (raise = abort before any change) ===
+=== 1. BEFORE (expected: audit_ro=t, avnadmin=t, monitor=t, public_temp=t) ===
+ audit_ro_temp_before | avnadmin_temp_before | monitor_temp_before | public_temp_before 
+----------------------+----------------------+---------------------+--------------------
+ t                    | t                    | t                   | t
+(1 row)
+
+                           datacl_before                            
+--------------------------------------------------------------------
+ {=Tc/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin}
+(1 row)
+
+=== 2. CHANGE (single ACL bit; conditional no-op safeguard) ===
+psql:/workspace/chats/648c5b2db038779ef20307d3/g5_handoff/FIX_AUDIT_RO_v3.sql:69: NOTICE:  G5: avnadmin already holds TEMPORARY explicitly - no GRANT issued
+=== 3. POST-CONDITIONS, ASSERTED INSIDE THE TRANSACTION (violation = rollback) ===
+psql:/workspace/chats/648c5b2db038779ef20307d3/g5_handoff/FIX_AUDIT_RO_v3.sql:105: NOTICE:  G5: all post-conditions hold; committing
+=== 4. AFTER (expected: audit_ro=f, avnadmin=t, monitor=t, public_temp=f, public_connect=t) ===
+ audit_ro_temp_after | avnadmin_temp_after | monitor_temp_after | public_temp_after | public_connect_after 
+---------------------+---------------------+--------------------+-------------------+----------------------
+ f                   | t                   | t                  | f                 | t
+(1 row)
+
+=== 5. AFTER datacl (expected exactly: {=c/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin}) ===
+                           datacl_after                            
+-------------------------------------------------------------------
+ {=c/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin}
+(1 row)
+
+=== END (only PUBLIC.TEMPORARY changed; now re-run RUN_G5_fix3.ps1 to re-audit) ===
+
+########## 6) PREFLIGHT v3 again (no role may be classified LOSES) ##########
+=== 0. CONTEXT, GUARDS AND READ-ONLY PROOF ===
+  run_as  | session_user |    db     | server_version | tx_read_only | in_recovery | ssl | tls_version | db_owner 
+----------+--------------+-----------+----------------+--------------+-------------+-----+-------------+----------
+ avnadmin | avnadmin     | defaultdb | 16.2           | on           | f           | f   |             | avnadmin
+(1 row)
+
+=== 1. DATABASE ACL AND OWNER ===
+  datname  |  owner   |                              datacl                               | public_temp | public_connect | public_create 
+-----------+----------+-------------------------------------------------------------------+-------------+----------------+---------------
+ defaultdb | avnadmin | {=c/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | f           | t              | f
+(1 row)
+
+=== 2. THE PUBLIC ENTRY, EXPLODED (grantee 0 = PUBLIC) ===
+ grantee | privilege_type | is_grantable | granted_by 
+---------+----------------+--------------+------------
+       0 | CONNECT        | f            | avnadmin
+(1 row)
+
+=== 3. EVERY ROLE: EFFECTIVE vs EXPLICIT TEMPORARY ===
+           rolname           | rolcanlogin | rolsuper | rolreplication | effective_temp | direct_temp 
+-----------------------------+-------------+----------+----------------+----------------+-------------
+ _avnadmin_monitor           | t           | f        | f              | t              | t
+ audit_ro                    | t           | f        | f              | f              | f
+ avnadmin                    | t           | f        | f              | t              | t
+ postgres                    | t           | t        | t              | t              | f
+ pg_checkpoint               | f           | f        | f              | f              | f
+ pg_create_subscription      | f           | f        | f              | f              | f
+ pg_database_owner           | f           | f        | f              | f              | f
+ pg_execute_server_program   | f           | f        | f              | f              | f
+ pg_monitor                  | f           | f        | f              | f              | f
+ pg_read_all_data            | f           | f        | f              | f              | f
+ pg_read_all_settings        | f           | f        | f              | f              | f
+ pg_read_all_stats           | f           | f        | f              | f              | f
+ pg_read_server_files        | f           | f        | f              | f              | f
+ pg_signal_backend           | f           | f        | f              | f              | f
+ pg_stat_scan_tables         | f           | f        | f              | f              | f
+ pg_use_reserved_connections | f           | f        | f              | f              | f
+ pg_write_all_data           | f           | f        | f              | f              | f
+ pg_write_server_files       | f           | f        | f              | f              | f
+(18 rows)
+
+=== 3b. MEMBERSHIP EDGES OF LOGIN ROLES (USAGE = inherited now, SET = usable via SET ROLE) ===
+ member_role | granted_role | admin_option | inherits_now | can_set_role | granted_role_has_temp 
+-------------+--------------+--------------+--------------+--------------+-----------------------
+(0 rows)
+
+=== 3c. CAPABILITY PER LOGIN ROLE AFTER THE REVOKE (the decision table) ===
+      rolname      | temp_now | temp_explicit |     keeps_via_set_role      |  impact_after_revoke   
+-------------------+----------+---------------+-----------------------------+------------------------
+ _avnadmin_monitor | t        | t             |                             | KEEPS (explicit grant)
+ avnadmin          | t        | t             |                             | KEEPS (owner)
+ postgres          | t        | f             | _avnadmin_monitor, avnadmin | KEEPS (superuser)
+ audit_ro          | f        | f             |                             | NO_TEMP
+(4 rows)
+
+=== 4. SUMMARY (STOP-CRITERION INPUTS) ===
+ login_roles_that_lose_temp | login_roles_temp_only_from_public_or_membership | total_login_roles | predefined_nologin_roles_ignored 
+----------------------------+-------------------------------------------------+-------------------+----------------------------------
+                          0 |                                               0 |                 4 |                               14
+(1 row)
+
+=== 5. TEMP RELATIONS PRESENT RIGHT NOW (session impact signal; 0 = nobody is mid-temp-work) ===
+ temp_relations | temp_schemas 
+----------------+--------------
+              0 |            0
+(1 row)
+
+=== 6. FULL ACL BASELINE (diff this against the AFTER snapshot) ===
+    db     |                          datacl_baseline                          |      grantee      | privilege_type | is_grantable | granted_by 
+-----------+-------------------------------------------------------------------+-------------------+----------------+--------------+------------
+ defaultdb | {=c/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | PUBLIC            | CONNECT        | f            | avnadmin
+ defaultdb | {=c/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | _avnadmin_monitor | CONNECT        | f            | avnadmin
+ defaultdb | {=c/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | _avnadmin_monitor | TEMPORARY      | f            | avnadmin
+ defaultdb | {=c/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | avnadmin          | CONNECT        | f            | avnadmin
+ defaultdb | {=c/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | avnadmin          | CREATE         | f            | avnadmin
+ defaultdb | {=c/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | avnadmin          | TEMPORARY      | f            | avnadmin
+(6 rows)
+
+=== 7. DOES ANY SERVICE NEED TEMP? (code-level answer: NO - see docs/G5_AUDIT.md) ===
+=== END OF PREFLIGHT (read-only; transaction rolled back) ===
+
+########## 7) probe fix3 AFTER the remedy ##########
+=== sql_after_v3 (/workspace/chats/648c5b2db038779ef20307d3/g5_handoff/g5_probe_fix3.py) ===
+probe_version: fix3
+verdict      : FAIL
+per_section  : {"identity": "FAIL", "read_only_txn": "PASS", "1A": "PASS", "1B": "PASS", "1C": "PASS", "1D": "PASS", "1E": "PASS", "2": "NOT_APPLICABLE", "3-4": "PASS", "3-4b": "PASS", "3-6": "PASS", "3-7": "PASS", "3-7b": "PASS", "3-8": "PASS"}
+identity     : FAIL/unknown here is environmental (local build has no SSL); criteria-verdict excluding identity: PASS
+3-4 rows     : [{"can_connect": true, "can_temp": false, "can_create_schema": false}]
+3-7 rows     : []
+3-4b rows    : [{"nspname": "information_schema", "usage": true, "can_create": false}, {"nspname": "pg_catalog", "usage": true, "can_create": false}, {"nspname": "public", "usage": true, "can_create": false}]
+1D row count : 1
+1A/1B/1C/1E  : 0 0 0 0
+tro_after    : [{"tro": "on", "xid_assigned": null}]
+
+
+########## 8) data untouched ##########
+ id |           title           
+----+---------------------------
+  1 | baseline-row-must-survive
+(1 row)
+
+### stop
+waiting for server to shut down.... done
+server stopped
+DONE

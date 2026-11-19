@@ -1,0 +1,203 @@
+### initdb
+waiting for server to start.... done
+server started
+### mimic production topology (throwaway)
+
+########## 1) PREFLIGHT (read-only) ##########
+=== 0. CONTEXT ===
+  run_as  |    db     | server_version 
+----------+-----------+----------------
+ postgres | defaultdb | 16.2
+(1 row)
+
+=== 1. DATABASE ACL AND OWNER ===
+  datname  |  owner   |                               datacl                               | public_temp | public_connect | public_create 
+-----------+----------+--------------------------------------------------------------------+-------------+----------------+---------------
+ defaultdb | avnadmin | {=Tc/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | t           | t              | f
+(1 row)
+
+=== 2. THE PUBLIC ENTRY, EXPLODED (grantee 0 = PUBLIC) ===
+ grantee | privilege_type | is_grantable | granted_by 
+---------+----------------+--------------+------------
+       0 | CONNECT        | f            | avnadmin
+       0 | TEMPORARY      | f            | avnadmin
+(2 rows)
+
+=== 3. EVERY ROLE: EFFECTIVE vs DIRECT TEMPORARY ===
+           rolname           | rolcanlogin | rolsuper | rolreplication | effective_temp | direct_temp | impact_of_revoking_public_temp 
+-----------------------------+-------------+----------+----------------+----------------+-------------+--------------------------------
+ _avnadmin_monitor           | t           | f        | f              | t              | t           | KEEPS_TEMP
+ avnadmin                    | t           | f        | f              | t              | t           | KEEPS_TEMP
+ postgres                    | t           | t        | t              | t              | f           | KEEPS_TEMP
+ pg_checkpoint               | f           | f        | f              | t              | f           | PREDEFINED_BUILTIN
+ pg_create_subscription      | f           | f        | f              | t              | f           | PREDEFINED_BUILTIN
+ pg_database_owner           | f           | f        | f              | t              | f           | PREDEFINED_BUILTIN
+ pg_execute_server_program   | f           | f        | f              | t              | f           | PREDEFINED_BUILTIN
+ pg_monitor                  | f           | f        | f              | t              | f           | PREDEFINED_BUILTIN
+ pg_read_all_data            | f           | f        | f              | t              | f           | PREDEFINED_BUILTIN
+ pg_read_all_settings        | f           | f        | f              | t              | f           | PREDEFINED_BUILTIN
+ pg_read_all_stats           | f           | f        | f              | t              | f           | PREDEFINED_BUILTIN
+ pg_read_server_files        | f           | f        | f              | t              | f           | PREDEFINED_BUILTIN
+ pg_signal_backend           | f           | f        | f              | t              | f           | PREDEFINED_BUILTIN
+ pg_stat_scan_tables         | f           | f        | f              | t              | f           | PREDEFINED_BUILTIN
+ pg_use_reserved_connections | f           | f        | f              | t              | f           | PREDEFINED_BUILTIN
+ pg_write_all_data           | f           | f        | f              | t              | f           | PREDEFINED_BUILTIN
+ pg_write_server_files       | f           | f        | f              | t              | f           | PREDEFINED_BUILTIN
+ audit_ro                    | t           | f        | f              | t              | f           | WOULD_LOSE_TEMP
+(18 rows)
+
+=== 4. SUMMARY: HOW MANY ROLES WOULD LOSE TEMPORARY ===
+ login_roles_that_would_lose_temp | total_login_roles | predefined_roles_ignored 
+----------------------------------+-------------------+--------------------------
+                                1 |                 3 |                       14
+(1 row)
+
+=== 5. TEMP RELATIONS CURRENTLY VISIBLE (impact signal) ===
+ temp_relations_visible | temp_schemas 
+------------------------+--------------
+                      0 |            0
+(1 row)
+
+=== 6. DOES THE APPLICATION USE TEMP TABLES? (code-level answer: NO) ===
+=== END OF PREFLIGHT (read-only, nothing changed) ===
+
+########## 2) probe fix3 BEFORE the remedy ##########
+=== sql_before (/workspace/chats/648c5b2db038779ef20307d3/g5_handoff/g5_probe_fix3.py) ===
+probe_version: fix3
+verdict      : FAIL
+per_section  : {"identity": "FAIL", "read_only_txn": "PASS", "1A": "PASS", "1B": "PASS", "1C": "PASS", "1D": "PASS", "1E": "PASS", "2": "NOT_APPLICABLE", "3-4": "FAIL", "3-4b": "PASS", "3-6": "PASS", "3-7": "PASS", "3-7b": "PASS", "3-8": "PASS"}
+identity     : FAIL/unknown here is environmental (local build has no SSL); criteria-verdict excluding identity: FAIL
+3-4 rows     : [{"can_connect": true, "can_temp": true, "can_create_schema": false}]
+3-7 rows     : []
+3-4b rows    : [{"nspname": "information_schema", "usage": true, "can_create": false}, {"nspname": "pg_catalog", "usage": true, "can_create": false}, {"nspname": "public", "usage": true, "can_create": false}]
+1D row count : 1
+1A/1B/1C/1E  : 0 0 0 0
+tro_after    : [{"tro": "on", "xid_assigned": null}]
+
+
+########## 3) FIX v2 (throwaway cluster only) ##########
+=== BEFORE: audit_ro TEMPORARY (expected: true) ===
+ audit_ro_temp_before 
+----------------------
+ t
+(1 row)
+
+=== BEFORE: avnadmin TEMPORARY (expected: true) ===
+ avnadmin_temp_before 
+----------------------
+ t
+(1 row)
+
+=== BEFORE: datacl ===
+                               datacl                               
+--------------------------------------------------------------------
+ {=Tc/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin}
+(1 row)
+
+=== AFTER: audit_ro TEMPORARY (must be false) ===
+ audit_ro_temp_after 
+---------------------
+ f
+(1 row)
+
+=== AFTER: avnadmin TEMPORARY (must be true) ===
+ avnadmin_temp_after 
+---------------------
+ t
+(1 row)
+
+=== AFTER: _avnadmin_monitor TEMPORARY (must be true) ===
+ monitor_temp_after 
+--------------------
+ t
+(1 row)
+
+=== AFTER: datacl ===
+                              datacl                               
+-------------------------------------------------------------------
+ {=c/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin}
+(1 row)
+
+=== END (no tables/schemas/data/roles changed; re-run the G5 probe now) ===
+
+########## 4) PREFLIGHT again (impact must be reclassified) ##########
+=== 0. CONTEXT ===
+  run_as  |    db     | server_version 
+----------+-----------+----------------
+ postgres | defaultdb | 16.2
+(1 row)
+
+=== 1. DATABASE ACL AND OWNER ===
+  datname  |  owner   |                              datacl                               | public_temp | public_connect | public_create 
+-----------+----------+-------------------------------------------------------------------+-------------+----------------+---------------
+ defaultdb | avnadmin | {=c/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin} | f           | t              | f
+(1 row)
+
+=== 2. THE PUBLIC ENTRY, EXPLODED (grantee 0 = PUBLIC) ===
+ grantee | privilege_type | is_grantable | granted_by 
+---------+----------------+--------------+------------
+       0 | CONNECT        | f            | avnadmin
+(1 row)
+
+=== 3. EVERY ROLE: EFFECTIVE vs DIRECT TEMPORARY ===
+           rolname           | rolcanlogin | rolsuper | rolreplication | effective_temp | direct_temp | impact_of_revoking_public_temp 
+-----------------------------+-------------+----------+----------------+----------------+-------------+--------------------------------
+ _avnadmin_monitor           | t           | f        | f              | t              | t           | KEEPS_TEMP
+ avnadmin                    | t           | f        | f              | t              | t           | KEEPS_TEMP
+ postgres                    | t           | t        | t              | t              | f           | KEEPS_TEMP
+ audit_ro                    | t           | f        | f              | f              | f           | NO_TEMP
+ pg_checkpoint               | f           | f        | f              | f              | f           | PREDEFINED_BUILTIN
+ pg_create_subscription      | f           | f        | f              | f              | f           | PREDEFINED_BUILTIN
+ pg_database_owner           | f           | f        | f              | f              | f           | PREDEFINED_BUILTIN
+ pg_execute_server_program   | f           | f        | f              | f              | f           | PREDEFINED_BUILTIN
+ pg_monitor                  | f           | f        | f              | f              | f           | PREDEFINED_BUILTIN
+ pg_read_all_data            | f           | f        | f              | f              | f           | PREDEFINED_BUILTIN
+ pg_read_all_settings        | f           | f        | f              | f              | f           | PREDEFINED_BUILTIN
+ pg_read_all_stats           | f           | f        | f              | f              | f           | PREDEFINED_BUILTIN
+ pg_read_server_files        | f           | f        | f              | f              | f           | PREDEFINED_BUILTIN
+ pg_signal_backend           | f           | f        | f              | f              | f           | PREDEFINED_BUILTIN
+ pg_stat_scan_tables         | f           | f        | f              | f              | f           | PREDEFINED_BUILTIN
+ pg_use_reserved_connections | f           | f        | f              | f              | f           | PREDEFINED_BUILTIN
+ pg_write_all_data           | f           | f        | f              | f              | f           | PREDEFINED_BUILTIN
+ pg_write_server_files       | f           | f        | f              | f              | f           | PREDEFINED_BUILTIN
+(18 rows)
+
+=== 4. SUMMARY: HOW MANY ROLES WOULD LOSE TEMPORARY ===
+ login_roles_that_would_lose_temp | total_login_roles | predefined_roles_ignored 
+----------------------------------+-------------------+--------------------------
+                                0 |                 3 |                       14
+(1 row)
+
+=== 5. TEMP RELATIONS CURRENTLY VISIBLE (impact signal) ===
+ temp_relations_visible | temp_schemas 
+------------------------+--------------
+                      0 |            0
+(1 row)
+
+=== 6. DOES THE APPLICATION USE TEMP TABLES? (code-level answer: NO) ===
+=== END OF PREFLIGHT (read-only, nothing changed) ===
+
+########## 5) probe fix3 AFTER the remedy ##########
+=== sql_after (/workspace/chats/648c5b2db038779ef20307d3/g5_handoff/g5_probe_fix3.py) ===
+probe_version: fix3
+verdict      : FAIL
+per_section  : {"identity": "FAIL", "read_only_txn": "PASS", "1A": "PASS", "1B": "PASS", "1C": "PASS", "1D": "PASS", "1E": "PASS", "2": "NOT_APPLICABLE", "3-4": "PASS", "3-4b": "PASS", "3-6": "PASS", "3-7": "PASS", "3-7b": "PASS", "3-8": "PASS"}
+identity     : FAIL/unknown here is environmental (local build has no SSL); criteria-verdict excluding identity: PASS
+3-4 rows     : [{"can_connect": true, "can_temp": false, "can_create_schema": false}]
+3-7 rows     : []
+3-4b rows    : [{"nspname": "information_schema", "usage": true, "can_create": false}, {"nspname": "pg_catalog", "usage": true, "can_create": false}, {"nspname": "public", "usage": true, "can_create": false}]
+1D row count : 1
+1A/1B/1C/1E  : 0 0 0 0
+tro_after    : [{"tro": "on", "xid_assigned": null}]
+
+
+########## 6) data untouched ##########
+ id |           title           
+----+---------------------------
+  1 | baseline-row-must-survive
+(1 row)
+
+### stop
+waiting for server to shut down.... done
+server stopped
+DONE

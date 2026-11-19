@@ -1368,3 +1368,157 @@ thread داخلی SDK با `wait_for` لغو نمی‌شود و در پس‌زم
 ### ۴. محدودهٔ اجرا
 - فقط پیاده‌سازی، تست آفلاین و حالت `PLAN_ONLY` (خواندنی) مجاز بود؛ هیچ فراخوانی نوشتنی Telegraph، هیچ Backfill و هیچ تغییری در Telegram/`bulletin_slots`/`daily_reports` انجام نشد. Slot `2026-11-16 08:00` خارج از محدوده ماند.
 - گزارش PLAN_ONLY برای پنج Slot و انتشار واقعی هر Slot، هر یک نیازمند تأیید جداگانه است.
+
+---
+
+## [2026-11-19] G5 read-only audit (audit_ro) — preparation and environment blocker
+
+### ۱. دامنه
+- فاز: G5 (R-04) — اثبات اتصال read-only با `audit_ro`: `current_user`/`session_user` = `audit_ro`، `transaction_read_only=on`، بدون مجوز نوشتن، بدون تغییر داده.
+- هیچ تغییری در کد/Schema/داده/تست/Pipeline انجام نشد.
+
+### ۲. شواهد محلی (cloud sandbox)
+- `git status`: HEAD `3e06741` روی `main`؛ dirty: `M .github/workflows/_backfill_phase12.yml`، `?? g5_handoff/`، `?? phase12.patch`، `?? scripts/audit_backfill.py` (بدون commit).
+- `docs/AGENT_PROTOCOL.md` خوانده شد (R-01..R-10).
+- `AUDIT_DATABASE_URL` در env موجود است: user=`audit_ro`, host=`pg-2f0e4f1c-newsbot-db.e.aivencloud.com`, port=`27362`, db=`defaultdb`, sslmode=`require`. مقدار (پسورد) افشا نشد.
+- `POSTGRES_SSLROOTCERT` در env موجود نیست؛ CA در `g5_handoff/aiven-ca.pem` (SHA-256 `70e57f33...efefbcea4`) و `/tmp/p0_0/aiven-ca.pem` موجود است.
+- ابزارها: `psql` نصب نیست؛ `python3` 3.12.3؛ `asyncpg` در `/tmp/p0_0/deps_pg` (0.32.0) موجود، در python سیستمی نه.
+- `g5_probe.py` dry-run آفلاین: `DRY-RUN OK: 16 fixed queries validated; no connection made.` (PASS).
+
+### ۳. مانع (BLOCKED)
+- از این sandbox اتصال به Aiven مسدود است: `TCP pg-2f0e4f1c-newsbot-db.e.aivencloud.com:27362/443/80 -> TimeoutError: timed out`.
+- DNS سالم است (`167.71.69.231`)، اما تمام پورت‌های Aiven/DigitalOcean تایم‌اوت می‌شوند؛ کنترل ۴۴۳ به Cloudflare/GitHub/GCP/AWS باز است.
+- اعتبارنامهٔ `avnadmin` در این محیط موجود نیست (env فقط `AUDIT_DATABASE_URL` دارد).
+- نتیجه: هیچ اتصال واقعی/ممیزی در این VM ممکن نیست؛ G5 در اینجا **BLOCKED** است.
+
+### ۴. آماده‌سازی انتقال به لپ‌تاپ (Windscribe متصل)
+- `g5_handoff/g5_probe.py` و `g5_handoff/aiven-ca.pem` کپی بایت‌به‌بایت (SHA-256 MATCH) آماده است.
+- `g5_handoff/audit_perms.sql`: بستهٔ SQL فقط‌خواندنی (نسخه، ACL دیتابیس، schemaها، SECURITY DEFINER، privilegeهای audit_ro).
+- `g5_handoff/FIX_AUDIT_RO_IF_NEEDED.sql`: SQL مدیریتی (avnadmin) فقط در صورت FAIL شدن 3-4: `REVOKE TEMPORARY ON DATABASE defaultdb FROM PUBLIC;` (با `GRANT TEMPORARY ... TO avnadmin` برای حفظ قابلیت app).
+- `g5_handoff/RUN_G5.ps1`: runbook ویندوز (پرسش پسورد، تنظیم env، اجرای probe + psql).
+
+### ۵. اقدام دستی لازم (حداقل)
+- اجرای `RUN_G5.ps1` روی لپ‌تاپ ویندوز (Windscribe متصل) و ارسال `C:\g5\g5_report.json` (و در صورت تولید `audit_out.txt`).
+- در صورت FAIL شدن 3-4، اجرای `FIX_AUDIT_RO_IF_NEEDED.sql` با `avnadmin` پس از تأیید صریح، سپس اجرای مجدد probe.
+
+### ۶. وضعیت
+- G5: BLOCKED (شبکه) — تا اجرای واقعی روی لپ‌تاپ و دریافت report، PASS اعلام نمی‌شود.
+- P1–P10 و G6/G7 قفل می‌مانند.
+
+
+---
+
+## [2026-11-19] G5 — fix3: اجرای واقعی، تحلیل false positive و بستهٔ نهایی
+
+### ۱. اجرای واقعی (دور ۴، روی لپ‌تاپ ویندوز)
+- `g5_probe_fix2.py` با `audit_ro` روی PostgreSQL 18.6 به‌طور کامل اجرا شد: هر ۱۵ بخش تولید شد،
+  `error_message` خالی، `ssl=true`، `transaction_read_only=on`، `xid_assigned=null`.
+- `verdict=FAIL` — دقیقاً دو بخش: `3-4` (`can_temp=true`) و `3-7` (سطر `pg_catalog.pg_settings | UPDATE`).
+- شاهد تکمیلی: `audit_out.txt` (۵۸۷۲ بایت) از `psql`؛ `rolreplication=t` برای `audit_ro` (خارج از معیارهای G5).
+- جزئیات کامل: `docs/G5_AUDIT.md`.
+
+### ۲. تحلیل ایستا و تصمیم فنی
+- `3-4` **نقص واقعی** است: مجوز از entry پیش‌فرض `PUBLIC` در `datacl` می‌آید
+  (`{=Tc/avnadmin,...}`)، و `audit_ro` نه entry مستقیم دارد نه عضویت نقش. معیار **تغییر نکرد**
+  تا یافته پنهان نشود.
+- `3-7` **false positive** است: `GRANT SELECT, UPDATE ON pg_settings TO PUBLIC` در
+  `src/backend/catalog/system_views.sql` (REL_14…REL_18_6 و master) وجود دارد؛ برای هر نقش
+  یکسان است و `is_grantable=false` دارد. رفع از سمت دیتابیس ممکن نیست (`rolsuper=f`).
+- معیار `3-7` مطابق دستور صریح، با before/after مستند، به «روابط غیرسیستمی» محدود شد.
+- باگ خنثی `3-4b` (بک‌اسلش دوتایی در `NOT LIKE`) نیز اصلاح شد؛ مجموعهٔ سطرها تغییر نکرد.
+
+### ۳. اصلاحات و اعتبارسنجی
+- `g5_handoff/g5_probe_fix3.py` (نسخهٔ جدید؛ fix1/fix2 دست‌نخورده).
+- اجرای محلی روی PostgreSQL 16.2 با نقش غیرسوپر‌یوزر داخل `BEGIN READ ONLY / ROLLBACK`:
+  A) fix2 → `3-7=FAIL`، B) fix3 → `3-7=PASS` و `3-4` همچنان FAIL (نشانهٔ پنهان‌نشدن یافته)،
+  C) fix3 پس از `REVOKE TEMPORARY ... FROM PUBLIC` روی همان خوشهٔ موقت → همهٔ معیارها PASS.
+- بستهٔ SQL روی خوشهٔ موقتِ هم‌نام production اعتبارسنجی شد: preflight (فقط SELECT) و
+  `FIX_AUDIT_RO_v2.sql` با assertهای before/after.
+- محدودیت: build محلی OpenSSL ندارد، پس دروازهٔ TLS محلی اجرا نشد؛ این مسیر در fix3 تغییر نکرده است.
+
+### ۴. بسته و هش
+- `g5_handoff/g5_fix3.zip` — ۶ عضو — SHA-256 `b194b39fa3a4ef8d56c5569ec388381152c56b32447a79a316261f584aaeef4a`.
+- هش تک‌تک اعضا در `docs/G5_AUDIT.md` بند ۷ (تطابق استخراج بررسی شد).
+
+### ۵. وضعیت
+- G5: **FAIL** — تنها دلیل `3-4`. `3-7` با معیار اصلاح‌شده PASS است.
+- مانع باقی‌مانده (فقط انسانی): اجرای `REVOKE TEMPORARY ON DATABASE defaultdb FROM PUBLIC` با
+  `avnadmin` پس از preflight، سپس اجرای مجدد probe. تصمیم `NOREPLICATION` هم باز است.
+- هیچ تغییر Schema/داده/مجوز روی production انجام نشد؛ P1–P10 و G6/G7 قفل می‌مانند.
+
+### ۶. بازبینی پیش از اقدام (fix4) — ۲۰۲۶-۱۱-۱۹
+- **verify-full اجباری شد:** `sslmode=require` از همهٔ فرمان‌ها حذف شد. مسیر استاندارد
+  `psql ... sslmode=verify-full sslrootcert=...` است؛ چون libpq ویندوز گواهی Aiven را به‌خاطر
+  IP-SAN بدشکل رد می‌کند، `g5_admin.py` ساخته شد که فقط یک حالت TLS دارد
+  (`CERT_REQUIRED` + `check_hostname` + CA) و هیچ کد `CERT_NONE`/`require` ندارد.
+- **بازبینی SQL و رفع دو شکاف real:**
+  1. preflight خودش read-only را اعمال نمی‌کرد → اکنون `BEGIN TRANSACTION READ ONLY … ROLLBACK`
+     در فایل + `default_transaction_read_only=on` در session؛ اثبات: سرور `CREATE TEMP TABLE` را
+     با «cannot execute CREATE TABLE in a read-only transaction» رد کرد.
+  2. تحلیل membership/SET ROLE نبود → بخش `3b` (یال‌های `pg_auth_members` با
+     `pg_has_role` `USAGE`/`SET`) و بخش `3c` (جدول تصمیم KEEPS/LOSES با حل بازگشتی membership).
+- **FIX v3 گیت‌دار و برگشت‌پذیر:** guard هویت/دیتابیس/recovery، `GRANT` شرطی (در حالت عادی هیچ
+  نوشتنی روی ACL)، `BEGIN … COMMIT` و چهار assert درون‌تراکنشی. اثبات rollback: با وابسته‌کردن
+  `_avnadmin_monitor` به PUBLIC، assert پس از REVOKE شکست و `datacl` دقیقاً دست‌نخورده ماند.
+- **پاسخ بازبینی سرویس‌ها:** صفر `CREATE TEMP TABLE`/`ON COMMIT DROP`/`pg_temp` و صفر
+  `GRANT/REVOKE/ALTER ROLE` در کل مخزن؛ تنها نقش موجود `avnadmin` است که TEMP را صریح نگه می‌دارد
+  و همان چیزی است که اپ/migration/backfill/CI از `DATABASE_URL` می‌گیرند.
+- **بسته:** `g5_handoff/g5_fix4.zip` (۸ عضو) — SHA-256 `35ea9120cd6efc2c7c70db1e49f55f34da9281e16e77d198cbce70f094457700`.
+  `g5_fix3.zip` و همهٔ نسخه‌های پیشین و تغییرات نامرتبط مخزن دست‌نخورده‌اند.
+- **روی production هیچ چیز اجرا نشد:** نه preflight، نه FIX، نه GRANT/REVOKE/ALTER. حکم G5 همچنان
+  `FAIL` با تنها دلیل `3-4`.
+
+### ۷. جمع‌بندی نهایی G5 — بستهٔ تحویل `g5_final_v3.zip` — ۲۰۲۶-۱۱-۱۹
+- **بازبینی خط‌به‌خط fix4** انجام شد: ترتیب `BEGIN READ ONLY`/`ROLLBACK` در preflight، و
+  guard → `BEGIN` → GRANT شرطی → `REVOKE` → assertها → `COMMIT` در FIX تأیید شد؛ شکست هر assert
+  با آزمون واقعی باعث rollback کامل شد.
+- **دو نقص در runner رفع شد:** (۱) `DO $$ … $$` می‌توانست DDL را از allow-list پنهان کند؛ اکنون
+  هر استیتمنت در حالت fix اسکن کلمات ممنوعه می‌شود (با جداکردن literalها و اسکن اضافی محتوای
+  `EXECUTE`). (۲) پیام «هیچ تغییری commit نشد» پس از خطای بعد از `COMMIT` گمراه‌کننده بود؛ اکنون
+  وضعیت commit ردیابی می‌شود. یک تست جدید برای مورد (۱) اضافه شد.
+- **آزمون‌ها:** ۲۳/۲۳ PASS (`local_validation/test_admin_runner.py`) و چرخهٔ کامل روی خوشهٔ موقت
+  PostgreSQL 16.2 با exit=0: اثبات read-only (SQLSTATE 25006)، اثبات rollback، FIX موفق،
+  preflight دوم با `login_roles_that_lose_temp=0`، probe با `3-4=PASS`، داده سالم.
+- **محدودیت مستند شد:** محیط آزمایش ۱۶.۲ و production ۱۸.۶ است؛ هیچ PASS روی ۱۸.۶ ادعا نمی‌شود.
+- **بستهٔ نهایی:** `g5_handoff/g5_final_v3.zip` (۹ عضو) — SHA-256
+  `b7d13a76dad1a316bb76426061c31bb77e4094cc3e2256e6f7d6ebf2c27749cf`؛
+  `g5_handoff/g5_fix4.zip` (۸ عضو) — `8f0f4d468da7bbca0130abde7ae4c4e30b36bc619305c1b4bc7aef5d381913ae`.
+  `g5_final.zip` قدیمی (دور fix1) و همهٔ نسخه‌های fix1..fix3 دست‌نخورده‌اند.
+- **وضعیت:** «ابزار نهایی آماده؛ اصلاح production در انتظار تأیید». هیچ preflight/FIX/GRANT/REVOKE/
+  ALTER روی production اجرا نشد و هیچ رمز یا DSN چاپ نشد.
+
+### ۸. بازبینی تولید + fix جراحی v4 (fix5) — ۲۰۲۶-۱۱-۱۹
+- **preflight واقعی روی production** اجرا شد (verify-full، TLSv1.3، PG 18.6). گارد اسکریپت فعال شد:
+  `login_roles_that_lose_temp=3` (audit_ro + `_aiven_repl` + `_aiven_rewind`)، نه ۱. FIX اجرا نشد،
+  هیچ تغییری روی production.
+- **علت:** `REVOKE TEMPORARY FROM PUBLIC` همهٔ نقش‌هایی که TEMP را فقط از PUBLIC می‌گیرند قطع می‌کند؛
+  `_aiven_repl` و `_aiven_rewind` (نقش‌های داخلی Aiven) grant صریح ندارند و سوپریوزر/owner نیستند.
+- **تصمیم انسانی:** Option C (fix جراحی). `FIX_AUDIT_RO_v4.sql` ساخته شد: grant صریح TEMP به
+  `_aiven_repl` و `_aiven_rewind` (idempotent، بر اساس datacl) قبل از revoke PUBLIC.
+- **اعتبارسنجی محلی:** `run_sql_package_validation_v4.sh` exit=0 روی PG 16.2 (با نقش‌های Aiven
+  شبیه‌سازی‌شده): preflight 3 LOSES، rollback proof، FIX موفق (avnadmin no-op، repl+rewind granted)،
+  preflight دوم 0 LOSES، probe 3-4=PASS، داده سالم.
+- **بستهٔ نهایی:** `g5_final_v4.zip` (۹ عضو) — `c943f5fa60a0d8c5806bccdc56d46fcc350b8681d2878c5469b0247053fdb128`؛
+  `g5_fix5.zip` (۸ عضو) — `30a7b3c051bdd6b87d8e2162ed83e03d23f71f1d141578aca81de0601b4251cd`.
+- **نسخه‌های قبلی** (`g5_final_v3.zip`, `g5_fix4.zip`, و همهٔ fix1..fix3) دست‌نخورده‌اند.
+- **وضعیت:** «ابزار نهایی (fix5/v4 surgical) آماده؛ اصلاح production در انتظار تأیید و اجرا».
+
+### ۹. اجرای production + re-audit (fix5/v4) — ۲۰۲۶-۱۱-۱۹
+- **preflight production** (verify-full، TLSv1.3، PG 18.6): 3 LOSES = audit_ro + _aiven_repl +
+  _aiven_rewind؛ temp_relations=0؛ baseline datacl = {=Tc/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin}.
+  stop criterion: LOSES ⊆ {audit_ro, _aiven_repl, _aiven_rewind} ⇒ OK.
+- **FIX production** (verify-full، تأیید انسانی با تایپ `APPLY TEMPORARY REVOKE`):
+  BEFORE: audit_ro=t, avnadmin=t, monitor=t, repl=t, rewind=t, public_temp=t.
+  GRANT صریح به _aiven_repl و _aiven_rewind (هر دو issued). REVOKE TEMPORARY FROM PUBLIC.
+  assertهای درون‌تراکنشی: all post-conditions hold; committing. COMMIT موفق، exit=0.
+  AFTER: audit_ro=f, avnadmin=t, monitor=t, repl=t, rewind=t, public_temp=f, public_connect=t.
+  datacl_after = {=c/avnadmin,avnadmin=CTc/avnadmin,_avnadmin_monitor=Tc/avnadmin,_aiven_repl=T/avnadmin,_aiven_rewind=T/avnadmin}.
+- **re-audit production** (verify-full): probe_version=fix3، started_at=2026-11-19T18:54:39Z.
+  3-4 = PASS (can_connect=true, can_temp=false, can_create_schema=false). verdict = PASS (exit=0).
+  تمام بخش‌ها PASS (identity, read_only_txn, 1A-1E, 3-4, 3-4b, 3-6, 3-7, 3-7b, 3-8)؛ 2 = NOT_APPLICABLE.
+  report: g5_report_20261119_222438.json (روی ماشین کاربر).
+- **نتیجه:** finding 3-4 بسته شد. audit_ro دیگر TEMPORARY روی defaultdb ندارد. _aiven_repl و
+  _aiven_rewind TEMP را از طریق grant صریح حفظ کردند (blast radius صفر). هیچ رمز/DSN چاپ نشد.
+- **hash فایل‌های اجراشده:** g5_admin.py=8163ecbf…09dee1، PREFLIGHT_AUDIT_RO_v3.sql=0c27e5e3…59ec20،
+  FIX_AUDIT_RO_v4.sql=0c85a2e2…41ce8، g5_probe_fix3.py=a3aeb1fe…ad0643d، aiven-ca.pem=70e57f33…fbcea4.
+- **وضعیت:** «3-4 = PASS (production evidence)؛ G5 audit closed».

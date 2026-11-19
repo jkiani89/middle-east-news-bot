@@ -1,0 +1,85 @@
+### initdb
+### start
+waiting for server to start.... done
+server started
+### fixtures (throwaway cluster only)
+### baseline state (as postgres)
+ articles_rows 
+---------------
+             1
+(1 row)
+
+ audit_ro_temp | public_temp | datacl 
+---------------+-------------+--------
+ t             | t           | 
+(1 row)
+
+ sel | ins | upd 
+-----+-----+-----
+ f   | f   | f
+(1 row)
+
+
+########## RUN A: fix2 criteria (baseline) ##########
+=== fix2 (/workspace/chats/648c5b2db038779ef20307d3/g5_handoff/g5_probe_fix2.py) ===
+probe_version: (none)
+verdict      : FAIL
+per_section  : {"identity": "FAIL", "read_only_txn": "PASS", "1A": "PASS", "1B": "PASS", "1C": "PASS", "1D": "PASS", "1E": "PASS", "2": "NOT_APPLICABLE", "3-4": "FAIL", "3-4b": "PASS", "3-6": "PASS", "3-7": "FAIL", "3-7b": "PASS", "3-8": "PASS"}
+identity     : FAIL/unknown here is environmental (local build has no SSL); criteria-verdict excluding identity: FAIL
+3-4 rows     : [{"can_connect": true, "can_temp": true, "can_create_schema": false}]
+3-7 rows     : [{"object": "pg_catalog.pg_settings", "relkind": "b'v'", "privilege_type": "UPDATE", "is_grantable": false}]
+3-4b rows    : [{"nspname": "information_schema", "usage": true, "can_create": false}, {"nspname": "pg_catalog", "usage": true, "can_create": false}, {"nspname": "public", "usage": true, "can_create": false}]
+1D row count : 2
+1A/1B/1C/1E  : 0 0 0 0
+tro_after    : [{"tro": "on", "xid_assigned": null}]
+
+
+########## RUN B: fix3 criteria (3-7 narrowed) ##########
+=== fix3 (/workspace/chats/648c5b2db038779ef20307d3/g5_handoff/g5_probe_fix3.py) ===
+probe_version: fix3
+verdict      : FAIL
+per_section  : {"identity": "FAIL", "read_only_txn": "PASS", "1A": "PASS", "1B": "PASS", "1C": "PASS", "1D": "PASS", "1E": "PASS", "2": "NOT_APPLICABLE", "3-4": "FAIL", "3-4b": "PASS", "3-6": "PASS", "3-7": "PASS", "3-7b": "PASS", "3-8": "PASS"}
+identity     : FAIL/unknown here is environmental (local build has no SSL); criteria-verdict excluding identity: FAIL
+3-4 rows     : [{"can_connect": true, "can_temp": true, "can_create_schema": false}]
+3-7 rows     : []
+3-4b rows    : [{"nspname": "information_schema", "usage": true, "can_create": false}, {"nspname": "pg_catalog", "usage": true, "can_create": false}, {"nspname": "public", "usage": true, "can_create": false}]
+1D row count : 2
+1A/1B/1C/1E  : 0 0 0 0
+tro_after    : [{"tro": "on", "xid_assigned": null}]
+
+
+########## APPLY THE PROPOSED 3-4 REMEDY ON THIS THROWAWAY CLUSTER ONLY ##########
+ audit_ro_temp_after | owner_temp_after |               datacl                
+---------------------+------------------+-------------------------------------
+ f                   | t                | {=c/postgres,postgres=CTc/postgres}
+(1 row)
+
+
+########## RUN C: fix3 criteria after the remedy ##########
+=== fix3_after (/workspace/chats/648c5b2db038779ef20307d3/g5_handoff/g5_probe_fix3.py) ===
+probe_version: fix3
+verdict      : FAIL
+per_section  : {"identity": "FAIL", "read_only_txn": "PASS", "1A": "PASS", "1B": "PASS", "1C": "PASS", "1D": "PASS", "1E": "PASS", "2": "NOT_APPLICABLE", "3-4": "PASS", "3-4b": "PASS", "3-6": "PASS", "3-7": "PASS", "3-7b": "PASS", "3-8": "PASS"}
+identity     : FAIL/unknown here is environmental (local build has no SSL); criteria-verdict excluding identity: PASS
+3-4 rows     : [{"can_connect": true, "can_temp": false, "can_create_schema": false}]
+3-7 rows     : []
+3-4b rows    : [{"nspname": "information_schema", "usage": true, "can_create": false}, {"nspname": "pg_catalog", "usage": true, "can_create": false}, {"nspname": "public", "usage": true, "can_create": false}]
+1D row count : 2
+1A/1B/1C/1E  : 0 0 0 0
+tro_after    : [{"tro": "on", "xid_assigned": null}]
+
+########## read-only proof: data unchanged ##########
+ id |           title           
+----+---------------------------
+  1 | baseline-row-must-survive
+(1 row)
+
+ articles_rows_after 
+---------------------
+                   1
+(1 row)
+
+### stop
+waiting for server to shut down.... done
+server stopped
+DONE
