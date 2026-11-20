@@ -85,8 +85,10 @@ def _article(
     *,
     title: str = "Breaking news headline",
     collected_at: datetime | None = None,
+    status: str = "collected",
 ):
     art = MagicMock()
+    art.status = status
     art.id = article_id
     art.source_id = 1
     art.title = title
@@ -221,6 +223,42 @@ async def test_article_without_any_event_is_published():
     assert items[0]["content_quality_fa"] == SUMMARY_MISSING_LABEL
     assert meta["unlinked_articles"] == 1
     assert meta["collected_articles"] == meta["articles_represented"] == 1
+
+
+@pytest.mark.asyncio
+async def test_unanalysed_and_rejected_articles_get_their_own_sections():
+    """A queued/expired story is not "other"; a rejected one is not "unprocessed"."""
+    session = _ScriptedSession(
+        executes=[
+            _Rows([]),
+            _Rows(
+                [
+                    (_article(1, title="Still waiting"), _source(), None),
+                    (_article(2, title="Too old", status="expired"), _source(), None),
+                    (_article(3, title="Turned down", status="rejected"), _source(), None),
+                    (_article(4, title="Provider error", status="failed"), _source(), None),
+                ]
+            ),
+        ],
+        scalar_lists=[_Rows([])],
+    )
+
+    _date, items, meta = await fetch_complete_window_items(
+        session, report_date=date(2026, 11, 14), slot_hour=8
+    )
+
+    by_title = {item["headline_fa"]: item for item in items}
+    assert by_title["Still waiting"]["topic_fa"] == "اخبار پردازش‌نشده"
+    assert by_title["Too old"]["topic_fa"] == "اخبار پردازش‌نشده"
+    assert "منقضی" in by_title["Too old"]["verification_status_fa"]
+    assert by_title["Turned down"]["topic_fa"] == "اخبار بررسی‌شده بدون انتشار"
+    assert "ردشده" in by_title["Turned down"]["verification_status_fa"]
+    assert by_title["Provider error"]["topic_fa"] == "اخبار بررسی‌شده بدون انتشار"
+    assert meta["articles_unprocessed"] == 2
+    assert meta["articles_rejected"] == 1
+    assert meta["articles_failed"] == 1
+    assert meta["articles_by_status"] == {"collected": 1, "expired": 1, "rejected": 1, "failed": 1}
+    assert meta["unlinked_articles"] == 4
 
 
 @pytest.mark.asyncio

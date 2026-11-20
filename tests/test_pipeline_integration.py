@@ -370,6 +370,49 @@ async def test_duplicate_content_hash_different_url_skipped():
 
 
 @pytest.mark.asyncio
+async def test_collected_articles_survive_a_processing_failure():
+    """Collection is committed before AI work, so an AI crash cannot discard it.
+
+    Before the split commit, the ``except`` block rolled the whole session back and
+    every article ingested in that run was lost, to be re-collected (or not) later.
+    """
+    source = Source(
+        id=1, name="Source A", base_url="https://a.com", feed_url="https://a.com/rss",
+        is_active=True, language="en",
+    )
+    session = RollbackAwareMockSession(objects=[source])
+    mock_fetch = AsyncMock(
+        return_value=[
+            {
+                "title": "Survives the AI failure",
+                "url": "https://a.com/survives",
+                "canonical_url": "https://a.com/survives",
+                "text": "Body text",
+                "published_at": None,
+                "content_hash": "HASH_SURVIVES",
+                "text_source": "rss_summary",
+            }
+        ]
+    )
+
+    with (
+        patch("app.processors.pipeline.SessionLocal", return_value=MockSessionContextManager(session)),
+        patch("app.processors.pipeline.fetch_feed", new=mock_fetch),
+        patch(
+            "app.processors.pipeline.process_collected_articles",
+            new=AsyncMock(side_effect=RuntimeError("provider exploded")),
+        ),
+    ):
+        with pytest.raises(RuntimeError):
+            await collect_and_process(provider=MockAIProvider(canned_response=VALID_CANNED_PAYLOAD))
+
+    assert session.rollback_count == 1
+    articles = [o for o in session.objects if isinstance(o, Article)]
+    assert [a.canonical_url for a in articles] == ["https://a.com/survives"]
+    assert articles[0].status == "collected"
+
+
+@pytest.mark.asyncio
 async def test_inactive_source_not_fetched():
     """C-06: Inactive sources (is_active=False) must not be queried or fetched."""
     source_active = Source(id=1, name="Active Source", base_url="https://act.com", feed_url="https://act.com/rss", is_active=True, language="en")

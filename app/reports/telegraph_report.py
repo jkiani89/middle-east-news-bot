@@ -34,7 +34,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database.models import Article, ArticleEvent, Event, Source, TelegraphReport, utcnow
 from app.editorial.headlines import first_sentence, sanitize_headline
-from app.editorial.telegraph_topics import group_items_by_telegraph_topic
+from app.editorial.telegraph_topics import (
+    UNPROCESSED_TOPIC_KEY,
+    UNPROCESSED_TOPIC_NAME,
+    UNPUBLISHED_TOPIC_KEY,
+    UNPUBLISHED_TOPIC_NAME,
+    group_items_by_telegraph_topic,
+)
 from app.editorial.topics import topic_for_event, topics_for_event
 from app.reports.daily_report import (
     current_slot_hour,
@@ -172,9 +178,50 @@ def _paragraph(*children: Any) -> dict[str, Any]:
     return {"tag": "p", "children": [child for child in children if child]}
 
 
+def _article_status(article: Article) -> str:
+    """The stored status as a plain string (empty when the row carries none)."""
+    raw = getattr(article, "status", "")
+    return raw if isinstance(raw, str) else ""
+
+
+def _unsaved_status_labels(status: str) -> tuple[str, str, str]:
+    """Section and label for an article that produced no editorial summary.
+
+    The three outcomes are not the same story and must not share one section or one
+    label: a ``collected``/``expired`` row was never analysed, a ``rejected`` row was
+    reviewed and turned down, and a ``failed`` row hit an error. Mixing them under
+    "سایر تحولات" made the report claim analysis that never happened.
+    """
+    if status == "rejected":
+        return (
+            UNPUBLISHED_TOPIC_KEY,
+            UNPUBLISHED_TOPIC_NAME,
+            "⛔ ردشده در بررسی تحریریه",
+        )
+    if status == "failed":
+        return (
+            UNPUBLISHED_TOPIC_KEY,
+            UNPUBLISHED_TOPIC_NAME,
+            "⚠️ خطا در تحلیل (بدون خلاصه تحریریه)",
+        )
+    if status == "expired":
+        return (
+            UNPROCESSED_TOPIC_KEY,
+            UNPROCESSED_TOPIC_NAME,
+            "⌛ منقضی پیش از تحلیل (بدون خلاصه تحریریه)",
+        )
+    return (
+        UNPROCESSED_TOPIC_KEY,
+        UNPROCESSED_TOPIC_NAME,
+        "⏳ در انتظار تحلیل (بدون خلاصه تحریریه)",
+    )
+
+
 def _article_item(article: Article, source: Source | None) -> dict[str, Any]:
     """A collected article that has no editorial summary yet."""
     moment = article.published_at or article.collected_at
+    status = _article_status(article)
+    topic_key, topic_fa, verification_fa = _unsaved_status_labels(status)
     return {
         "event_id": None,
         "article_id": article.id,
@@ -188,10 +235,11 @@ def _article_item(article: Article, source: Source | None) -> dict[str, Any]:
         "primary_url": article.original_url or "",
         "first_seen_at": moment.isoformat() if moment else "",
         "verification_status": "unconfirmed",
-        "verification_status_fa": "❓ تأییدنشده (بدون خلاصه تحریریه)",
-        "topic_key": None,
-        "topic_keys": [],
-        "topic_fa": "سایر تحولات",
+        "verification_status_fa": verification_fa,
+        "processing_status": status,
+        "topic_key": topic_key,
+        "topic_keys": [topic_key],
+        "topic_fa": topic_fa,
         "additional_sources": [],
         "is_insufficient": True,
         "content_quality_fa": SUMMARY_MISSING_LABEL,
@@ -206,14 +254,24 @@ def _event_item_without_summary(
     item = _article_item(article, source)
     topic = topic_for_event(event)
     item_topics = topics_for_event(event)
+    # The event exists but its editorial summary is not ready: it has a subject, so it
+    # stays in that subject's section; only an event with no resolvable topic falls back
+    # to the "not analysed" heading.
+    fallback_key = UNPROCESSED_TOPIC_KEY
+    fallback_name = UNPROCESSED_TOPIC_NAME
     item.update(
         {
             "event_id": int(event.id),
             "headline_fa": str(event.title or item["headline_fa"]).strip(),
             "headline_alt_fa": str(event.title or "").strip(),
-            "topic_key": topic.key if topic else None,
-            "topic_keys": [t.key for t in item_topics] if item_topics else ([topic.key] if topic else []),
-            "topic_fa": topic.name_fa if topic else "سایر تحولات",
+            "verification_status_fa": "❓ تأییدنشده (بدون خلاصه تحریریه)",
+            "topic_key": topic.key if topic else fallback_key,
+            "topic_keys": (
+                [t.key for t in item_topics]
+                if item_topics
+                else ([topic.key] if topic else [fallback_key])
+            ),
+            "topic_fa": topic.name_fa if topic else fallback_name,
             "importance": event.importance,
             "countries": list(event.countries or []),
             "actors": list(event.actors or []),
@@ -275,8 +333,11 @@ async def fetch_complete_window_items(
     articles_represented = 0
     unlinked_articles = 0
     events_without_summary = 0
+    status_counts: dict[str, int] = {}
 
     for article, source, event_id in rows:
+        status = _article_status(article)
+        status_counts[status] = status_counts.get(status, 0) + 1
         if event_id is None:
             unlinked_articles += 1
             synthetic.append(_article_item(article, source))
@@ -297,12 +358,19 @@ async def fetch_complete_window_items(
             synthetic.append(item)
 
     all_items = items + synthetic
+    # The window is split by what actually happened to each article, so the report can
+    # count "never analysed" separately from "reviewed and rejected" and "errored".
+    unprocessed = status_counts.get("collected", 0) + status_counts.get("expired", 0)
     metadata = {
         **metadata,
         "collected_articles": len(rows),
         "articles_represented": articles_represented,
         "articles_without_summary": events_without_summary,
         "unlinked_articles": unlinked_articles,
+        "articles_by_status": dict(status_counts),
+        "articles_unprocessed": unprocessed,
+        "articles_rejected": status_counts.get("rejected", 0),
+        "articles_failed": status_counts.get("failed", 0),
         "event_items": len(items),
         "synthetic_items": len(synthetic),
         "news_included": len(all_items),
@@ -643,14 +711,31 @@ def build_index_page(
             )
 
     transparency: list[str] = []
+    if metadata.get("articles_unprocessed"):
+        transparency.append(
+            f"{fa_number(int(metadata['articles_unprocessed']))} خبر هنوز تحلیل نشده بود "
+            f"(در صف یا منقضی پیش از تحلیل) و در بخش «{UNPROCESSED_TOPIC_NAME}» با برچسب "
+            f"«{SUMMARY_MISSING_LABEL}» منتشر شد."
+        )
+    if metadata.get("articles_rejected"):
+        transparency.append(
+            f"{fa_number(int(metadata['articles_rejected']))} خبر بررسی و در گیت تحریریه رد شد؛ "
+            f"این موارد در بخش «{UNPUBLISHED_TOPIC_NAME}» جدا شمرده شده‌اند و جزو اخبار «تحلیل‌نشده» نیستند."
+        )
+    if metadata.get("articles_failed"):
+        transparency.append(
+            f"{fa_number(int(metadata['articles_failed']))} خبر در مرحله تحلیل با خطا مواجه شد و "
+            f"در بخش «{UNPUBLISHED_TOPIC_NAME}» جدا شمرده شده است."
+        )
     if metadata.get("articles_without_summary"):
         transparency.append(
-            f"{metadata['articles_without_summary']} خبر هنوز خلاصه تحریریه نداشت و با برچسب "
-            f"«{SUMMARY_MISSING_LABEL}» منتشر شد."
+            f"{fa_number(int(metadata['articles_without_summary']))} رویداد هنوز خلاصه تحریریه نداشت و "
+            f"با برچسب «{SUMMARY_MISSING_LABEL}» منتشر شد."
         )
     if metadata.get("unlinked_articles"):
         transparency.append(
-            f"{metadata['unlinked_articles']} خبر هنوز به رویدادی متصل نشده بود و با اطلاعات اصلی خود منتشر شد."
+            f"{fa_number(int(metadata['unlinked_articles']))} خبر هنوز به رویدادی متصل نشده بود و "
+            f"با اطلاعات اصلی خود منتشر شد."
         )
     if metadata.get("flagged_events_included"):
         transparency.append(

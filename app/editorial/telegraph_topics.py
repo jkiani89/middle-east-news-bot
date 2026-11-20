@@ -22,6 +22,18 @@ TELEGRAPH_TOPICS_PATH = Path(__file__).resolve().parents[2] / "editorial" / "tel
 OTHER_TOPIC_KEY = "other"
 OTHER_TOPIC_NAME = "سایر تحولات"
 
+# A news item that was collected but never analysed (still ``collected``, or parked as
+# ``expired`` before any AI call) is published under its own heading instead of
+# "سایر تحولات": the generic section must mean "analysed, but no specific subject",
+# not "no analysis at all".
+UNPROCESSED_TOPIC_KEY = "unprocessed"
+UNPROCESSED_TOPIC_NAME = "اخبار پردازش‌نشده"
+
+# Items the pipeline did process but did not publish (editorially rejected, or failed).
+# Keeping them here means they stay in the report without being counted as "unprocessed".
+UNPUBLISHED_TOPIC_KEY = "not_published"
+UNPUBLISHED_TOPIC_NAME = "اخبار بررسی‌شده بدون انتشار"
+
 
 @dataclass(frozen=True)
 class TelegraphTopic:
@@ -34,6 +46,8 @@ class TelegraphTopic:
 
 DEFAULT_TOPICS: tuple[TelegraphTopic, ...] = (
     TelegraphTopic(key=OTHER_TOPIC_KEY, name_fa=OTHER_TOPIC_NAME, order=99),
+    TelegraphTopic(key=UNPROCESSED_TOPIC_KEY, name_fa=UNPROCESSED_TOPIC_NAME, order=97),
+    TelegraphTopic(key=UNPUBLISHED_TOPIC_KEY, name_fa=UNPUBLISHED_TOPIC_NAME, order=98),
 )
 
 
@@ -54,6 +68,12 @@ def build_telegraph_topics(payload: dict[str, Any] | None) -> tuple[TelegraphTop
         )
     if OTHER_TOPIC_KEY not in seen:
         topics.append(TelegraphTopic(OTHER_TOPIC_KEY, OTHER_TOPIC_NAME, 99))
+    # Presentation-only sections: always available so an item that carries no analysis
+    # never falls back into "سایر تحولات", and never disappears when it is empty.
+    if UNPROCESSED_TOPIC_KEY not in seen:
+        topics.append(TelegraphTopic(UNPROCESSED_TOPIC_KEY, UNPROCESSED_TOPIC_NAME, 97))
+    if UNPUBLISHED_TOPIC_KEY not in seen:
+        topics.append(TelegraphTopic(UNPUBLISHED_TOPIC_KEY, UNPUBLISHED_TOPIC_NAME, 98))
     return tuple(sorted(topics, key=lambda topic: (topic.order, topic.key)))
 
 

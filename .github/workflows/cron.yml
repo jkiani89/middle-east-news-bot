@@ -2,19 +2,14 @@ name: Scheduled Batch Runner
 
 on:
   schedule:
-    # Collect every 6 hours (00:00, 06:00, 12:00, 18:00 UTC) so the queue is ready
-    # before each briefing, even though only two briefings are published per day.
-    - cron: '0 */6 * * *'
-    # Briefings in Tehran time (UTC+3:30): 08:00 and 20:00, each covering 12 hours.
+    # The production cadence is an external cron-job.org job that calls this workflow
+    # once an hour on the hour (Asia/Tehran), i.e. 24 guaranteed runs per day. The two
+    # schedules kept here are only the backup chance for the two briefing slots
+    # (08:00 and 20:00 Tehran, each covering 12 hours); the removed middle-of-the-day
+    # schedules would duplicate the hourly external run and only queue up behind the
+    # `scheduled-batch-runner` concurrency group.
     - cron: '30 4 * * *'
     - cron: '30 16 * * *'
-    # Catch-up runs inside each slot's three-hour window (08:00-11:00 and 20:00-23:00
-    # Tehran). GitHub can delay or drop a scheduled run; these extra chances publish the
-    # bulletin instead of losing the whole slot. An already published slot is skipped.
-    - cron: '0 5 * * *'
-    - cron: '0 6 * * *'
-    - cron: '0 17 * * *'
-    - cron: '0 18 * * *'
   workflow_dispatch:
     inputs:
       force_daily_report:
@@ -84,7 +79,7 @@ jobs:
       NUMBER_CHECK_MODE: ${{ vars.NUMBER_CHECK_MODE || 'log' }}
       FLAG_ALERT_ENABLED: ${{ vars.FLAG_ALERT_ENABLED || 'true' }}
       FLAG_ALERT_MAX_PER_RUN: ${{ vars.FLAG_ALERT_MAX_PER_RUN || '5' }}
-      MAX_ARTICLES_PER_BATCH: '30'
+      MAX_ARTICLES_PER_BATCH: ${{ vars.MAX_ARTICLES_PER_BATCH || '45' }}
       TIMEZONE: 'Asia/Tehran'
       DAILY_REPORT_HOUR: '8'
       FORCE_DAILY_REPORT: ${{ inputs.force_daily_report || 'false' }}

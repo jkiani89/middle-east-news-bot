@@ -406,7 +406,10 @@ def build_processing_query(limit: int):
     By ordering with ``CASE WHEN status = 'failed' THEN 0 ELSE 1 END ASC``,
     any retryable failed articles are served first before fresh articles fill
     the remainder of the batch, guaranteeing slots for retries.
-    Within each group, articles drain newest-first via ``reference DESC``.
+    Within each group, articles drain oldest-first via ``reference ASC`` so that
+    the queue is FIFO: a story that has been waiting the longest is analysed (or
+    rejected) before a newer one, which is what keeps it from silently reaching
+    ``article_max_age_hours`` and being parked as ``expired`` without an AI call.
     """
     reference = article_reference_at()
     return (
@@ -423,7 +426,7 @@ def build_processing_query(limit: int):
         )
         .order_by(
             case((Article.status == "failed", 0), else_=1).asc(),
-            reference.desc(),
+            reference.asc(),
         )
         .limit(limit)
     )
@@ -944,6 +947,11 @@ async def collect_and_process(provider: BaseAIProvider | None = None):
         await session.flush()
         try:
             inserted = await collect_new_articles(session)
+            # Commit the collected rows before any AI call. Collection must survive a
+            # processing failure: the except block below rolls the session back, and
+            # without this commit every article ingested in the same run would be lost
+            # with it (the next run would see it as never collected).
+            await session.commit()
 
             # Process collected articles adhering strictly to status filtering
             queue_stats: dict[str, object] = {}
