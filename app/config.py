@@ -111,6 +111,13 @@ class Settings(BaseSettings):
     ai_max_attempts: int = 3  # attempts per article before a transient failure is final
     ai_max_consecutive_failures: int = 5  # stop a batch after this many transient AI errors in a row
     ai_request_timeout_seconds: int = 30  # hard ceiling for a single model call (SDK retries can hang for minutes)
+    # The network half of a batch (full-text fetch + one model call per article) runs in
+    # parallel because it is pure I/O wait. Four keeps a 45-article batch inside the
+    # hourly window while staying far below the ~30 RPM Lite ceiling (~48 calls/hour).
+    ai_processing_concurrency: int = 4
+    # A publisher that takes longer than this loses its turn for full-text extraction; the
+    # stored RSS summary is analysed instead, so one slow site cannot hold a batch slot.
+    article_body_fetch_timeout_seconds: float = 6.0
     # A perspective matrix sends up to max_perspective_articles excerpts in one prompt and
     # is structurally slower than single-article analysis, so it gets its own ceiling
     # instead of the 30-second analysis one that timed out in production.

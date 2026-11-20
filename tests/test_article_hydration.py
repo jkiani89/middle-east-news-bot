@@ -1,9 +1,12 @@
 """Tests for lazy full-body extraction (Phase O: ingestion is metadata-only)."""
 
+import asyncio
+import time
 from unittest.mock import AsyncMock
 
 import pytest
 
+from app.config import settings
 from app.database.models import Article
 from app.processors.pipeline import _hydrate_article_body
 
@@ -56,6 +59,26 @@ async def test_hydration_keeps_summary_when_extraction_fails(monkeypatch):
     article = _article()
     await _hydrate_article_body(article)
 
+    assert article.text_source == "rss_summary"
+    assert article.original_text == "RSS summary text"
+
+
+@pytest.mark.asyncio
+async def test_hydration_gives_up_after_the_body_timeout(monkeypatch):
+    """A slow publisher keeps its slot for at most ``article_body_fetch_timeout_seconds``."""
+
+    async def _slow_fetch(url: str) -> str:
+        await asyncio.sleep(5)
+        return "Full article body " * 100
+
+    monkeypatch.setattr("app.processors.pipeline.fetch_article_full_text", _slow_fetch)
+    monkeypatch.setattr(settings, "article_body_fetch_timeout_seconds", 0.05)
+    article = _article()
+    started = time.perf_counter()
+
+    await _hydrate_article_body(article)
+
+    assert time.perf_counter() - started < 1.0
     assert article.text_source == "rss_summary"
     assert article.original_text == "RSS summary text"
 

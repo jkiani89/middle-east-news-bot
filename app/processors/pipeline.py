@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -14,6 +15,7 @@ from app.ai.provider import BaseAIProvider, get_ai_provider, is_retryable_ai_err
 from app.ai.summarizer import (
     MODEL_BODY_CHAR_LIMIT,
     PROMPT_VERSION,
+    NewsAnalysis,
     analyze_article,
     analyze_perspectives,
 )
@@ -466,17 +468,131 @@ async def _hydrate_article_body(article: Article) -> None:
     Ingestion stores RSS metadata only, so full-text extraction happens here, once
     per article that actually reaches the AI queue instead of once per feed entry.
     A failed extraction is not fatal: the stored RSS summary is analyzed instead.
+
+    The fetch is capped by ``article_body_fetch_timeout_seconds`` (6s by default) so a
+    slow or hanging publisher cannot occupy a worker slot for the retry chain of the
+    HTTP client; on timeout the article falls back to its stored RSS summary.
     """
     if article.text_source == "full_body" or not settings.require_full_text_for_ai:
         return
     target_url = article.canonical_url or article.original_url
     if not target_url:
         return
-    full_text = await fetch_article_full_text(target_url)
+    try:
+        full_text = await asyncio.wait_for(
+            fetch_article_full_text(target_url),
+            timeout=settings.article_body_fetch_timeout_seconds,
+        )
+    except TimeoutError:
+        logger.warning(
+            "Full-text extraction for article ID %s exceeded %.1fs; analyzing the RSS summary instead.",
+            article.id,
+            settings.article_body_fetch_timeout_seconds,
+        )
+        return
     if full_text and len(full_text) > len(article.original_text or ""):
         article.original_text = full_text
         article.text_source = "full_body"
         logger.info("Extracted full body for article ID %s (%d chars).", article.id, len(full_text))
+
+
+@dataclass(slots=True)
+class _AnalysisAttempt:
+    """The network half of one article, finished off the batch's critical path."""
+
+    article: Article
+    source_name: str
+    prefilter: dict[str, object] | None = None
+    result: NewsAnalysis | None = None
+    error: Exception | None = None
+    transient: bool = False
+
+
+class _ConcurrentAnalysis:
+    """Hydrate and analyze articles concurrently, hand the results over in queue order.
+
+    The slow half of a batch is network wait (full-text fetch plus one model call per
+    article), so up to ``ai_processing_concurrency`` (4) tasks run it in parallel.
+
+    The database half is deliberately *not* concurrent: an ``AsyncSession`` must never
+    be used by two tasks at once, and the editorial rules are order-dependent (an
+    article's event matching sees the events created by the articles before it). Every
+    database step therefore stays in the caller's single loop, which receives one
+    finished attempt per iteration, in the same order the queue returned them.
+
+    The circuit breaker keeps its exact meaning: the pool may only hold
+    ``ai_max_consecutive_failures - transient_failures`` requests, so a batch that
+    trips after N consecutive failures has spent exactly N model calls and the rest of
+    the queue is never touched.
+    """
+
+    def __init__(
+        self,
+        articles: list[Article],
+        provider: BaseAIProvider,
+        sources_map: dict[int, str],
+    ) -> None:
+        self._articles = articles
+        self._provider = provider
+        self._sources_map = sources_map
+        self._concurrency = max(1, settings.ai_processing_concurrency)
+        self._failure_budget = max(1, settings.ai_max_consecutive_failures)
+        self._semaphore = asyncio.Semaphore(self._concurrency)
+        self._tasks: dict[int, asyncio.Task[_AnalysisAttempt]] = {}
+        self._next_index = 0
+        self._consume_index = 0
+
+    async def _attempt(self, article: Article) -> _AnalysisAttempt:
+        attempt = _AnalysisAttempt(
+            article=article,
+            source_name=self._sources_map.get(article.source_id, "Unknown Source"),
+        )
+        async with self._semaphore:
+            try:
+                await _hydrate_article_body(article)
+                # Phase Y-11: cheap, log-only relevance check over exactly the text the
+                # model is about to see. It never rejects, changes a status or calls the model.
+                attempt.prefilter = prefilter_analysis(
+                    article.title or "", (article.original_text or "")[:MODEL_BODY_CHAR_LIMIT]
+                )
+                attempt.result = await analyze_article(
+                    title=article.title,
+                    body=article.original_text or "",
+                    source_name=attempt.source_name,
+                    provider=self._provider,
+                )
+            except Exception as exc:  # noqa: BLE001 - the caller owns status handling
+                attempt.error = exc
+                attempt.transient = is_retryable_ai_error(exc)
+        return attempt
+
+    def _dispatch(self, transient_failures: int) -> None:
+        while (
+            self._next_index < len(self._articles)
+            and len(self._tasks) + transient_failures < self._failure_budget
+            and len(self._tasks) < self._concurrency
+        ):
+            index = self._next_index
+            self._tasks[index] = asyncio.create_task(self._attempt(self._articles[index]))
+            self._next_index += 1
+
+    async def next_attempt(self, transient_failures: int) -> _AnalysisAttempt | None:
+        """Await the next article's attempt, keeping the pool full within the breaker budget."""
+        self._dispatch(transient_failures)
+        task = self._tasks.pop(self._consume_index, None)
+        if task is None:
+            return None
+        self._consume_index += 1
+        return await task
+
+    async def aclose(self) -> None:
+        """Cancel anything still in flight so an aborted batch leaves no orphaned request."""
+        pending = list(self._tasks.values())
+        self._tasks.clear()
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 async def process_collected_articles(
@@ -495,6 +611,10 @@ async def process_collected_articles(
 
     Durability: every article is committed on its own, so a cancelled or
     timed-out run keeps all the work it already finished.
+
+    Speed: full-text extraction and the model call run up to
+    ``ai_processing_concurrency`` articles at a time, while every database write
+    (event matching, summaries, commits) still happens serially on this session.
 
     Resilience: transient provider errors (503/429/timeouts) mark the article
     'failed' with an incremented ``attempt_count`` so a later run retries it,
@@ -543,29 +663,24 @@ async def process_collected_articles(
         s_rows = await s_rows
     sources_map = dict(s_rows)
 
-    for article in articles_list:
-        source_name = sources_map.get(article.source_id, "Unknown Source")
+    analysis = _ConcurrentAnalysis(articles_list, ai_provider, sources_map)
+    for _ in range(len(articles_list)):
+        attempt = await analysis.next_attempt(consecutive_failures)
+        if attempt is None:
+            break
+
+        article = attempt.article
+        source_name = attempt.source_name
+        # Attempt bookkeeping stays in the serial half: a request the breaker cancels
+        # must not consume one of the article's remaining retries.
         article.attempt_count = (article.attempt_count or 0) + 1
         article.last_attempt_at = datetime.now(UTC)
         immediate_analysis: ImmediateAnalysis | None = None
         immediate_admin_only = False
 
-        await _hydrate_article_body(article)
-        # Phase Y-11: cheap, log-only relevance check over exactly the text the model
-        # is about to see. It never rejects, changes a status or adds a model call.
-        prefilter = prefilter_analysis(
-            article.title or "", (article.original_text or "")[:MODEL_BODY_CHAR_LIMIT]
-        )
-
-        try:
-            result = await analyze_article(
-                title=article.title,
-                body=article.original_text or "",
-                source_name=source_name,
-                provider=ai_provider,
-            )
-        except Exception as exc:
-            if is_retryable_ai_error(exc):
+        if attempt.error is not None:
+            exc = attempt.error
+            if attempt.transient:
                 article.status = "failed"
                 consecutive_failures += 1
                 logger.warning(
@@ -594,6 +709,18 @@ async def process_collected_articles(
             await session.commit()
             continue
 
+        result = attempt.result
+        if result is None:
+            # Defensive: a worker returns either a result or an error. A silent gap must
+            # never leave the article looking analyzed.
+            logger.error("Analysis of article ID %d produced no result; marking it failed.", article.id)
+            article.status = "failed"
+            processed_count += 1
+            await session.commit()
+            continue
+
+        # Phase Y-11 prefilter, computed by the worker over exactly the text the model saw.
+        prefilter = attempt.prefilter or {}
         consecutive_failures = 0
         payload_dict = result.model_dump(mode="json")
         payload_dict["model_name"] = ai_provider.model_name
@@ -868,6 +995,8 @@ async def process_collected_articles(
                     settings.immediate_publish_max_per_run,
                     article.id,
                 )
+
+    await analysis.aclose()
 
     if flag_alerts:
         try:
