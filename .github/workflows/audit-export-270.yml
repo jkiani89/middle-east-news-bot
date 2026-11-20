@@ -66,7 +66,13 @@ jobs:
 
           # Same queries, same window variables; only the client-side output directory
           # changes, because /tmp/audit_bundle is not what this runner uploads.
-          sed "s#/tmp/audit_bundle#${export_dir}#g" \
+          #
+          # psql variable substitution (:'win_start') works in plain SQL but NOT inside
+          # \copy meta-commands, so the two window literals are inlined in the runtime
+          # copy. The frozen SQL file itself is never modified.
+          sed -e "s#/tmp/audit_bundle#${export_dir}#g" \
+              -e "s/:'win_start'/'2026-11-19 04:30:00+00'/g" \
+              -e "s/:'win_end'/'2026-11-19 16:30:00+00'/g" \
             audit_other_270/export_other_270.sql > "$RUNNER_TEMP/export_local.sql"
 
           # Exactly the four frozen \copy statements, now pointing at the upload directory.
