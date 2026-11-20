@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -132,6 +133,41 @@ class FlakyJsonProvider(BaseAIProvider):
         return dict(self.payload)
 
 
+class _ConcurrencyProbeProvider(BaseAIProvider):
+    """Behaves like a model call (it awaits) and records how many calls overlap."""
+
+    def __init__(self, payload: dict[str, Any], delay: float = 0.05) -> None:
+        self.payload = payload
+        self.delay = delay
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    @property
+    def model_name(self) -> str:
+        return "probe-model"
+
+    async def generate_json(self, prompt: str, system_instruction: str | None = None, *, purpose: str = "analysis"):
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await asyncio.sleep(self.delay)
+            return dict(self.payload)
+        finally:
+            self.in_flight -= 1
+
+
+class _OrderedCommitSession(FakeSession):
+    """Records which articles were already finalized at every commit."""
+
+    def __init__(self, articles: list[Article]):
+        super().__init__(articles)
+        self.snapshots: list[list[int]] = []
+
+    async def commit(self) -> None:
+        self.snapshots.append([a.id for a in self.articles if a.status != "collected"])
+        await super().commit()
+
+
 def _article(article_id: int, status: str = "collected", attempt_count: int = 0) -> Article:
     return Article(
         id=article_id,
@@ -182,6 +218,42 @@ async def test_circuit_breaker_stops_batch_and_leaves_queue_untouched(monkeypatc
     assert len(attempted) == 3
     assert len(untouched) == 5
     assert all(a.status == "collected" for a in untouched)
+
+
+@pytest.mark.asyncio
+async def test_breaker_stops_after_exactly_its_threshold_at_four_way_concurrency(monkeypatch):
+    """Parallel dispatch must not spend extra model calls once the breaker trips."""
+    monkeypatch.setattr(settings, "ai_max_consecutive_failures", 5)
+    monkeypatch.setattr(settings, "ai_processing_concurrency", 4)
+    articles = [_article(i) for i in range(1, 13)]
+    session = FakeSession(articles)
+    provider = AlwaysUnavailableProvider()
+
+    count = await process_collected_articles(session, limit=20, provider=provider)
+
+    assert count == 0
+    assert provider.calls == 5
+    assert last_batch_stopped_by_circuit_breaker() is True
+    # Only the five failures the breaker counted burned a retry; the queue is intact.
+    assert [a.attempt_count for a in articles] == [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+    assert all(a.status == "collected" for a in articles[5:])
+
+
+@pytest.mark.asyncio
+async def test_analysis_is_parallel_but_database_writes_stay_serial_and_ordered(monkeypatch):
+    """Four model calls overlap; each article is finalized in queue order, one commit each."""
+    monkeypatch.setattr(settings, "ai_processing_concurrency", 4)
+    articles = [_article(i) for i in range(1, 9)]
+    session = _OrderedCommitSession(articles)
+    provider = _ConcurrencyProbeProvider(IRRELEVANT_PAYLOAD)
+
+    count = await process_collected_articles(session, limit=10, provider=provider)
+
+    assert count == 8
+    assert provider.max_in_flight == 4
+    assert session.commit_count == 8
+    assert session.snapshots == [list(range(1, n + 1)) for n in range(1, 9)]
+    assert all(a.status == "rejected" for a in articles)
 
 
 @pytest.mark.asyncio
