@@ -1,0 +1,102 @@
+name: Audit Export 270 (read-only)
+
+# Manual, read-only export for the ISS-036 "Other" audit (270 events).
+#
+# It runs the frozen script audit_other_270/export_other_270.sql (SELECT and \copy only,
+# inside BEGIN TRANSACTION READ ONLY), writes the four CSVs inside the runner, prints
+# their SHA-256 sums and row counts, and uploads them as a short-lived artifact.
+# It never writes to the database, never touches backups, and never prints the DSN.
+#
+# Why this exists: the cloud sandbox that builds the audit bundle has outbound traffic
+# filtered to a small set of destination ports, so it cannot open TCP to the PostgreSQL
+# port (27362). GitHub-hosted runners reach this database already for backup.yml/cron.yml.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: audit-export-270
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    name: Export 270-event audit bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check required secret
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error::Missing repository secret DATABASE_URL" >&2
+            exit 1
+          fi
+          echo "DATABASE_URL is present (its value is never printed)."
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          psql --version
+
+      - name: Run read-only export
+        # The connection string stays in this step's environment only: the SQLAlchemy
+        # driver prefix is stripped and sslmode=require is enforced; nothing is echoed.
+        run: |
+          set -euo pipefail
+
+          url="${DATABASE_URL/\+asyncpg/}"
+          case "$url" in
+            *sslmode=*) ;;
+            *\?*)       url="${url}&sslmode=require" ;;
+            *)          url="${url}?sslmode=require" ;;
+          esac
+
+          mkdir -p "$GITHUB_WORKSPACE/bundle"
+          export_dir="$GITHUB_WORKSPACE/bundle"
+
+          # Same queries, same window variables; only the client-side output directory
+          # changes, because /tmp/audit_bundle is not what this runner uploads.
+          sed "s#/tmp/audit_bundle#${export_dir}#g" \
+            audit_other_270/export_other_270.sql > "$RUNNER_TEMP/export_local.sql"
+
+          # Exactly the four frozen \copy statements, now pointing at the upload directory.
+          copies=$(awk 'substr($0,1,5)=="\\copy"{n++} END{print n+0}' "$RUNNER_TEMP/export_local.sql")
+          echo "copy_statements: ${copies}"
+          [ "${copies}" -eq 4 ] || { echo "::error::expected 4 copy statements, found ${copies}" >&2; exit 1; }
+          [ "$(grep -c "TO '${export_dir}/" "$RUNNER_TEMP/export_local.sql")" -eq 4 ]
+
+          PGOPTIONS='-c default_transaction_read_only=on' \
+          PGSSLMODE=require \
+          PGCONNECT_TIMEOUT=25 \
+            psql "$url" -v ON_ERROR_STOP=1 -f "$RUNNER_TEMP/export_local.sql"
+
+      - name: Write manifest and print evidence
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/bundle"
+          ls -l
+          echo "--- rows per file (including header) ---"
+          for f in *.csv; do printf '%8d  %s\n' "$(wc -l < "$f")" "$f"; done
+          sha256sum ./*.csv | tee SHA256SUMS.txt
+          echo "--- header of each file ---"
+          for f in *.csv; do echo "[$f] $(head -n 1 "$f")"; done
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-bundle-270
+          path: |
+            bundle/*.csv
+            bundle/SHA256SUMS.txt
+          retention-days: 7
+          if-no-files-found: error
