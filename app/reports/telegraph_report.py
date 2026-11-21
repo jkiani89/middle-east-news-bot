@@ -184,6 +184,13 @@ def _article_status(article: Article) -> str:
     return raw if isinstance(raw, str) else ""
 
 
+# D-9 decision (2026-11-21): a story the editorial gate reviewed and turned down is
+# reported as a count in the transparency note, never as a page of raw, untranslated
+# headlines. The same applies to an analysis error. They are still counted as
+# represented so the completeness check keeps meaning "no news silently lost".
+COUNT_ONLY_STATUSES: frozenset[str] = frozenset({"rejected", "failed"})
+
+
 def _unsaved_status_labels(status: str) -> tuple[str, str, str]:
     """Section and label for an article that produced no editorial summary.
 
@@ -338,6 +345,9 @@ async def fetch_complete_window_items(
     for article, source, event_id in rows:
         status = _article_status(article)
         status_counts[status] = status_counts.get(status, 0) + 1
+        if status in COUNT_ONLY_STATUSES:
+            articles_represented += 1
+            continue
         if event_id is None:
             unlinked_articles += 1
             synthetic.append(_article_item(article, source))
@@ -720,12 +730,12 @@ def build_index_page(
     if metadata.get("articles_rejected"):
         transparency.append(
             f"{fa_number(int(metadata['articles_rejected']))} خبر بررسی و در گیت تحریریه رد شد؛ "
-            f"این موارد در بخش «{UNPUBLISHED_TOPIC_NAME}» جدا شمرده شده‌اند و جزو اخبار «تحلیل‌نشده» نیستند."
+            f"این موارد فقط به‌صورت شمارشی در همین یادداشت گزارش می‌شوند و جزو اخبار «تحلیل‌نشده» نیستند."
         )
     if metadata.get("articles_failed"):
         transparency.append(
-            f"{fa_number(int(metadata['articles_failed']))} خبر در مرحله تحلیل با خطا مواجه شد و "
-            f"در بخش «{UNPUBLISHED_TOPIC_NAME}» جدا شمرده شده است."
+            f"{fa_number(int(metadata['articles_failed']))} خبر در مرحله تحلیل با خطا مواجه شد؛ "
+            f"این موارد فقط به‌صورت شمارشی در همین یادداشت گزارش می‌شوند."
         )
     if metadata.get("articles_without_summary"):
         transparency.append(

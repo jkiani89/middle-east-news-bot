@@ -226,8 +226,8 @@ async def test_article_without_any_event_is_published():
 
 
 @pytest.mark.asyncio
-async def test_unanalysed_and_rejected_articles_get_their_own_sections():
-    """A queued/expired story is not "other"; a rejected one is not "unprocessed"."""
+async def test_unanalysed_articles_are_published_and_rejected_ones_are_counted_only():
+    """D-9: reviewed-and-rejected news is a count, not a page of raw headlines."""
     session = _ScriptedSession(
         executes=[
             _Rows([]),
@@ -251,14 +251,30 @@ async def test_unanalysed_and_rejected_articles_get_their_own_sections():
     assert by_title["Still waiting"]["topic_fa"] == "اخبار پردازش‌نشده"
     assert by_title["Too old"]["topic_fa"] == "اخبار پردازش‌نشده"
     assert "منقضی" in by_title["Too old"]["verification_status_fa"]
-    assert by_title["Turned down"]["topic_fa"] == "اخبار بررسی‌شده بدون انتشار"
-    assert "ردشده" in by_title["Turned down"]["verification_status_fa"]
-    assert by_title["Provider error"]["topic_fa"] == "اخبار بررسی‌شده بدون انتشار"
+    # Reviewed-and-rejected and failed rows must not produce a report item at all.
+    assert "Turned down" not in by_title
+    assert "Provider error" not in by_title
     assert meta["articles_unprocessed"] == 2
     assert meta["articles_rejected"] == 1
     assert meta["articles_failed"] == 1
     assert meta["articles_by_status"] == {"collected": 1, "expired": 1, "rejected": 1, "failed": 1}
-    assert meta["unlinked_articles"] == 4
+    assert meta["unlinked_articles"] == 2
+    assert meta["articles_represented"] == 4
+
+
+def test_the_unprocessed_section_is_absent_when_nothing_was_unprocessed():
+    """D-9: an empty «اخبار پردازش‌نشده» heading is never rendered."""
+    from app.editorial.telegraph_topics import group_items_by_telegraph_topic
+
+    item = {
+        "event_id": 1,
+        "topic_key": "me",
+        "topic_keys": ["me"],
+        "headline_fa": "خبر",
+    }
+    keys = [key for key, _name, _items in group_items_by_telegraph_topic([item])]
+    assert "unprocessed" not in keys
+    assert "not_published" not in keys
 
 
 @pytest.mark.asyncio
