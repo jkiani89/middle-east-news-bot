@@ -28,8 +28,12 @@ from app.editorial.glossary import canonicalize_approved_names
 from app.editorial.liveblog import is_live_digest
 from app.editorial.perspectives import check_perspectives_gate, load_orientations, orientation_for
 from app.editorial.prefilter import prefilter_analysis
-from app.editorial.regions import has_middle_east_nexus, is_primary_actor
-from app.editorial.topics import match_topics
+from app.editorial.regions import (
+    has_middle_east_nexus,
+    is_primary_actor,
+    is_regional_only_story,
+)
+from app.editorial.topics import REGIONAL_TOPIC, match_topics
 from app.processors.event_matcher import EventMatcher
 from app.telegram.publisher import (
     ImmediateAnalysis,
@@ -784,6 +788,27 @@ async def process_collected_articles(
             result.event_title or article.title,
             result.importance,
         )
+        # Phase B: a story whose whole country list is regional cannot be a "passing
+        # mention" of the region. It used to be rejected when no configured briefing
+        # topic covered it (the Qatari emir's Berlin visit, WFP aid cuts for Yemen), even
+        # though the region was its entire subject. The model's relevance flag and an
+        # importance floor guard the rescue, so an incidental single country in a global
+        # round-up and a low-value local item stay out.
+        if (
+            not topics
+            and result.is_relevant
+            and result.importance >= 2
+            and has_middle_east_nexus(result.countries, result.location)
+            and is_regional_only_story(result.countries)
+        ):
+            topics = [REGIONAL_TOPIC]
+            logger.info(
+                "Article ID %d has no specific briefing topic; publishing it under "
+                "the regional topic (importance=%d, countries=%s).",
+                article.id,
+                result.importance,
+                result.countries,
+            )
         topic = topics[0] if topics else None
         payload_dict["topic_key"] = topic.key if topic else None
         payload_dict["topic_keys"] = [t.key for t in topics]

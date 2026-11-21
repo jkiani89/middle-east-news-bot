@@ -324,6 +324,47 @@ def mentions_middle_east_place(value: str | None) -> bool:
     return False
 
 
+# Named Middle East office-holders whose actor string does not contain their country's
+# name ("تمیم بن حمد آل ثانی" for قطر). Without this list a state visit by the Qatari
+# emir was rejected as a "passing mention", even at importance 4. Entries are added only
+# with evidence from a real analysis row (2026-11-21 export) and stay a closed set: an
+# institution or person name is not inferred.
+MIDDLE_EAST_OFFICIALS: tuple[tuple[str, str], ...] = (
+    ("تمیم بن حمد آل ثانی", "قطر"),
+    ("شیخ تمیم", "قطر"),
+    ("امیر قطر", "قطر"),
+    ("محمد بن سلمان", "عربستان سعودی"),
+    ("ولیعهد عربستان", "عربستان سعودی"),
+    ("لانا نسیبه", "امارات متحده عربی"),
+    ("محمد بن زاید", "امارات متحده عربی"),
+    ("مسعود پزشکیان", "ایران"),
+    ("عباس عراقچی", "ایران"),
+    ("بنیامین نتانیاهو", "اسرائیل"),
+    ("اسحاق هرتزوگ", "اسرائیل"),
+    ("عبدالفتاح السیسی", "مصر"),
+    ("رجب طیب اردوغان", "ترکیه"),
+    ("محمد شیاع السودانی", "عراق"),
+)
+
+
+def official_middle_east_country(
+    countries: list[str] | None, actors: list[str] | None
+) -> str | None:
+    """The regional country an analysed actor officially represents, if any.
+
+    The country must also be listed in ``countries``: a passing reference to a foreign
+    minister in a story about another region does not make that region a party.
+    """
+    actor_text = normalize_place(" | ".join(actors or []))
+    if not actor_text:
+        return None
+    listed = {normalize_place(country) for country in countries or [] if str(country).strip()}
+    for name, country in MIDDLE_EAST_OFFICIALS:
+        if normalize_place(country) in listed and _name_appears(normalize_place(name), actor_text):
+            return country
+    return None
+
+
 def is_primary_actor(
     countries: list[str] | None,
     actors: list[str] | None,
@@ -349,7 +390,18 @@ def is_primary_actor(
         candidates = {normalized, normalize_place(MIDDLE_EAST_COUNTRY_ALIASES.get(normalized, ""))}
         if any(candidate and _name_appears(candidate, actor_text) for candidate in candidates):
             return True
-    return False
+    return official_middle_east_country(countries, actors) is not None
+
+
+def is_regional_only_story(countries: list[str] | None) -> bool:
+    """Whether every country the analysis lists is in the region.
+
+    Used by the pipeline rescue: a story whose whole country list is regional cannot be
+    a "passing mention" of the region, even when no configured briefing topic covers it
+    and no actor carries the country's name.
+    """
+    values = [normalize_place(country) for country in countries or [] if str(country).strip()]
+    return bool(values) and all(is_middle_east_country(value) for value in values)
 
 
 def has_middle_east_nexus(countries: list[str] | None, location: str | None = None) -> bool:
