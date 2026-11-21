@@ -345,3 +345,138 @@ def test_africa_story_with_incidental_egypt_is_rejected_by_pipeline():
     )
     assert has_middle_east_nexus(payload["countries"], payload["location"])
     assert not is_primary_actor(payload["countries"], payload["actors"], payload["location"])
+
+
+# --- Phase B: an office-holder counts as their state; a regional-only story is not
+# --- a "passing mention". Both regressions come from the 2026-11-21 export.
+
+
+def test_a_regional_office_holder_makes_their_state_a_party():
+    assert is_primary_actor(
+        ["قطر", "آلمان", "ایران", "ایالات متحده آمریکا"],
+        ["تمیم بن حمد آل ثانی", "فریدریش مرتس"],
+        None,
+    )
+
+
+def test_an_office_holder_without_their_country_listed_is_not_a_party():
+    assert not is_primary_actor(["آلمان"], ["تمیم بن حمد آل ثانی"], None)
+
+
+@pytest.mark.asyncio
+async def test_state_visit_by_a_regional_head_of_state_is_published(monkeypatch):
+    """The Qatari emir's Berlin visit was rejected as a passing mention at importance 4."""
+    _patch_matcher(monkeypatch)
+    article = _article()
+    session = FakeSession([article])
+
+    await pipeline.process_collected_articles(
+        session,
+        limit=10,
+        provider=MockAIProvider(
+            canned_response=_payload(
+                countries=["قطر", "آلمان", "ایران", "ایالات متحده آمریکا"],
+                actors=["تمیم بن حمد آل ثانی", "فریدریش مرتس"],
+                location="برلین",
+                event_title="سفر امیر قطر به برلین و گسترش روابط راهبردی",
+                importance=4,
+            )
+        ),
+    )
+
+    assert article.status == "summarized"
+    assert article.ai_payload["topic_key"] == "me"
+
+
+@pytest.mark.asyncio
+async def test_a_regional_only_story_without_a_topic_is_rescued(monkeypatch):
+    """WFP aid cuts for Yemen: the region is the whole subject, yet no topic matched."""
+    _patch_matcher(monkeypatch)
+    article = _article()
+    session = FakeSession([article])
+
+    await pipeline.process_collected_articles(
+        session,
+        limit=10,
+        provider=MockAIProvider(
+            canned_response=_payload(
+                countries=["یمن"],
+                actors=["برنامه جهانی غذا"],
+                location=None,
+                event_title="کاهش کمک‌های برنامه جهانی غذا به یمن",
+                importance=3,
+            )
+        ),
+    )
+
+    assert article.status == "summarized"
+    assert article.ai_payload["topic_key"] == "me"
+
+
+@pytest.mark.asyncio
+async def test_a_global_roundup_that_merely_lists_one_regional_country_is_still_rejected(monkeypatch):
+    _patch_matcher(monkeypatch)
+    article = _article()
+    session = FakeSession([article])
+
+    await pipeline.process_collected_articles(
+        session,
+        limit=10,
+        provider=MockAIProvider(
+            canned_response=_payload(
+                countries=["مصر", "نیجریه"],
+                actors=["اتحادیه آفریقا"],
+                location="نایروبی",
+                event_title="گزارش فارن افرز: قاره آفریقا به کانون اصلی فعالیت‌ها تبدیل شد",
+                importance=3,
+            )
+        ),
+    )
+
+    assert article.status == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_a_low_importance_regional_item_is_not_rescued(monkeypatch):
+    _patch_matcher(monkeypatch)
+    article = _article()
+    session = FakeSession([article])
+
+    await pipeline.process_collected_articles(
+        session,
+        limit=10,
+        provider=MockAIProvider(
+            canned_response=_payload(
+                countries=["عربستان سعودی"],
+                actors=["خبرگزاری رسمی عربستان"],
+                location="العلا",
+                event_title="برگزاری برنامه‌های آموزشی و تفریحی برای کودکان در العلا",
+                importance=1,
+            )
+        ),
+    )
+
+    assert article.status == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_an_irrelevant_regional_only_story_is_not_rescued(monkeypatch):
+    _patch_matcher(monkeypatch)
+    article = _article()
+    session = FakeSession([article])
+
+    await pipeline.process_collected_articles(
+        session,
+        limit=10,
+        provider=MockAIProvider(
+            canned_response=_payload(
+                countries=["یمن"],
+                actors=["برنامه جهانی غذا"],
+                is_relevant=False,
+                event_title="کاهش کمک‌های برنامه جهانی غذا به یمن",
+                importance=3,
+            )
+        ),
+    )
+
+    assert article.status == "rejected"
