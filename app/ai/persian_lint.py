@@ -41,6 +41,28 @@ SUSPECT_WORDS: tuple[str, ...] = (
 
 QUOTE_PATTERN = re.compile(r'[«"“\'](.*?)[»"”\']', re.DOTALL)
 
+# Phase D: stale office titles for a serving president. Persian output called Trump
+# «رئیس‌جمهور پیشین», «منتخب» and «رئیس‌جمهور» in three consecutive stories. Log-only,
+# like the vocabulary watchlist: the prompt states the rule, this measures violations.
+STALE_OFFICE_TITLES: tuple[str, ...] = (
+    "رئیس‌جمهور پیشین",
+    "رئیس جمهور پیشین",
+    "رئیس‌جمهور منتخب",
+    "رئیس جمهور منتخب",
+)
+
+
+def _stale_title_findings(headline: str, summary: str) -> list[dict[str, str]]:
+    """Report a stale Trump title only when the text actually mentions Trump."""
+    text = f"{headline or ''}\n{summary or ''}"
+    if "ترامپ" not in text:
+        return []
+    return [
+        {"actor": "دونالد ترامپ", "phrase": phrase}
+        for phrase in STALE_OFFICE_TITLES
+        if phrase in text
+    ]
+
 
 def _find_locations(word: str, headline: str, summary: str) -> list[str]:
     """Detect whether a watchlist word occurs in headline, quote, or general narrative."""
@@ -85,4 +107,5 @@ def lint_persian_output(headline: str, summary: str) -> dict[str, Any]:
         "blocking": False,
         "watchlist": list(SUSPECT_WORDS),
         "findings": findings,
+        "official_titles": _stale_title_findings(headline, summary),
     }

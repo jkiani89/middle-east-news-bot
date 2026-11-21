@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from app.ai.persian_lint import SUSPECT_WORDS, lint_persian_output
-from app.ai.summarizer import EDITORIAL_SYSTEM_PROMPT
+from app.ai.summarizer import EDITORIAL_SYSTEM_PROMPT, build_analysis_prompt
 from app.editorial.glossary import canonicalize_approved_names
 
 
@@ -79,6 +81,30 @@ def test_phase_c_watchlist_records_the_new_forms() -> None:
 def test_phase_c_prompt_states_the_standard_persian_rule() -> None:
     assert "فارسی معیار خبری" in EDITORIAL_SYSTEM_PROMPT
     assert "واشنطن" in EDITORIAL_SYSTEM_PROMPT
+
+
+def test_phase_d_prompt_carries_the_date_and_the_title_rule() -> None:
+    prompt = build_analysis_prompt("عنوان", "متن", "Reuters")
+    today = datetime.now(UTC).date().isoformat()
+    assert f"تاریخ امروز (UTC): {today}" in prompt
+    assert "رئیس‌جمهور ایالات متحده آمریکا" in EDITORIAL_SYSTEM_PROMPT
+    assert "رئیس‌جمهور پیشین" in EDITORIAL_SYSTEM_PROMPT
+
+
+def test_phase_d_stale_trump_title_is_reported_but_never_blocks() -> None:
+    report = lint_persian_output(
+        "ترامپ: توافق نزدیک است",
+        "رئیس‌جمهور پیشین آمریکا گفت که توافق ممکن است.",
+    )
+    assert report["official_titles"] == [
+        {"actor": "دونالد ترامپ", "phrase": "رئیس‌جمهور پیشین"}
+    ]
+    assert report["blocking"] is False
+
+
+def test_phase_d_stale_phrase_without_trump_is_not_reported() -> None:
+    report = lint_persian_output("گزارش", "رئیس‌جمهور پیشین برزیل سخن گفت.")
+    assert report["official_titles"] == []
 
 
 def test_location_detection_headline_quote_narrative() -> None:

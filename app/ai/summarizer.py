@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
@@ -428,6 +429,12 @@ EDITORIAL_SYSTEM_PROMPT = """
    «استعوا/استعوای» ← «استعمار/استعماری»، «مسسیر» ← «مسیر»، «اکشافات» ← «اکتشافات»،
    و «نحل» (در معنای کشور) ← «بحرین».
    نام باشگاه‌ها و نهادهای عربی («الأهلی»، «النهضه») را به شکل رسمی رایج فارسی بنویس.
+
+۱۱. عنوان رسمی مقام‌ها (Official Titles):
+   عنوان هر مقام را بر اساس تاریخ امروز بنویس، نه بر اساس دانش قدیمی یا متن آرشیوی منبع.
+   «دونالد ترامپ» از ۲۰ ژانویه ۲۰۲۵ رئیس‌جمهور ایالات متحده آمریکا است؛
+   نوشتن «رئیس‌جمهور پیشین» یا «رئیس‌جمهور منتخب» برای او ممنوع است.
+   اگر عنوان یک مقام در متن منبع نیامده و از آن مطمئن نیستی، فقط نام او را بنویس.
 """
 
 
@@ -467,7 +474,9 @@ def _build_analysis_prompt(title: str, body: str, source_name: str) -> tuple[str
 
     glossary_block, glossary_meta = glossary_for_prompt(safe_title, safe_body)
 
+    today = datetime.now(UTC).date().isoformat()
     prompt = f"""اطلاعات ورودی:
+تاریخ امروز (UTC): {today}
 نام منبع خبری: {safe_source}
 عنوان خبر: {safe_title}
 

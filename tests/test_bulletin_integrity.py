@@ -592,6 +592,6 @@ def test_live_digest_badge_in_report():
 
 
 def test_prompt_version_and_editorial_prompt_untouched():
-    # Bumped deliberately in Phase C after the approved standard-Persian rule.
-    assert PROMPT_VERSION == "v2-a285fcb8"
+    # Bumped deliberately in Phases C and D after the approved prompt rules.
+    assert PROMPT_VERSION == "v2-ba0dca01"
     assert "نقش تو دستیار تحلیل‌گر ارشد و بی‌طرف اخبار خاورمیانه" in EDITORIAL_SYSTEM_PROMPT
