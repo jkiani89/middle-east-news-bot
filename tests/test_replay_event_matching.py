@@ -730,7 +730,7 @@ async def test_production_tie_breaking_non_determinism_documentation():
     )
 
     art_payload = {
-        "event_title": "بیانیه مشترک", "categories": ["DIP"], "countries": ["ایران"], "actors": ["سفرا"], "location": "تهران",
+        "event_title": "رویداد مشترک", "categories": ["DIP"], "countries": ["ایران"], "actors": ["سفرا"], "location": "تهران",
     }
     art_db = Article(id=99, title="T", original_url="u", collected_at=now)
 

@@ -235,6 +235,8 @@
 
 **اثر بر ISS-036:** RC-12…RC-15 خطاهای واقعی طبقه‌بندی‌اند و بخشی از سیگنال خطای این اولویت را می‌بندند؛ ولی ISS-036 **باز** می‌ماند (RC-17 آخرین مورد باز شناخته‌شدهٔ قاعدهٔ موضوع‌بندی را بست؛ ممیزی محتوایی Production همچنان BLOCKED است).
 
+- **RC-18 (تأییدشده — False Merge در EventMatcher):** `calculate_event_similarity` با اشتراک کشور + event_type (بدون actor) امتیاز ≥0.60 می‌داد (0.65 بدون actor، 0.725 با actor یک‌طرفه) و `s_location=0.5` وقتی هر دو location خالی بود. علاوه بر این، نام خبرگزاری‌ها/کشورها در لیست `actors` باعث `s_actors=1.0` کاذب می‌شد. **اصلاح (2026-11-21):** پاکسازی `actors` (رسانه/کشور/ملیت) پیش از امتیازدهی؛ `s_location` خالی-خالی = 0.0؛ گیت موضوعی (shared specific actor یا keywords≥0.18 / keywords≥0.12 یا location≥0.6&keywords>0) در `match_or_create_event`. **آزمون:** `test_false_merge_5221_1084`, `test_false_merge_5290_1069`, `test_false_merge_5034_946`, `test_false_merge_5016_880`, `test_false_merge_4998_961`, `test_false_merge_5117_944`, `test_false_merge_news_agency_actor_950` + تست‌های مثبت چندمنبعی. **اثر بر ISS-036:** False Merge کاهش یافت، ولی ISS-036 **باز** می‌ماند (ممیزی محتوایی Production همچنان BLOCKED).
+
 ### ۱.۳۷. نبودِ تعیین تکلیف قابل‌ردیابی برای اخبار جمع‌آوری‌شده (ISS-037) [HIGH — OPEN]
 
 **تاریخ ثبت:** ۲۰۲۶-۱۱-۲۰ · **منبع:** ممیزی READ-ONLY «معماری Pipeline، بررسی Cron و طراحی راهکار پردازش ۱۰۰٪ اخبار» → `docs/audits/2026-11-20-pipeline-cron.md`

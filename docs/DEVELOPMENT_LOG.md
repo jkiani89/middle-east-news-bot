@@ -1759,3 +1759,21 @@ thread داخلی SDK با `wait_for` لغو نمی‌شود و در پس‌زم
 
 ### ۴. دامنه
 - هیچ تغییر Schema یا منطق ارزش خبری انجام نشد؛ فقط قاعدهٔ عبور/رد اشارهٔ گذرا با توجه به topic match اصلاح شد.
+
+---
+
+## [2026-11-21] اصلاح False Merge در EventMatcher (RC-18)
+
+### تغییرات
+- `app/processors/event_matcher.py`:
+  - پاکسازی `actors` پیش از امتیازدهی (رسانه/خبرگزاری، کشور، آبراه، اصطلاحات ملیتی، ورودی‌هایی که `extract_non_country_entities` خالی برمی‌گرداند).
+  - `s_location` در حالت هر دو خالی: `0.5 → 0.0`.
+  - گیت موضوعی (Topic/Entity Overlap Gate) در `match_or_create_event` برای مسیر active و follow-up.
+- `tests/test_event_matcher.py`: تست رگرسیون برای ۶ جفت + مورد بازیگرِ خبرگزاری + ۲ تست مثبت چندمنبعی؛ به‌روزرسانی یک assertion قدیمی (`location_score 0.5 → 0.0`).
+- `docs/KNOWN_ISSUES.md`: ثبت RC-18 در ISS-036.
+- بدون تغییر Schema/DB/API.
+
+### شواهد
+- `pytest tests/test_event_matcher.py`: 20 passed.
+- `ruff check`: All checks passed.
+- ISS-036 باز می‌ماند (ممیزی محتوایی Production همچنان BLOCKED).

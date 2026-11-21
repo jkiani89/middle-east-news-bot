@@ -20,8 +20,94 @@ from app.config import settings
 from app.database.models import Article, Event, Summary
 from app.editorial.glossary import canonicalize_approved_names
 from app.editorial.liveblog import is_live_digest
+from app.editorial.perspectives import extract_non_country_entities
+from app.editorial.regions import ALL_COUNTRIES, is_country, is_waterway, normalize_place
 
 logger = logging.getLogger(__name__)
+
+# News agencies / media outlets whose names must never count as event actors.
+_MEDIA_AGENCY_NAMES_RAW = {
+    "خبرگزاری سبأ", "خبرگزاری سبا", "سبأ", "سABA", "Saba News", "Saba News Agency",
+    "خبرگزاری رسمی عربستان", "خبرگزاری رسمی عربستان سعودی", "SPA",
+    "الجزیره", "Al Jazeera", "Al Jazeera Arabic", "Al Jazeera English",
+    "مهر", "Mehr News", "Mehr",
+    "تاس", "TASS", "Tass",
+    "رویترز", "Reuters",
+    "یورونیوز", "Euronews",
+    "هاآرتص", "Haaretz",
+    "آسوشیتدپرس", "Associated Press", "AP",
+    "آناتولی", "Anadolu",
+    "بی‌بی‌سی", "BBC",
+    "سی‌ان‌ان", "CNN",
+    "خبرگزاری فارس", "Fars News",
+    "خبرگزاری تسنیم", "Tasnim",
+    "ایرنا", "IRNA",
+    "ایسنا", "ISNA",
+    "خبرگزاری", "News Agency", "News",
+}
+_MEDIA_AGENCY_NAMES = {normalize_place(x) for x in _MEDIA_AGENCY_NAMES_RAW if x}
+
+
+def _clean_actors(actors: list[str] | None) -> list[str]:
+    """Remove news agencies, countries, waterways and country-derived nationality terms.
+
+    Such entries in ``actors`` cause spurious ``s_actors = 1.0`` matches between
+    unrelated events (False Merge). Cleaning is applied before similarity scoring.
+    """
+    result: list[str] = []
+    all_countries_norm = {normalize_place(c) for c in ALL_COUNTRIES}
+    for item in (actors or []):
+        if not item:
+            continue
+        canon = canonicalize_approved_names(str(item))
+        norm = normalize_place(canon)
+        if not norm or len(norm) < 2:
+            continue
+        # Explicit country / waterway removal
+        if is_country(norm) or is_waterway(norm):
+            continue
+        # Explicit media / news-agency removal
+        if norm in _MEDIA_AGENCY_NAMES:
+            continue
+        # Country-derived nationality/role terms (e.g. 'فلسطینیان', 'ایرانیان')
+        # only when every token is country-derived; multi-word actors that contain
+        # a country token but also a non-country word (e.g. 'Israeli military')
+        # must be kept.
+        tokens = norm.split()
+        country_derived = False
+        if len(tokens) == 1:
+            for c in all_countries_norm:
+                if c and c in norm:
+                    country_derived = True
+                    break
+        else:
+            all_derived = len(tokens) > 0
+            for tok in tokens:
+                tok_derived = any(c and c in tok for c in all_countries_norm)
+                if not tok_derived:
+                    all_derived = False
+                    break
+            country_derived = all_derived
+        if country_derived:
+            continue
+        # Supplementary: drop if extract_non_country_entities yields nothing
+        # (i.e. the entry contributed no non-country/non-waterway entity).
+        # This is NOT the sole criterion (see user note).
+        ents = extract_non_country_entities({"actors": [canon], "location": ""})
+        if not ents:
+            continue
+        result.append(canon)
+    # de-dup preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for a in result:
+        n = normalize_place(a)
+        if n in seen:
+            continue
+        seen.add(n)
+        out.append(a)
+    return out
+
 
 STOPWORDS = {
     "the", "in", "on", "at", "and", "a", "an", "of", "for", "to", "with",
@@ -73,6 +159,12 @@ class SimilarityScore:
     weights_applied: dict[str, float]
 
 
+def _specific_entities(actors: list[str] | None, location: str | None) -> set[str]:
+    """Non-country/non-media entities for the topic gate (reuses extract_non_country_entities)."""
+    cleaned = _clean_actors(actors or [])
+    return extract_non_country_entities({"actors": cleaned, "location": location or ""})
+
+
 def calculate_event_similarity(
     event: Event,
     incoming_data: dict[str, Any],
@@ -92,8 +184,12 @@ def calculate_event_similarity(
     inc_countries = {normalize_text(c) for c in (incoming_data.get("countries") or []) if c}
     s_countries = jaccard_similarity(ev_countries, inc_countries)
 
-    ev_actors = {normalize_text(a) for a in (event.actors or []) if a}
-    inc_actors = {normalize_text(a) for a in (incoming_data.get("actors") or []) if a}
+    # Clean actors (remove media agencies, countries, country-derived terms) before scoring
+    ev_actors_clean = _clean_actors(event.actors or [])
+    inc_actors_clean = _clean_actors(incoming_data.get("actors") or [])
+
+    ev_actors = {normalize_text(a) for a in ev_actors_clean if a}
+    inc_actors = {normalize_text(a) for a in inc_actors_clean if a}
     has_ev_actors = bool(ev_actors)
     has_inc_actors = bool(inc_actors)
 
@@ -123,7 +219,7 @@ def calculate_event_similarity(
         else:
             s_location = jaccard_similarity(tokenize(ev_loc), tokenize(inc_loc))
     elif not ev_loc and not inc_loc:
-        s_location = 0.5
+        s_location = 0.0
     else:
         s_location = 0.0
 
@@ -259,6 +355,7 @@ class EventMatcher:
 
         best_active_event: Event | None = None
         best_active_score = 0.0
+        best_active_sim = None
 
         for candidate in active_events:
             # Phase Y-13: An event that is a live digest must NEVER accept other articles
@@ -275,9 +372,24 @@ class EventMatcher:
             if sim.total_score > best_active_score:
                 best_active_score = sim.total_score
                 best_active_event = candidate
+                best_active_sim = sim
+
+        # Topic/Entity Overlap Gate (prevents False Merge on country+category alone)
+        _active_gate_ok = True
+        if best_active_event is not None and best_active_sim is not None:
+            _ev_ents = _specific_entities(best_active_event.actors or [], best_active_event.location)
+            _inc_ents = _specific_entities(analysis_data.get("actors") or [], analysis_data.get("location"))
+            _shared = _ev_ents & _inc_ents
+            if not _shared:
+                _active_gate_ok = best_active_sim.keywords_score >= 0.18
+            else:
+                _active_gate_ok = (
+                    best_active_sim.keywords_score >= 0.12
+                    or (best_active_sim.location_score >= 0.6 and best_active_sim.keywords_score > 0)
+                )
 
         # Check if active candidate qualifies for automatic merge
-        if best_active_event and best_active_score >= self.merge_threshold:
+        if best_active_event and best_active_score >= self.merge_threshold and _active_gate_ok:
             logger.info(
                 "Merging Article #%d into Event #%d ('%s') with confidence %.3f",
                 article.id,
@@ -331,6 +443,7 @@ class EventMatcher:
 
         best_hist_event: Event | None = None
         best_hist_score = 0.0
+        best_hist_sim = None
 
         for candidate in hist_events:
             cand_obj = None
@@ -346,8 +459,22 @@ class EventMatcher:
             if sim.total_score > best_hist_score:
                 best_hist_score = sim.total_score
                 best_hist_event = candidate
+                best_hist_sim = sim
 
-        if best_hist_event and best_hist_score >= self.follow_up_threshold:
+        _hist_gate_ok = True
+        if best_hist_event is not None and best_hist_sim is not None:
+            _ev_ents = _specific_entities(best_hist_event.actors or [], best_hist_event.location)
+            _inc_ents = _specific_entities(analysis_data.get("actors") or [], analysis_data.get("location"))
+            _shared = _ev_ents & _inc_ents
+            if not _shared:
+                _hist_gate_ok = best_hist_sim.keywords_score >= 0.18
+            else:
+                _hist_gate_ok = (
+                    best_hist_sim.keywords_score >= 0.12
+                    or (best_hist_sim.location_score >= 0.6 and best_hist_sim.keywords_score > 0)
+                )
+
+        if best_hist_event and best_hist_score >= self.follow_up_threshold and _hist_gate_ok:
             logger.info(
                 "Article #%d matched historical Event #%d ('%s') with confidence %.3f > 48h. Creating follow-up event.",
                 article.id,

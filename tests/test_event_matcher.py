@@ -391,7 +391,7 @@ def test_edge_cases_empty_and_partial_metadata():
     assert sim.weights_applied["actors"] == 0.0
     assert sim.weights_applied["countries"] == 0.35
     assert sim.category_score == 0.5
-    assert sim.location_score == 0.5
+    assert sim.location_score == 0.0
 
 
 @pytest.mark.asyncio
@@ -484,3 +484,147 @@ async def test_multiple_articles_merge_into_same_event():
     assert event.last_updated_at == t2
     assert len(summary.details_fa["sources"]) == 3
     assert summary.details_fa["sources"][2]["source"] == "AFP"
+
+
+@pytest.mark.asyncio
+async def _run_false_merge_case(existing_event, incoming_ai, incoming_article_id=999):
+    now = datetime.now(UTC)
+    existing_event.first_seen_at = now - timedelta(hours=2)
+    existing_event.last_updated_at = now - timedelta(hours=2)
+    existing_event.importance = 3
+    existing_event.status = "active"
+    summary = Summary(
+        id=1, event_id=existing_event.id,
+        headline_fa="خلاصه", summary_fa="خلاصه",
+        details_fa={"sources": []},
+    )
+    session = AsyncMock()
+    scalars_mock = MagicMock()
+    scalars_mock.all.return_value = [existing_event]
+    scalars_mock.first.return_value = summary
+    session.scalars.return_value = scalars_mock
+
+    article = Article(
+        id=incoming_article_id, source_id=2, title=incoming_ai.get("event_title", "t"),
+        original_url="https://example.com/x", canonical_url="https://example.com/x",
+        collected_at=now,
+    )
+    matcher = EventMatcher()
+    result = await matcher.match_or_create_event(session, article, incoming_ai, source_name="Src")
+    return result
+
+
+@pytest.mark.asyncio
+async def test_false_merge_5221_1084():
+    ev = Event(id=1084, title="گسترش زیرساخت‌های آموزشی توسط گروه مالی گردشگری", event_type="ECO",
+               countries=["ایران"], actors=["گروه مالی گردشگری", "مهدی جهانگیری", "بانک گردشگری", "وزارت آموزش و پرورش"],
+               location="ایران")
+    inc = {"event_title": "اظهارات رئیس‌جمهور ایران درباره جنگ اقتصادی", "categories": ["POL", "ECO"],
+           "countries": ["ایران"], "actors": ["رئیس‌جمهور ایران"], "location": "ایران", "importance": 3}
+    r = await _run_false_merge_case(ev, inc, 5221)
+    assert r.is_new_event is True
+    assert r.match_type == "initial"
+
+
+@pytest.mark.asyncio
+async def test_false_merge_5290_1069():
+    ev = Event(id=1069, title="انفجار خودرو در مرکز اسرائیل", event_type="SEC",
+               countries=["اسرائیل"], actors=["پلیس اسرائیل"], location="مرکز اسرائیل")
+    inc = {"event_title": "مرگ یک زن اسرائیلی بر اثر بیماری هاری", "categories": ["SEC", "HUM"],
+           "countries": ["اسرائیل"], "actors": [], "location": "اسرائیل", "importance": 2}
+    r = await _run_false_merge_case(ev, inc, 5290)
+    assert r.is_new_event is True
+    assert r.match_type == "initial"
+
+
+@pytest.mark.asyncio
+async def test_false_merge_5034_946():
+    # shared entity (Clinton/Zelensky-style) but different cities -> blocked
+    ev = Event(id=946, title="اظهارات کلینتون درباره اوکراین", event_type="POL",
+               countries=["ایالات متحده آمریکا"], actors=["هیلاری کلینتون", "ولودیمیر زلنسکی"],
+               location="نیویورک")
+    inc = {"event_title": "اظهارات زلنسکی درباره کمک آمریکا", "categories": ["POL", "DIP"],
+           "countries": ["ایالات متحده آمریکا", "اوکراین"], "actors": ["ولودیمیر زلنسکی"],
+           "location": "کی‌یف", "importance": 3}
+    r = await _run_false_merge_case(ev, inc, 5034)
+    assert r.is_new_event is True
+    assert r.match_type == "initial"
+
+
+@pytest.mark.asyncio
+async def test_false_merge_5016_880():
+    # shared entity in two different cities -> blocked
+    ev = Event(id=880, title="انفجار در شبوه", event_type="SEC",
+               countries=["یمن"], actors=["القاعدة"], location="شبوه")
+    inc = {"event_title": "حمله به پایگاه در حجه", "categories": ["SEC"],
+           "countries": ["یمن"], "actors": ["القاعدة"], "location": "حجه", "importance": 3}
+    r = await _run_false_merge_case(ev, inc, 5016)
+    assert r.is_new_event is True
+    assert r.match_type == "initial"
+
+
+@pytest.mark.asyncio
+async def test_false_merge_4998_961():
+    ev = Event(id=961, title="رویداد اقتصادی در تهران", event_type="ECO",
+               countries=["ایران"], actors=[], location="تهران")
+    inc = {"event_title": "رویداد سیاسی در بغداد", "categories": ["POL"],
+           "countries": ["ایران"], "actors": [], "location": "بغداد", "importance": 3}
+    r = await _run_false_merge_case(ev, inc, 4998)
+    assert r.is_new_event is True
+    assert r.match_type == "initial"
+
+
+@pytest.mark.asyncio
+async def test_false_merge_5117_944():
+    ev = Event(id=944, title="رویداد نظامی در غزه", event_type="MIL",
+               countries=["فلسطین"], actors=["حماس"], location="غزه")
+    inc = {"event_title": "رویداد دیپلماتیک در رام‌الله", "categories": ["DIP"],
+           "countries": ["فلسطین"], "actors": ["حماس"], "location": "رام‌الله", "importance": 3}
+    # shared actor (حماس) but different location and low keyword overlap -> gate: needs keywords>=0.12 or location>=0.6&kw>0
+    r = await _run_false_merge_case(ev, inc, 5117)
+    # This case may merge if gate allows; assert it does NOT create false merge only if blocked.
+    # We keep as initial expectation per user's classification of 5117->944 as false merge.
+    assert r.is_new_event is True
+    assert r.match_type == "initial"
+
+
+@pytest.mark.asyncio
+async def test_false_merge_news_agency_actor_950():
+    # actor is a news agency -> cleaned -> no shared entity -> gate requires keywords>=0.18
+    ev = Event(id=950, title="رویداد در یمن", event_type="HUM",
+               countries=["یمن"], actors=["خبرگزاری سبأ"], location="صنعاء")
+    inc = {"event_title": "گزارش هواشناسی عدن", "categories": ["HUM"],
+           "countries": ["یمن"], "actors": ["خبرگزاری سبأ"], "location": "عدن", "importance": 3}
+    r = await _run_false_merge_case(ev, inc, 950)
+    assert r.is_new_event is True
+    assert r.match_type == "initial"
+
+
+@pytest.mark.asyncio
+async def test_positive_multisource_merge_hormuz():
+    # Two sources about same drone attack in Strait of Hormuz -> should still merge
+    now = datetime.now(UTC)
+    ev = Event(id=2001, title="حمله پهپادی به نفتکش در تنگه هرمز", event_type="MIL",
+               countries=["ایران"], actors=["سپاه پاسداران"], location="تنگه هرمز",
+               first_seen_at=now - timedelta(hours=2), last_updated_at=now - timedelta(hours=2),
+               importance=3, status="active")
+    inc = {"event_title": "حمله پهپادی به کشتی در تنگه هرمز", "categories": ["MIL"],
+           "countries": ["ایران"], "actors": ["سپاه پاسداران"], "location": "تنگه هرمز", "importance": 4}
+    r = await _run_false_merge_case(ev, inc, 2002)
+    assert r.is_new_event is False
+    assert r.match_type == "auto"
+
+
+@pytest.mark.asyncio
+async def test_positive_multisource_merge_westbank():
+    ev = Event(id=2003, title="یورش نظامیان صهیونیست به کرانه باختری", event_type="MIL",
+               countries=["فلسطین"], actors=["ارتش اسرائیل"], location="کرانه باختری",
+               first_seen_at=datetime.now(UTC) - timedelta(hours=2),
+               last_updated_at=datetime.now(UTC) - timedelta(hours=2),
+               importance=3, status="active")
+    inc = {"event_title": "یورش نظامیان صهیونیست به کرانه باختری و بازداشت فلسطینیان",
+           "categories": ["MIL"], "countries": ["فلسطین"], "actors": ["ارتش اسرائیل"],
+           "location": "کرانه باختری", "importance": 3}
+    r = await _run_false_merge_case(ev, inc, 2004)
+    assert r.is_new_event is False
+    assert r.match_type == "auto"
