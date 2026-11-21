@@ -1705,11 +1705,12 @@ thread داخلی SDK با `wait_for` لغو نمی‌شود و در پس‌زم
 - `scripts/check_doc_constants.py` اکنون محل هر ردیف را از ستون «محل» می‌خواند، مقدار واقعی را با `ast` از همان فایل ماژول بیرون می‌کشد (بدون import) و بر اساس شکل ستون «مقدار» مقایسه می‌کند: KB → بایت، «ورودی» → طول، `{...}` → مجموعهٔ نام‌ها، متن داخل بک‌تیک → رشته، و در غیر این صورت عدد.
 - مقادیر محاسباتی مثل `PROMPT_VERSION` (وابسته به `NewsAnalysis.model_json_schema()`) به‌طور ایستا قابل محاسبه نیستند؛ برای همین حالت `--allow-imports` اضافه شد که فقط وقتی لازم شد ماژول را import می‌کند. job `Docs (constants drift)` حالت ایستا را اجرا می‌کند و job `Test (pytest)` پس از نصب وابستگی‌ها همان اسکریپت را با `--allow-imports` اجرا می‌کند؛ در آن حالت هر ردیفِ resolve‌نشده خطاست، پس ردیفی بی‌صدا رد نمی‌شود.
 - خطاها مقدار واقعی را کوتاه می‌کنند تا گزارش CI خوانا بماند.
+- `tests/test_docs_constants.py` همان بررسی را در `pytest -v` هم اجرا می‌کند (با `--allow-imports` و شمارش ۱۵ ردیف)، تا drift در گزارش آزمون‌ها دیده شود، نه فقط در job مستندات.
 
 ### ۳. شواهد
 - بدون تغییر: در حالت ایستا `OK: 14 documented constants match their sources` و `PROMPT_VERSION` فقط با پیام `DEFERRED` (خروج ۰)؛ با `--allow-imports` هر ۱۵ ردیف: `OK: 15 documented constants match their sources` (خروج ۰).
 - drift شبیه‌سازی‌شده روی کپی‌های `/tmp` (سند واقعی دست‌نخورده): `۶۵KB` ← خروج ۱، `۱۳ ورودی` ← خروج ۱، `{rejected}` ← خروج ۱، و `v2-deadbeef` فقط با `--allow-imports` ← خروج ۱.
-- `ruff check scripts/check_doc_constants.py app/ tests/`: All checks passed؛ `pytest -q`: ۸۳۰ passed / ۱۷ skipped.
+- `ruff check scripts/check_doc_constants.py tests/test_docs_constants.py app/ tests/`: All checks passed؛ `pytest -q`: ۸۳۱ passed / ۱۷ skipped (آزمون تازه: `tests/test_docs_constants.py::test_documented_constants_match_their_sources PASSED`).
 
 ### ۴. دامنه
 - هیچ فایل زمان اجرا و هیچ آزمونی تغییر نکرد؛ Migration هم لازم نیست.
