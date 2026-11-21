@@ -21,50 +21,75 @@
         "Euronews",
         "UN News",
         "Foreign Affairs",
-        "Radio Farda"
+        "Radio Farda",
+        "Fox News",
+        "CNN"
       ]
     },
     {
       "key": "arab",
       "label_fa": "عربی",
       "order": 2,
-      "sources": ["Al Jazeera English", "Al Jazeera Arabic"]
+      "sources": [
+        "Al Jazeera English",
+        "Al Jazeera Arabic"
+      ]
     },
     {
       "key": "israeli",
       "label_fa": "اسرائیلی",
       "order": 3,
-      "sources": ["Haaretz"]
+      "sources": [
+        "Haaretz",
+        "The Times of Israel",
+        "The Jerusalem Post"
+      ]
     },
     {
       "key": "iranian",
       "label_fa": "ایرانی",
       "order": 4,
-      "sources": ["Mehr News"]
+      "sources": [
+        "Mehr News"
+      ]
     },
     {
       "key": "russian",
       "label_fa": "روسی",
       "order": 5,
-      "sources": ["TASS"]
+      "sources": [
+        "TASS"
+      ]
     },
     {
       "key": "houthi",
       "label_fa": "انصارالله (حوثی)",
       "order": 6,
-      "sources": ["Saba News Agency", "Al Masirah"]
+      "sources": [
+        "Saba News Agency",
+        "Al Masirah"
+      ]
     },
     {
       "key": "saudi",
       "label_fa": "عربستان سعودی",
       "order": 7,
-      "sources": ["Saudi Press Agency", "Saudi Press Agency (SPA)", "Al Arabiya", "Arab News"]
+      "sources": [
+        "Saudi Press Agency",
+        "Saudi Press Agency (SPA)",
+        "Al Arabiya",
+        "Arab News"
+      ]
     },
     {
       "key": "yemen_gov",
       "label_fa": "دولت یمن",
       "order": 8,
-      "sources": ["Saba News (Aden)", "Aden TV", "Yemenat"]
+      "sources": [
+        "Saba News (Aden)",
+        "Aden TV",
+        "Yemenat"
+      ]
     }
   ]
 }

@@ -158,5 +158,45 @@
     "language": "en",
     "is_active": true,
     "reliability_note": "رسانه اروپایی؛ فید رسمی euronews.com پاسخ 406 داد، بنابراین از فید FeedBurner رسمی یورونیوز استفاده می‌شود"
+  },
+  {
+    "name": "Fox News",
+    "base_url": "https://www.foxnews.com",
+    "feed_url": "https://news.google.com/rss/search?q=site:foxnews.com&hl=en-US&gl=US&ceid=US:en",
+    "source_type": "international",
+    "country": "United States",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "رسانهٔ آمریکایی؛ ادعاهای حساس با منابع دیگر تطبیق داده شوند"
+  },
+  {
+    "name": "CNN",
+    "base_url": "https://www.cnn.com",
+    "feed_url": "https://news.google.com/rss/search?q=site:cnn.com&hl=en-US&gl=US&ceid=US:en",
+    "source_type": "international",
+    "country": "United States",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "رسانهٔ آمریکایی؛ ادعاهای حساس با منابع دیگر تطبیق داده شوند"
+  },
+  {
+    "name": "The Times of Israel",
+    "base_url": "https://www.timesofisrael.com",
+    "feed_url": "https://www.timesofisrael.com/feed/",
+    "source_type": "regional",
+    "country": "Israel",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "رسانهٔ اسرائیلی؛ ادعاهای حساس با منابع دیگر تطبیق داده شوند"
+  },
+  {
+    "name": "The Jerusalem Post",
+    "base_url": "https://www.jpost.com",
+    "feed_url": "https://www.jpost.com/rss/rssfeedsfrontpage.aspx",
+    "source_type": "regional",
+    "country": "Israel",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "رسانهٔ اسرائیلی؛ ادعاهای حساس با منابع دیگر تطبیق داده شوند"
   }
 ]
