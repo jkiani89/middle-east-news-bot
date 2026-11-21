@@ -278,6 +278,20 @@ _CANONICAL_REPLACEMENTS: tuple[tuple[re.Pattern[str], Any], ...] = (
     # 5. APEC
     (re.compile(r"مجمع\s+همکاری(?:\s+های)?\s+اقتصادی\s+آسیا[- ]پاس[ی]?فیک", re.UNICODE), "مجمع همکاری اقتصادی آسیا-اقیانوسیه (اپک)"),
     (re.compile(r"(?<!\w)([\u0648\u0628\u0644]?)[أا]بيك\b", re.UNICODE), lambda m: f"{m.group(1) or ''}اپک"),
+
+    # 6. Standard-Persian vocabulary fixes (Phase C). Each form was observed in a real
+    # 2026-11-21 bulletin. Longer forms come first, and the ambiguous ones (حراس inside
+    # حراست) require Persian-letter boundaries so a legitimate word is never rewritten.
+    (re.compile("طهران", re.UNICODE), "تهران"),
+    (re.compile("واشنطن", re.UNICODE), "واشنگتن"),
+    (re.compile("مجزره", re.UNICODE), "کشتار"),
+    (re.compile("تصدید", re.UNICODE), "تشدید"),
+    (re.compile("بحریه", re.UNICODE), "نیروی دریایی"),
+    (re.compile("استعوای", re.UNICODE), "استعماری"),
+    (re.compile("استعوا", re.UNICODE), "استعمار"),
+    (re.compile("مسسیر", re.UNICODE), "مسیر"),
+    (re.compile("اکشافات", re.UNICODE), "اکتشافات"),
+    (re.compile(r"(?<![\u0600-\u06FF])حراس(?![\u0600-\u06FF])", re.UNICODE), "نگهبانان"),
 )
 
 

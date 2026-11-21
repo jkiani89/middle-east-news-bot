@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from app.ai.persian_lint import SUSPECT_WORDS, lint_persian_output
+from app.ai.summarizer import EDITORIAL_SYSTEM_PROMPT
+from app.editorial.glossary import canonicalize_approved_names
 
 
 def test_a_watchlist_word_is_recorded_and_never_blocks() -> None:
@@ -36,6 +38,47 @@ def test_tahjir_is_in_watchlist_and_recorded() -> None:
     assert report["mode"] == "log"
     assert report["blocking"] is False
     assert any(item["word"] == "تهجیر" and item["count"] == 1 for item in report["findings"])
+
+
+def test_phase_c_arabic_vocabulary_is_rewritten() -> None:
+    """Phase C: the observed Arabic forms have a deterministic Persian replacement."""
+    assert canonicalize_approved_names("طهران به واشنطن پیام فرستاد") == (
+        "تهران به واشنگتن پیام فرستاد"
+    )
+    assert canonicalize_approved_names("مجزره کمین العتیبه و تصدید فشارها") == (
+        "کشتار کمین العتیبه و تشدید فشارها"
+    )
+    assert canonicalize_approved_names("حراس شهرک و بحریه و استعوای سیاسی") == (
+        "نگهبانان شهرک و نیروی دریایی و استعماری سیاسی"
+    )
+    assert canonicalize_approved_names("مسسیر ملی و اکشافات روشنگر") == (
+        "مسیر ملی و اکتشافات روشنگر"
+    )
+
+
+def test_phase_c_leaves_legitimate_persian_words_alone() -> None:
+    """«حراست» contains «حراس» but is a Persian word and must not be rewritten."""
+    assert canonicalize_approved_names("حراست از تاسیسات هسته‌ای") == (
+        "حراست از تاسیسات هسته‌ای"
+    )
+    assert canonicalize_approved_names("کشتار غیرنظامیان") == "کشتار غیرنظامیان"
+
+
+def test_phase_c_rewrite_is_idempotent() -> None:
+    once = canonicalize_approved_names("طهران: مجزره و تصدید")
+    assert canonicalize_approved_names(once) == once
+
+
+def test_phase_c_watchlist_records_the_new_forms() -> None:
+    report = lint_persian_output("طهران", "مجزره و تصدید فشارها")
+    words = {item["word"] for item in report["findings"]}
+    assert {"طهران", "مجزره", "تصدید"} <= words
+    assert report["blocking"] is False
+
+
+def test_phase_c_prompt_states_the_standard_persian_rule() -> None:
+    assert "فارسی معیار خبری" in EDITORIAL_SYSTEM_PROMPT
+    assert "واشنطن" in EDITORIAL_SYSTEM_PROMPT
 
 
 def test_location_detection_headline_quote_narrative() -> None:

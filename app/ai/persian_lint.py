@@ -26,6 +26,17 @@ SUSPECT_WORDS: tuple[str, ...] = (
     "رئیس حکومت",
     "شهید",
     "شهدا",
+    # Phase C: Arabic place names / vocabulary seen in the 2026-11-21 export. The
+    # deterministic replacements in ``glossary.canonicalize_approved_names`` already
+    # rewrite these; the watchlist measures how often the model still writes them.
+    "طهران",
+    "واشنطن",
+    "مجزره",
+    "تصدید",
+    "بحریه",
+    "استعوا",
+    "مسسیر",
+    "اکشافات",
 )
 
 QUOTE_PATTERN = re.compile(r'[«"“\'](.*?)[»"”\']', re.DOTALL)

@@ -8,7 +8,8 @@ Verifies:
 5. Persian Lint watchlist includes suspect words in log-only mode.
 6. Daily bulletin text formatting: Section 1 cap, section titles, minimum importance counter,
    Google News source formatting, deduplication, silent parties toggle, and regional filtering.
-7. Verification that EDITORIAL_SYSTEM_PROMPT and PROMPT_VERSION remain untouched.
+7. The prompt version is pinned; it moves only with a deliberate, approved prompt change
+   (Phase C added the standard-Persian vocabulary rule).
 """
 
 from __future__ import annotations
@@ -591,5 +592,6 @@ def test_live_digest_badge_in_report():
 
 
 def test_prompt_version_and_editorial_prompt_untouched():
-    assert PROMPT_VERSION == "v2-e7572f94"
+    # Bumped deliberately in Phase C after the approved standard-Persian rule.
+    assert PROMPT_VERSION == "v2-a285fcb8"
     assert "نقش تو دستیار تحلیل‌گر ارشد و بی‌طرف اخبار خاورمیانه" in EDITORIAL_SYSTEM_PROMPT
