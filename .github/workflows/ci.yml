@@ -36,6 +36,23 @@ jobs:
       - name: Run ruff
         run: ruff check .
 
+  docs:
+    name: Docs (constants drift)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Standard library only: no project install needed, and no environment variables.
+      - name: Check documented constants against config.py
+        run: python scripts/check_doc_constants.py
+
   test:
     name: Test (pytest)
     runs-on: ubuntu-latest

@@ -361,6 +361,8 @@ GROUP BY 1 ORDER BY 1 DESC;
 | `MAX_CONTENT_BYTES` | ۶۴KB | `app/reports/telegraph_client.py` |
 | `PAGE_CONTENT_BUDGET_BYTES` | ۶۰KB | `app/reports/telegraph_pagination.py` |
 
+> **گیت CI:** مقدار عددی ردیف‌هایی که محلشان `app/config.py` است با `scripts/check_doc_constants.py` بررسی می‌شود و job `Docs (constants drift)` در CI هنگام ناسازگاری شکست می‌خورد؛ پس هر تغییر تنظیم در `config.py` باید در همان commit این جدول را هم به‌روز کند.
+
 ---
 
 ## ۱۱. مالکیت آزمون‌ها
