@@ -782,6 +782,7 @@ async def process_collected_articles(
             result.actors,
             result.location,
             result.event_title or article.title,
+            result.importance,
         )
         topic = topics[0] if topics else None
         payload_dict["topic_key"] = topic.key if topic else None

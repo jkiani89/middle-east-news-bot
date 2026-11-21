@@ -11,6 +11,7 @@
       "name_fa": "روسیه و اوکراین",
       "priority": 1,
       "min_importance": 2,
+      "anchor_countries": ["روسیه", "russia", "اوکراین", "ukraine"],
       "countries": ["اوکراین", "ukraine", "روسیه", "russia", "بلاروس", "belarus"],
       "actors": [
         "پوتین", "putin", "زلنسکی", "zelensky", "کرملین", "kremlin",
@@ -34,14 +35,14 @@
       "name_fa": "ایران و آمریکا",
       "priority": 2,
       "min_importance": 2,
+      "anchor_countries": ["ایران", "iran"],
       "countries": ["ایران", "iran"],
       "actors": [
-        "خامنه‌ای", "khamenei", "رئیس‌جمهور ایران", "president of iran", "سپاه پاسداران",
-        "irgc", "سپاه", "revolutionary guard", "وزارت امور خارجه ایران", "iran foreign ministry",
-        "مجلس شورای اسلامی", "iran parliament", "قوه قضائیه ایران", "atomic energy organization of iran",
-        "aeoi", "ارتش", "army", "نیروی دریایی", "navy", "نیروی هوایی", "air force",
-        "فرمانده", "commander", "وزیر دفاع", "defense minister", "ستاد کل", "armed forces",
-        "نیروهای مسلح", "سپاه پاسداران انقلاب اسلامی"
+        "خامنه‌ای", "khamenei", "رئیس‌جمهور ایران", "president of iran", "مسعود پزشکیان",
+        "عباس عراقچی", "سپاه پاسداران", "irgc", "سپاه", "revolutionary guard",
+        "وزارت امور خارجه ایران", "iran foreign ministry", "مجلس شورای اسلامی",
+        "iran parliament", "قوه قضائیه ایران", "atomic energy organization of iran",
+        "aeoi", "ارتش ایران", "سپاه پاسداران انقلاب اسلامی", "ترامپ", "دونالد ترامپ"
       ],
       "places": [
         "تهران", "tehran", "اصفهان", "isfahan", "تبریز", "tabriz", "مشهد", "mashhad",
@@ -53,11 +54,7 @@
         "برجام", "jcpoa", "مذاکرات هسته‌ای", "nuclear talks", "تحریم", "sanctions",
         "آژانس بین‌المللی انرژی اتمی", "iaea", "حجاب", "hijab", "اعتراض", "protest",
         "انتخابات ایران", "iran election", "قیمت ارز", "بازار تهران",
-        "مذاکرات", "negotiations", "تنش", "tension", "حمله", "attack", "رزمایش", "exercise",
-        "استقرار", "deployment", "تهدید", "threat", "جنگ", "war", "پاسخ", "retaliation",
-        "نظامی", "military", "امنیتی", "security", "موشک", "missile", "پهپاد", "drone",
-        "ناو", "carrier", "ناوگان", "fleet", "هسته‌ای", "nuclear", "میانجی", "mediation",
-        "دیپلماسی", "diplomacy", "اسرائیل", "israel", "آمریکا", "america", "united states"
+        "هسته‌ای ایران", "ایران nuclear"
       ]
     },
     {
@@ -65,6 +62,7 @@
       "name_fa": "سیاست داخلی آمریکا",
       "priority": 3,
       "min_importance": 3,
+      "anchor_countries": ["ایالات متحده آمریکا", "آمریکا", "united states", "usa", "u.s."],
       "countries": ["ایالات متحده آمریکا", "آمریکا", "united states", "usa", "u.s."],
       "actors": [
         "ترامپ", "trump", "کنگره", "congress", "کاخ سفید", "white house", "دیوان عالی",
@@ -85,6 +83,7 @@
       "name_fa": "عربستان و یمن",
       "priority": 4,
       "min_importance": 2,
+      "anchor_countries": ["یمن", "yemen", "عربستان", "saudi arabia", "عربستان سعودی"],
       "countries": ["یمن", "yemen", "عربستان", "saudi arabia", "عربستان سعودی"],
       "actors": [
         "انصارالله", "ansarallah", "ansar allah", "حوثی", "حوثی‌ها", "houthi", "houthis",
@@ -110,6 +109,7 @@
       "name_fa": "اسرائیل",
       "priority": 5,
       "min_importance": 2,
+      "anchor_countries": ["اسرائیل", "israel", "فلسطین", "palestine", "غزه", "gaza"],
       "countries": ["اسرائیل", "israel", "فلسطین", "palestine", "غزه", "gaza"],
       "actors": [
         "نتانیاهو", "netanyahu", "ارتش اسرائیل", "idf", "نیروهای دفاعی اسرائیل",
@@ -135,6 +135,7 @@
       "name_fa": "آمریکا و چین",
       "priority": 6,
       "min_importance": 2,
+      "anchor_countries": ["چین", "china", "تایوان", "taiwan"],
       "countries": ["چین", "china", "ایالات متحده آمریکا", "آمریکا", "united states", "usa"],
       "actors": [
         "شی جین پینگ", "xi jinping", "ترامپ", "trump", "بایدن", "biden", "کاخ سفید",

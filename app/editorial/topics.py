@@ -46,6 +46,10 @@ class Topic:
     places: tuple[str, ...] = ()
     keywords: tuple[str, ...] = ()
     min_importance: int = 2
+    # Countries that must be named in the analysis for the topic to apply at all.
+    # ``us-cn`` needs this: its ``countries`` list includes the United States for the
+    # actor match, but a story about America alone is not a China story.
+    anchor_countries: frozenset[str] = frozenset()
 
     def matches_primary(
         self,
@@ -53,13 +57,22 @@ class Topic:
         actors: list[str] | None,
         location: str | None = None,
         title: str | None = None,
+        importance: int | None = None,
     ) -> bool:
         """Whether the story is *about* this topic rather than a passing mention."""
+        if importance is not None and importance < self.min_importance:
+            return False
         if self.key == REGIONAL_TOPIC_KEY:
             # The regional topic keeps the audited Middle East rule verbatim.
             return is_primary_actor(countries, actors, location)
 
         normalized_countries = {normalize_place(c) for c in countries or [] if c}
+        if self.anchor_countries and not any(
+            _name_appears(anchor, name)
+            for anchor in self.anchor_countries
+            for name in normalized_countries
+        ):
+            return False
         actor_text = normalize_place(" | ".join(actors or []))
         location_text = normalize_place(location or "")
         title_text = normalize_place(title or "")
@@ -115,6 +128,9 @@ def build_topics(payload: dict[str, Any] | None) -> tuple[Topic, ...]:
                     normalize_place(k) for k in raw.get("keywords", []) if str(k).strip()
                 ),
                 min_importance=int(raw.get("min_importance", 2)),
+                anchor_countries=frozenset(
+                    normalize_place(c) for c in raw.get("anchor_countries", []) if str(c).strip()
+                ),
             )
         )
     topics.append(REGIONAL_TOPIC)
@@ -152,6 +168,7 @@ def match_topics(
     actors: list[str] | None,
     location: str | None = None,
     title: str | None = None,
+    importance: int | None = None,
 ) -> list[Topic]:
     """Return every topic the story is primarily about (multi-topic).
 
@@ -165,11 +182,13 @@ def match_topics(
     for topic in load_topics():
         if topic.key == REGIONAL_TOPIC_KEY:
             continue
-        if topic.matches_primary(countries, actors, location, title):
+        if topic.matches_primary(countries, actors, location, title, importance):
             result.append(topic)
     if not result:
         regional = topic_by_key(REGIONAL_TOPIC_KEY)
-        if regional is not None and regional.matches_primary(countries, actors, location, title):
+        if regional is not None and regional.matches_primary(
+            countries, actors, location, title, importance
+        ):
             result.append(regional)
     return result
 
@@ -179,12 +198,13 @@ def match_primary_topic(
     actors: list[str] | None,
     location: str | None = None,
     title: str | None = None,
+    importance: int | None = None,
 ) -> Topic | None:
     """Return the most specific topic the story is primarily about, if any.
 
     Backward-compatible single-topic entry point; delegates to :func:`match_topics`.
     """
-    topics = match_topics(countries, actors, location, title)
+    topics = match_topics(countries, actors, location, title, importance)
     return topics[0] if topics else None
 
 
@@ -195,6 +215,7 @@ def topics_for_event(event: Any) -> list[Topic]:
         getattr(event, "actors", None),
         getattr(event, "location", None),
         getattr(event, "title", None),
+        getattr(event, "importance", None),
     )
 
 
