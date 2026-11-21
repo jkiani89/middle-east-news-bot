@@ -361,7 +361,7 @@ GROUP BY 1 ORDER BY 1 DESC;
 | `MAX_CONTENT_BYTES` | ۶۴KB | `app/reports/telegraph_client.py` |
 | `PAGE_CONTENT_BUDGET_BYTES` | ۶۰KB | `app/reports/telegraph_pagination.py` |
 
-> **گیت CI:** مقدار عددی ردیف‌هایی که محلشان `app/config.py` است با `scripts/check_doc_constants.py` بررسی می‌شود و job `Docs (constants drift)` در CI هنگام ناسازگاری شکست می‌خورد؛ پس هر تغییر تنظیم در `config.py` باید در همان commit این جدول را هم به‌روز کند.
+> **گیت CI:** همهٔ ردیف‌های این جدول با `scripts/check_doc_constants.py` بررسی می‌شوند: job `Docs (constants drift)` نسخهٔ بدون وابستگی را اجرا می‌کند و job `Test (pytest)` نسخهٔ `--allow-imports` را که `PROMPT_VERSION` محاسباتی را هم می‌سنجد. پس هر تغییر در این ثابت‌ها باید در همان commit جدول را هم به‌روز کند.
 
 ---
 
