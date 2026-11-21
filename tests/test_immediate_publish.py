@@ -199,7 +199,7 @@ async def test_publish_cap_limits_messages_per_run(monkeypatch):
         "countries": ["Iran"],
         "actors": ["وزارت امور خارجه ایران"],
         "location": None,
-        "importance": 3,
+        "importance": 4,
         "verification_status": "unconfirmed",
     }
     articles = [_article(i) for i in range(1, 4)]

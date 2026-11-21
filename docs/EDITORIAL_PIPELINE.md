@@ -208,7 +208,7 @@ and is_regional_only_story(result.countries)   # همهٔ کشورها منطق�
 - **`EventMatcher.match_or_create_event`** — ادغام با رویداد موجود یا ساخت رویداد تازه؛ `ArticleEvent.match_type` (`initial`/…) و `confidence` ثبت می‌شود.
 - **`resolve_verification_status`** — یک منبع هرگز `confirmed` نمی‌شود: `source_count < 2` → `unconfirmed`؛ دو منبع مستقل اجازه می‌دهد حکم مدل (`confirmed`/`partially_confirmed`) بماند؛ `disputed`/`false` همیشه دست‌نخورده.
 - **ماتریس روایت (`_refresh_event_perspectives`)** — فقط وقتی دومین اردوگاه خبری به رویداد بپیوندد، حداکثر یک فراخوانی، با `check_perspectives_gate` (دست‌کم یک بازیگر/شهر مشترک غیرکشوری). «سکوت» از داده مشتق می‌شود (اردوگاهی که نمونه ندارد)، نه از حدس مدل. برای یمن سه طرف نام‌برده (`YEMEN_REQUIRED_SIDES`) همیشه در خط سکوت می‌آیند.
-- **انتشار لحظه‌ای** — `ImmediateAnalysis` + `publish_immediate_analysis` با سقف ۵ پیام در اجرا، فاصلهٔ ۲ ثانیه، فقط `importance >= 3`، و خبر تک‌منبعِ `importance >= 4` فقط به چت ادمین. هر خطای تلگرام بلعیده می‌شود؛ کار ذخیره‌شده هرگز به‌خاطر تلگرام برنمی‌گردد.
+- **انتشار لحظه‌ای** — `ImmediateAnalysis` + `publish_immediate_analysis` با سقف ۵ پیام در اجرا، فاصلهٔ ۲ ثانیه، فقط `importance >= 4` (چه تک‌منبع و چه چندمنبع)، و ارسال مستقیم به کانال عمومی؛ هیچ موردی به چت شخصی/ادمین فرستاده نمی‌شود. هر خطای تلگرام بلعیده می‌شود؛ کار ذخیره‌شده هرگز به‌خاطر تلگرام برنمی‌گردد.
 - **Liveblog** — تشخیص از URL/عنوان؛ `importance` به `liveblog_max_importance=3` محدود و ماتریس روایت برای آن ساخته نمی‌شود.
 - **`canonicalize_approved_names`** روی تیتر/خلاصه/`event_title`/`actors`/`countries` **قبل از** ذخیره اعمال می‌شود (بخش ۸).
 
@@ -353,7 +353,7 @@ GROUP BY 1 ORDER BY 1 DESC;
 | `article_max_age_hours` | ۲۴ | `app/config.py` |
 | `max_articles_per_batch` | ۳۰ پیش‌فرض (در CI با `vars.MAX_ARTICLES_PER_BATCH` روی ۴۵) | `app/config.py` / `cron.yml` |
 | `min_importance` (سراسری) | ۲ | `app/config.py` |
-| `immediate_publish_min_importance` | ۳ | `app/config.py` |
+| `immediate_publish_min_importance` | ۴ | `app/config.py` |
 | `liveblog_max_importance` | ۳ | `app/config.py` |
 | `PROMPT_VERSION` | `v2-ba0dca01` (محاسبه‌ای) | `app/ai/summarizer.py` |
 | `MIDDLE_EAST_OFFICIALS` | ۱۴ ورودی | `app/editorial/regions.py` |

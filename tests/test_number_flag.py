@@ -82,7 +82,7 @@ def _analysis(headline: str, summary: str) -> NewsAnalysis:
         countries=["ایران"],
         actors=["وزارت امور خارجه"],
         location="تهران",
-        importance=3,
+        importance=4,
         verification_status="unconfirmed",
     )
 

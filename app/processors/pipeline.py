@@ -1036,8 +1036,9 @@ async def process_collected_articles(
                     immediate_analysis.content_quality = content_quality.get("status", "full_text")
                     immediate_analysis.content_quality_fa = content_quality.get("label_fa", "متن کامل")
                     immediate_analysis.is_insufficient = content_quality.get("is_insufficient", False)
-                # High-impact single-source stories go to the admin chat only (fake-news guard).
-                immediate_admin_only = result.importance >= 4 and source_count < 2
+                # Only rank 4-5 stories are published to the public channel, regardless of
+                # single vs. multi source. Nothing is routed to the admin/personal chat.
+                immediate_admin_only = False
 
         processed_count += 1
         await session.commit()

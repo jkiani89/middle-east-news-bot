@@ -221,14 +221,14 @@ async def test_merged_event_refreshes_verification_label(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_high_impact_single_source_goes_to_admin_only(monkeypatch):
+async def test_high_impact_single_source_published_to_channel(monkeypatch):
     monkeypatch.setattr(settings, "app_env", "production")
     monkeypatch.setattr(settings, "immediate_publish_enabled", True)
     monkeypatch.setattr(settings, "immediate_publish_delay_seconds", 0.0)
     monkeypatch.setattr(settings, "immediate_publish_max_per_run", 5)
     monkeypatch.setattr(settings, "immediate_publish_min_importance", 3)
     _patch_matcher(monkeypatch)
-    publisher = AsyncMock(return_value=[{"message_id": 1, "type": "admin"}])
+    publisher = AsyncMock(return_value=[{"message_id": 1, "type": "immediate"}])
     monkeypatch.setattr(pipeline, "publish_immediate_analysis", publisher)
 
     article = _article()
@@ -241,7 +241,7 @@ async def test_high_impact_single_source_goes_to_admin_only(monkeypatch):
     )
 
     publisher.assert_awaited_once()
-    assert publisher.await_args.kwargs["admin_only"] is True
+    assert publisher.await_args.kwargs["admin_only"] is False
 
 
 @pytest.mark.asyncio
@@ -270,7 +270,7 @@ def test_new_publish_defaults():
 
     fresh = Settings()
     assert fresh.immediate_publish_max_per_run == 5
-    assert fresh.immediate_publish_min_importance == 3
+    assert fresh.immediate_publish_min_importance == 4
 
 
 @pytest.mark.asyncio

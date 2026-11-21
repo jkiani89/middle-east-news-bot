@@ -126,7 +126,7 @@ class Settings(BaseSettings):
     immediate_publish_enabled: bool = True
     immediate_publish_only_new_events: bool = True
     immediate_publish_max_per_run: int = 5
-    immediate_publish_min_importance: int = 3
+    immediate_publish_min_importance: int = 4
     # Phase Y-1: deterministic check that numbers in the Persian output are grounded in
     # the text the model actually saw. "log" records findings in ai_payload only;
     # "flag" parks the article for review instead of publishing it.
