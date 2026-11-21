@@ -221,6 +221,18 @@
 - **قاعده:** هیچ تغییر قانون طبقه‌بندی پیش از تکمیل ممیزی و تأیید مجاز نیست (R-11).
 - **ارجاع:** `docs/ROADMAP.md` (بخش Permanent Critical Priority)، `docs/AGENT_PROTOCOL.md` (R-11)، `docs/DEVELOPMENT_LOG.md` (ورودی ۲۰۲۶-۱۱-۱۹).
 
+#### ۱.۳۶.الف. علت‌های ریشه‌ای تأییدشده در ممیزی ۲۰۲۶-۱۱-۲۱ (خروجی واقعی ۳۲۷ ردیف)
+
+**داده:** `results-2026-11-21T05-27-29.csv` — ۳۲۷ مقاله در بازهٔ ۱۲ساعته: ۱۵۷ `summarized`، ۱۲۰ `rejected` (۲۳ ردیف با `is_relevant=True`)، ۵۰ `expired`، صفر `collected`. هر علت با اجرای کد مخزن روی payload همان ردیف بازتولید شد؛ فرضیه‌های تأییدنشده در فهرست بالا دست‌نخورده ماندند.
+
+- **RC-12 (تأییدشده — نشت بازیگر عمومی به `ir`):** `editorial/topics.json` در `ir.actors` واژه‌های «ارتش، فرمانده، نیروهای مسلح، وزارت دفاع» را داشت و در `ir.keywords` «اسرائیل/آمریکا/جنگ». خبر غزه `['ir','il']` و خبر گلوله‌باران لبنان `['ir','il']` می‌شد. **اصلاح:** حذف بازیگرهای عمومی + `anchor_countries`. **آزمون:** `test_gaza_strike_is_not_filed_under_iran`، `test_lebanon_shelling_is_not_filed_under_iran`، `test_a_sudan_story_without_an_iranian_actor_stays_out`.
+- **RC-13 (تأییدشده — `us-cn` بدون چین):** لنگر کشور نداشت؛ خبر «واکنش عراقچی به سفیر اسرائیل در واشنگتن» فقط با `countries=آمریکا` + `location=واشنگتن` وارد بخش «آمریکا و چین» شد و کل بخش با همان یک خبر ساخته شد. **اصلاح:** `anchor_countries = {چین، تایوان}`. **آزمون:** `test_a_story_without_china_is_never_filed_under_us_china`، `test_a_china_story_still_matches_us_china`.
+- **RC-14 (تأییدشده — `min_importance` مرده):** این فیلد در `Topic` تعریف شده بود ولی هیچ‌جا اعمال نمی‌شد؛ `us` با آستانهٔ ۳ خبرهای importance ۱ و ۲ را می‌گرفت. **اصلاح:** پارامتر `importance` در `matches_primary`/`match_topics` و عبور `result.importance` از Pipeline. **آزمون:** `test_topic_min_importance_is_enforced`، `test_low_importance_story_does_not_enter_a_topic`.
+- **RC-15 (تأییدشده — رد خبر منطقه‌ای بدون موضوع):** `is_primary_actor` فقط اگر نام کشور در `actors` بود آن را «طرف» می‌شناخت؛ سفر امیر قطر (importance 4) و کمک‌های WFP به یمن «اشارهٔ گذرا» شدند و رد شدند. **اصلاح:** نقشهٔ بستهٔ `MIDDLE_EAST_OFFICIALS` + نجات خبری که تمام کشورهایش منطقه‌ای است (با `is_relevant` و کف importance ۲). **آزمون:** `test_a_regional_office_holder_makes_their_state_a_party`، `test_state_visit_by_a_regional_head_of_state_is_published`، `test_a_regional_only_story_without_a_topic_is_rescued`، و دو آزمون منفی برای «آفریقا با ذکر مصر» و importance ۱.
+- **RC-16 (تأییدشده — کیفیت زبان و عنوان، نه طبقه‌بندی):** واژه‌های عربی («طهران، واشنطن، مجزره، تصدید، حراس، بحریه، مسسیر، اکشافات») و عنوان‌های متناقض ترامپ («پیشین/منتخب/رئیس‌جمهور»). **اصلاح:** قاعدهٔ «فارسی معیار خبری» و «عنوان رسمی» در پرامپت + تاریخ جاری در پرامپت تحلیل + نگاشت قطعی واژگان + پایش log-only (`persian_lint.official_titles`).
+
+**اثر بر ISS-036:** RC-12…RC-15 خطاهای واقعی طبقه‌بندی‌اند و بخشی از سیگنال خطای این اولویت را می‌بندند؛ ولی ISS-036 **باز** می‌ماند (ورزش/فرهنگی منطقهای با importance ≥ ۲ هنوز وارد `me` می‌شود، و ممیزی محتوایی Production همچنان BLOCKED است).
+
 ### ۱.۳۷. نبودِ تعیین تکلیف قابل‌ردیابی برای اخبار جمع‌آوری‌شده (ISS-037) [HIGH — OPEN]
 
 **تاریخ ثبت:** ۲۰۲۶-۱۱-۲۰ · **منبع:** ممیزی READ-ONLY «معماری Pipeline، بررسی Cron و طراحی راهکار پردازش ۱۰۰٪ اخبار» → `docs/audits/2026-11-20-pipeline-cron.md`

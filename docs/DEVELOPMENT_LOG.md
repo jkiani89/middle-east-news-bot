@@ -1540,3 +1540,87 @@ thread داخلی SDK با `wait_for` لغو نمی‌شود و در پس‌زم
 - **وضعیت:** هیچ تغییر production. هر دو candidate اختیاری و خارج از معیارهای G5.
   قبل از هر اصلاح: اجرای investigation + اثبات ضرورت + تأیید صریح انسانی.
 - **مستندات:** بند ۱۴ جدید در `docs/G5_AUDIT.md`.
+
+---
+
+## [2026-11-19] ثبت اولویت دائمی رفع ریشه‌ای خطاهای طبقه‌بندی (PERMANENT CRITICAL PRIORITY)
+
+### ۱. چرا
+گزارش ۱۲ساعتهٔ ۲۰:۰۰ تاریخ ۲۰۲۶-۱۱-۱۹ (۳۴۸ خبر، ۲۷۰ در «سایر تحولات») نشان داد طبقه‌بندی موضوعی نیازمند ممیزی محتوایی مستقل است. این عدد فقط نمونه است؛ مسئله اصلی صحت طبقه‌بندی در کل سامانه است، نه یک عدد.
+
+### ۲. ثبت در مراجع
+- `AGENTS.md`: بلوک اولویت دائمی + R-11 در خلاصهٔ قواعد.
+- `docs/AGENT_PROTOCOL.md`: R-11 (Classification Integrity Gate) + گیت شروع/پایان فاز + تاریخچه ۱.۱.
+- `docs/KNOWN_ISSUES.md`: ISS-036 (CRITICAL — OPEN) + ردیف ردیاب.
+- `docs/ROADMAP.md`: بخش «PERMANENT CRITICAL PRIORITY — ROOT-CAUSE ELIMINATION OF NEWS AND EVENT CLASSIFICATION ERRORS».
+- `README.md`: اشارهٔ کوتاه در Operations notes.
+
+### ۳. وضعیت ممیزی ۲۷۰
+- بستهٔ `audit_other_270/` (README_BLOCKER, audit_extract.py, audit_queries.sql, audit_workbook_template.csv, DBA_SELECT_ONLY.md) بازبینی شد.
+- هیچ ممیزی محتوایی انجام نشده؛ اجرا نیازمند حساب SELECT-only واقعی (`audit_select`) با verify-full است.
+- `avnadmin` (نوشتنی) مجاز نیست؛ از sandbox اتصال به Aiven مسدود است.
+- هیچ تغییری در Production/Schema/داده/کد/قانون طبقه‌بندی انجام نشد.
+
+### ۴. گام بعدی
+- DBA: ایجاد نقش `audit_select` با SELECT-only + revoke TEMPORARY (surgical، با حفظ TEMP برای `_aiven_repl`/`_aiven_rewind`) طبق `audit_other_270/DBA_SELECT_ONLY.md`.
+- سپس اجرای `audit_extract.py` و ممیزی محتوایی A–E.
+
+---
+
+## [2026-11-19] تثبیت قواعد ممیزی دائمی و بستهٔ رفع Blocker (SELECT-only)
+
+### ۱. الزامات تازهٔ تأییدشده
+- هفت فرضیهٔ ریشه‌ای در ISS-036 صریحاً `UNCONFIRMED` برچسب خوردند؛ هیچ‌کدام بدون شواهد DB «علت ریشه‌ای» اعلام نمی‌شود.
+- دامنهٔ ممیزی به ۲۷۰ محدود نیست: پس از دسترسی، همهٔ هفت موضوع و کل مراحل Pipeline بررسی می‌شوند.
+- برای هر علت تأییدشده: اصلاح مشخص + آزمون رگرسیون + معیار پذیرش.
+- قاعدهٔ جدید: هر خطای طبقه‌بندی کشف‌شده در هر مأموریت آینده — حتی خارج از محدوده — باید در ISS-036 ثبت و پیگیری شود.
+
+### ۲. محل ثبت
+- `docs/AGENT_PROTOCOL.md` (R-11): چهار بند جدید (ثبت خطای جدید، دامنهٔ ممیزی، الزام علت ریشه‌ای، فرضیه ≠ یافته).
+- `docs/ROADMAP.md`: بندهای دامنهٔ فراتر از ۲۷۰، فرضیهٔ تأییدنشده، الزام اصلاح/آزمون/معیار، ثبت خطای جدید.
+- `docs/KNOWN_ISSUES.md` (ISS-036): برچسب `UNCONFIRMED` + قالب علت ریشه‌ای + قاعدهٔ ثبت خطای جدید.
+- `AGENTS.md`: اشارهٔ کوتاه به ثبت خطای جدید در R-11.
+
+### ۳. بستهٔ رفع Blocker
+- `audit_other_270/CREATE_AUDIT_SELECT.sql`: DDL idempotent (نقش، SELECT، default privileges، `default_transaction_read_only=on`، TEMP surgical با حفظ `_aiven_repl`/`_aiven_rewind`).
+- `audit_other_270/VERIFY_AUDIT_SELECT.sql`: تأیید SELECT-only (همهٔ مجوزهای نوشتن false، SELECT true، TEMP=false).
+- هیچ DDL روی Production اجرا نشد؛ هیچ رمز واقعی در فایل نیست (فقط placeholder).
+
+### ۴. وضعیت
+- ISS-036: 🔴 OPEN.
+- ممیزی محتوایی: BLOCKED (نیازمند اجرای DDL توسط DBA + DSN verify-full).
+- هیچ تغییری در Production/Schema/داده/کد/قانون طبقه‌بندی انجام نشد.
+
+---
+
+## [2026-11-21] ممیزی خروجی واقعی ۱۲ساعته و اصلاح گیت تحریریه/موضوع‌بندی/زبان (فازهای A–D و D-9)
+
+### ۱. مبنا
+- داده: `results-2026-11-21T05-27-29.csv` (۳۲۷ ردیف: ۱۵۷ summarized، ۱۲۰ rejected شامل ۲۳ ردیف `is_relevant=True`، ۵۰ expired، صفر collected).
+- هر علت با اجرای `match_topics`/`is_primary_actor` واقعی مخزن روی payload همان ردیف بازتولید شد؛ خروجی خام در گزارش جلسه ثبت شد.
+
+### ۲. علت‌های ریشه‌ای تأییدشده (ثبت در ISS-036 به‌عنوان RC-12…RC-16)
+- نشت بازیگرهای عمومی «ارتش/فرمانده» به `ir` → غزه و لبنان در دو بخش.
+- تطبیق `us-cn` با آمریکا/واشنگتن بدون چین.
+- اعمال‌نشدن `min_importance`.
+- رد خبر منطقه‌ای بدون موضوع به‌خاطر نبود نام کشور در `actors` (سفر امیر قطر، WFP یمن).
+- واژگان عربی و عنوان متناقض ترامپ (کیفیت، نه طبقه‌بندی).
+
+### ۳. تغییرات
+- `app/editorial/topics.py` + `editorial/topics.json`: `anchor_countries`، اعمال `min_importance`، حذف بازیگرهای عمومی `ir`.
+- `app/editorial/regions.py`: `MIDDLE_EAST_OFFICIALS`، `official_middle_east_country`، `is_regional_only_story`.
+- `app/processors/pipeline.py`: عبور `importance` و نجات محدود خبر تمام‌منطقه‌ای.
+- `app/ai/summarizer.py`: اصول ۱۰ (فارسی معیار) و ۱۱ (عنوان رسمی) + تاریخ جاری UTC در پرامپت تحلیل؛ `PROMPT_VERSION` عمداً به `v2-ba0dca01` تغییر کرد.
+- `app/editorial/glossary.py`: نگاشت قطعی واژگان عربی (با مرز حروف فارسی تا «حراست» دست‌نخورده بماند).
+- `app/ai/persian_lint.py`: واژه‌های جدید پایش + `official_titles` (log-only).
+- `app/reports/telegraph_report.py`: `COUNT_ONLY_STATUSES` — `rejected`/`failed` فقط شمارشی، بدون صفحه و تیتر خام (D-9 گزینهٔ الف).
+- آزمون‌ها: `tests/test_match_topics.py`، `tests/test_editorial_gates.py`، `tests/test_persian_lint.py`، `tests/test_report_completeness.py`، و به‌روزرسانی عمدی هش پین‌شدهٔ پرامپت در دو آزمون.
+
+### ۴. شواهد
+- `pytest -q`: ۸۱۷ passed، ۱۷ skipped (پیش از فازها: ۷۹۵ passed).
+- `ruff check app/ tests/`: All checks passed.
+- خروجی کامل coverage در گزارش جلسه.
+
+### ۵. وضعیت
+- ISS-036: 🔴 OPEN (ورزش/فرهنگی منطقه‌ای با importance ≥ ۲ هنوز وارد `me` می‌شود؛ ممیزی Production BLOCKED).
+- صحه‌گذاری روی Gemini/Telegram واقعی انجام نشد (R-06)؛ اجرای دستی Workflow با کاربر است.
