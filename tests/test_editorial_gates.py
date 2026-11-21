@@ -459,6 +459,110 @@ async def test_a_low_importance_regional_item_is_not_rescued(monkeypatch):
     assert article.status == "rejected"
 
 
+# --- RC-17: the newsworthiness gate ---
+# A regional sport result, a tourism promotion and a routine accident clear the
+# geography gate and even the "regional office-holder" corroboration, yet carry
+# nothing to brief. Both first two payloads are real rows of the 2026-11-21 export.
+
+
+@pytest.mark.asyncio
+async def test_a_regional_sport_result_is_rejected_by_the_pipeline(monkeypatch):
+    _patch_matcher(monkeypatch)
+    article = _article()
+    session = FakeSession([article])
+
+    await pipeline.process_collected_articles(
+        session,
+        limit=10,
+        provider=MockAIProvider(
+            canned_response=_payload(
+                countries=["قطر"],
+                actors=["فدراسیون کریکت قطر", "هواداران نپالی"],
+                location="دوحه",
+                event_title="حضور پرشور جامعه نپالی‌های قطر در مسابقات کریکت",
+                importance=2,
+            )
+        ),
+    )
+
+    assert article.status == "rejected"
+    assert article.ai_payload["editorial_exclusion"] == "sport"
+    assert article.ai_payload["topic_key"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_tourism_promotion_is_rejected_by_the_pipeline(monkeypatch):
+    _patch_matcher(monkeypatch)
+    article = _article()
+    session = FakeSession([article])
+
+    await pipeline.process_collected_articles(
+        session,
+        limit=10,
+        provider=MockAIProvider(
+            canned_response=_payload(
+                countries=["عربستان سعودی"],
+                actors=["خبرگزاری رسمی عربستان"],
+                location="العلا",
+                event_title="برگزاری برنامه‌های آموزشی و تفریحی برای کودکان در العلا",
+                importance=2,
+            )
+        ),
+    )
+
+    assert article.status == "rejected"
+    assert article.ai_payload["editorial_exclusion"] == "tourism"
+
+
+@pytest.mark.asyncio
+async def test_a_routine_accident_is_rejected_by_the_pipeline(monkeypatch):
+    _patch_matcher(monkeypatch)
+    article = _article()
+    session = FakeSession([article])
+
+    await pipeline.process_collected_articles(
+        session,
+        limit=10,
+        provider=MockAIProvider(
+            canned_response=_payload(
+                countries=["ایران"],
+                actors=["پلیس راهور"],
+                location="تهران",
+                event_title="تصادف زنجیره‌ای در جاده تهران–قم",
+                importance=2,
+            )
+        ),
+    )
+
+    assert article.status == "rejected"
+    assert article.ai_payload["editorial_exclusion"] == "incident"
+
+
+@pytest.mark.asyncio
+async def test_the_newsworthiness_gate_does_not_touch_a_political_story(monkeypatch):
+    _patch_matcher(monkeypatch)
+    article = _article()
+    session = FakeSession([article])
+
+    await pipeline.process_collected_articles(
+        session,
+        limit=10,
+        provider=MockAIProvider(
+            canned_response=_payload(
+                countries=["ایران"],
+                actors=["وزارت ورزش ایران", "دادگاه انقلاب"],
+                location="تهران",
+                event_title="بازداشت ورزشکار ایرانی پس از خودداری از مسابقه با اسرائیل",
+                importance=3,
+            )
+        ),
+    )
+
+    assert article.status == "summarized"
+    assert article.ai_payload["editorial_exclusion"] is None
+    assert article.ai_payload["topic_key"] == "ir"
+
+
 @pytest.mark.asyncio
 async def test_an_irrelevant_regional_only_story_is_not_rescued(monkeypatch):
     _patch_matcher(monkeypatch)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from app.editorial import topics as topics_module
+from app.editorial.newsworthiness import non_political_story_reason
 from app.editorial.topics import REGIONAL_TOPIC_KEY, build_topics, match_topics
 
 PAYLOAD = {
@@ -177,3 +178,75 @@ def test_a_sudan_story_without_an_iranian_actor_stays_out():
         3,
     )
     assert "ir" not in keys
+
+
+# --- RC-17: sport, tourism and routine incidents are not briefed ---
+# The first two rows are real ai_payload rows from the 2026-11-21 export that used
+# to enter the regional briefing once their importance reached 2.
+
+
+def test_a_regional_sport_result_gets_no_topic():
+    keys = _keys(
+        ["قطر"],
+        ["فدراسیون کریکت قطر", "هواداران نپالی"],
+        "دوحه",
+        "حضور پرشور جامعه نپالی‌های قطر در مسابقات کریکت",
+        2,
+    )
+    assert keys == []
+
+
+def test_a_tourism_promotion_gets_no_topic():
+    keys = _keys(
+        ["عربستان سعودی"],
+        ["خبرگزاری رسمی عربستان"],
+        "العلا",
+        "برگزاری برنامه‌های آموزشی و تفریحی برای کودکان در العلا",
+        2,
+    )
+    assert keys == []
+
+
+def test_a_routine_road_accident_gets_no_topic():
+    keys = _keys(
+        ["ایران"],
+        ["پلیس راهور"],
+        "تهران",
+        "تصادف زنجیره‌ای در جاده تهران–قم با پنج مصدوم",
+        2,
+    )
+    assert keys == []
+
+
+def test_a_politically_loaded_sport_story_keeps_its_topic():
+    """An arrest or a ban makes sport political, so the veto must win."""
+    keys = _keys(
+        ["ایران"],
+        ["وزارت ورزش ایران", "دادگاه انقلاب"],
+        "تهران",
+        "بازداشت ورزشکار ایرانی پس از خودداری از مسابقه با اسرائیل",
+        3,
+    )
+    assert "ir" in keys
+
+
+def test_sport_outside_the_region_is_not_this_gate_s_business():
+    assert non_political_story_reason("لیگ فوتبال", None, ["اسپانیا"], [], "مادرید") is None
+
+
+def test_a_security_story_that_mentions_a_stadium_is_kept():
+    assert non_political_story_reason(
+        "حمله موشکی به ورزشگاه در تل‌آویو", None, ["اسرائیل"], ["ارتش اسرائیل"], "تل‌آویو"
+    ) is None
+
+
+def test_a_labour_story_that_mentions_a_hotel_is_kept():
+    assert non_political_story_reason(
+        "اعتصاب کارکنان هتل‌های تهران", None, ["ایران"], ["کارگران هتل"], "تهران"
+    ) is None
+
+
+def test_the_gate_reports_why_it_fired():
+    assert non_political_story_reason("مسابقات فوتبال لیگ ایران", None, ["ایران"], [], "تهران") == "sport"
+    assert non_political_story_reason("تور گردشگری دبی", None, ["امارات"], [], "دبی") == "tourism"
+    assert non_political_story_reason("آتش‌سوزی در یک انبار", None, ["ایران"], [], "تهران") == "incident"
