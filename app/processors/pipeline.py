@@ -26,6 +26,7 @@ from app.database.models import Article, ArticleEvent, Event, JobLog, Source, Su
 from app.editorial.content_quality import classify_content_quality
 from app.editorial.glossary import canonicalize_approved_names
 from app.editorial.liveblog import is_live_digest
+from app.editorial.newsworthiness import non_political_story_reason
 from app.editorial.perspectives import check_perspectives_gate, load_orientations, orientation_for
 from app.editorial.prefilter import prefilter_analysis
 from app.editorial.regions import (
@@ -781,12 +782,31 @@ async def process_collected_articles(
         # The channel now covers several briefings, not only the Middle East: a story
         # is accepted when it is the primary subject of a configured topic. Without a
         # topic it falls back to the audited regional rule below, unchanged.
-        topics = match_topics(
+        topic_title = result.event_title or article.title
+        topic_summary = f"{result.headline_fa} {result.summary_fa}"
+        # RC-17 newsworthiness gate: a regional league result, a resort promotion or a
+        # routine road accident names a regional country and clears the geography gate,
+        # but there is nothing to brief. The gate runs before topic matching and before
+        # the regional rescue, and any political/security term vetoes it inside the gate.
+        editorial_exclusion = non_political_story_reason(
+            topic_title,
+            topic_summary,
             result.countries,
             result.actors,
             result.location,
-            result.event_title or article.title,
-            result.importance,
+        )
+        payload_dict["editorial_exclusion"] = editorial_exclusion
+        topics = (
+            []
+            if editorial_exclusion
+            else match_topics(
+                result.countries,
+                result.actors,
+                result.location,
+                topic_title,
+                result.importance,
+                topic_summary,
+            )
         )
         # Phase B: a story whose whole country list is regional cannot be a "passing
         # mention" of the region. It used to be rejected when no configured briefing
@@ -795,7 +815,8 @@ async def process_collected_articles(
         # importance floor guard the rescue, so an incidental single country in a global
         # round-up and a low-value local item stay out.
         if (
-            not topics
+            not editorial_exclusion
+            and not topics
             and result.is_relevant
             and result.importance >= 2
             and has_middle_east_nexus(result.countries, result.location)
@@ -904,6 +925,16 @@ async def process_collected_articles(
                     prompt_version=PROMPT_VERSION,
                 )
             )
+        elif editorial_exclusion:
+            logger.info(
+                "Article ID %d rejected by the newsworthiness gate (%s; importance=%d, "
+                "countries=%s): sport, tourism and routine incidents are not briefed.",
+                article.id,
+                editorial_exclusion,
+                result.importance,
+                result.countries,
+            )
+            article.status = "rejected"
         elif not topics and (not result.is_relevant or not has_middle_east_nexus(result.countries, result.location)):
             if result.is_relevant:
                 logger.info(

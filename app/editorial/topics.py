@@ -19,6 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from app.editorial.newsworthiness import non_political_story_reason
 from app.editorial.regions import (
     MIDDLE_EAST_CITIES,
     MIDDLE_EAST_COUNTRIES,
@@ -169,6 +170,7 @@ def match_topics(
     location: str | None = None,
     title: str | None = None,
     importance: int | None = None,
+    summary: str | None = None,
 ) -> list[Topic]:
     """Return every topic the story is primarily about (multi-topic).
 
@@ -177,7 +179,13 @@ def match_topics(
     into the generic regional section on top of a more specific one. The Iran topic
     covers the full diplomatic, economic, security and military domain, not only
     negotiations.
+
+    A regional story that is only sport, tourism or a routine local incident gets no
+    topic at all: it cleared the geography gate but carries nothing to brief.
     """
+    if non_political_story_reason(title, summary, countries, actors, location):
+        return []
+
     result: list[Topic] = []
     for topic in load_topics():
         if topic.key == REGIONAL_TOPIC_KEY:
@@ -216,6 +224,7 @@ def topics_for_event(event: Any) -> list[Topic]:
         getattr(event, "location", None),
         getattr(event, "title", None),
         getattr(event, "importance", None),
+        getattr(event, "summary_fa", None),
     )
 
 
