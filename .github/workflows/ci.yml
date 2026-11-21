@@ -103,6 +103,10 @@ jobs:
       - name: Run migrations on test DB
         run: alembic upgrade head
 
+      # The computed constants (e.g. PROMPT_VERSION) are only readable by importing them.
+      - name: Check documented constants against the code
+        run: python scripts/check_doc_constants.py --allow-imports
+
       - name: Run tests
         run: pytest -v --tb=short --cov=app --cov-report=term-missing --cov-report=xml
 
