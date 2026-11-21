@@ -43,13 +43,28 @@ def test_primary_topic_assignment(countries, actors, location, title, expected):
     assert topic.key == expected
 
 
-def test_a_passing_mention_is_not_a_topic():
-    """The old anti-passing-mention rule still holds for every topic."""
+def test_us_treasury_sanctions_on_iranian_oil_is_now_covered():
+    """A US-only actor can still be the primary subject of the Iran topic when the
+    title carries a topic keyword (sanctions) and Iran is an anchor country."""
+    topic = match_primary_topic(
+        ["ایالات متحده آمریکا", "ایران"],
+        ["وزارت خزانه‌داری ایالات متحده آمریکا"],
+        None,
+        "US Treasury sanctions on Iranian oil shipping",
+        3,
+    )
+    assert topic is not None
+    assert topic.key == "ir"
+
+
+def test_a_passing_mention_without_topic_keyword_stays_out():
+    """A passing mention with no topic keyword, actor or place still has no topic."""
     topic = match_primary_topic(
         ["ایالات متحده آمریکا", "ایران"],
         ["وزارت خزانه‌داری ایالات متحده آمریکا", "اسکات بسنت"],
         None,
-        "US Treasury sanctions on Iranian oil shipping",
+        "US Treasury statement on regional security",
+        3,
     )
     assert topic is None
 

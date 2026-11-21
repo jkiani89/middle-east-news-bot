@@ -147,6 +147,8 @@ await asyncio.wait_for(fetch_article_full_text(url), timeout=6.0)   # article_bo
 
 قاعدهٔ سوم از RC-15 آمد: سفر امیر قطر به برلین (importance 4) و کمک WFP به یمن «اشارهٔ گذرا» تشخیص داده و رد می‌شدند، چون نام کشور در `actors` نبود. نقشه بسته است: هیچ نهاد یا شخصی حدس زده نمی‌شود؛ هر ورودی باید شاهد واقعی داشته باشد.
 
+**استثنای موضوع‌محور (RC-16):** اگر یک خبر در این گیت «اشارهٔ گذرا» تشخیص داده شود اما `matched_topics` غیرخالی باشد (یعنی هم کشور لنگر را دارد و هم یک کلیدواژهٔ ماهوی/بازیگر/مکان موضوعی و کف اهمیت را پاس کرده است)، رد نمی‌شود و منتشر می‌شود. نمونهٔ واقعی: `US Treasury sanctions Iranian 'trustees' collecting oil revenues` (Reuters) که فقط نهاد آمریکایی در `actors` آمده بود ولی با کلیدواژهٔ `sanctions`/`تحریم` به موضوع `ir` تطبیق یافت. یک نام голый کشور در تیتر به‌تنهایی کافی نیست (مثلاً «کاهش کمک WFP به یمن» همچنان رد می‌شود).
+
 ### ۵.۴. موتور تطبیق موضوع — `match_topics`
 `app/editorial/topics.py` + `editorial/topics.json`
 
@@ -196,7 +198,7 @@ and is_regional_only_story(result.countries)   # همهٔ کشورها منطق�
 | `number_check_mode="flag"` و عدد بی‌پشتوانه | `flagged_for_review` + `Event("flagged")` | `number_check` در payload |
 | `editorial_exclusion` | `rejected` | دلیل گیت ارزش خبری |
 | `not is_relevant` یا بدون nexus | `rejected` | لاگ دلیل جغرافیایی |
-| `topics` خالی و `not is_primary_actor` | `rejected` | «اشارهٔ گذرا» |
+| `matched_topics` خالی و `not is_primary_actor` | `rejected` | «اشارهٔ گذرا» (مگر `matched_topics` غیرخالی باشد؛ آنگاه منتشر می‌شود) |
 | در غیر این صورت | `EventMatcher` → `Event` + `ArticleEvent` + `Summary` | `status="summarized"` |
 
 نکته: `rejected` و `failed` **هر دو** در شمارش «اخبار بازنمایی‌شده» می‌آیند تا معیار «هیچ خبری بی‌صدا گم نشود» معنا داشته باشد (بخش ۷).

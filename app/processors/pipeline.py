@@ -796,7 +796,11 @@ async def process_collected_articles(
             result.location,
         )
         payload_dict["editorial_exclusion"] = editorial_exclusion
-        topics = (
+        # Evaluate matched topics right after the newsworthiness gate: a specific topic
+        # match (anchor country + keyword/actor/place + importance floor) means the
+        # story is about that briefing, even if the regional "primary actor" gate
+        # would otherwise treat the Middle East as a passing mention.
+        matched_topics = (
             []
             if editorial_exclusion
             else match_topics(
@@ -816,13 +820,13 @@ async def process_collected_articles(
         # round-up and a low-value local item stay out.
         if (
             not editorial_exclusion
-            and not topics
+            and not matched_topics
             and result.is_relevant
             and result.importance >= 2
             and has_middle_east_nexus(result.countries, result.location)
             and is_regional_only_story(result.countries)
         ):
-            topics = [REGIONAL_TOPIC]
+            matched_topics = [REGIONAL_TOPIC]
             logger.info(
                 "Article ID %d has no specific briefing topic; publishing it under "
                 "the regional topic (importance=%d, countries=%s).",
@@ -830,9 +834,9 @@ async def process_collected_articles(
                 result.importance,
                 result.countries,
             )
-        topic = topics[0] if topics else None
+        topic = matched_topics[0] if matched_topics else None
         payload_dict["topic_key"] = topic.key if topic else None
-        payload_dict["topic_keys"] = [t.key for t in topics]
+        payload_dict["topic_keys"] = [t.key for t in matched_topics]
         article.ai_payload = payload_dict
 
         if result.is_injection_attempt:
@@ -935,7 +939,7 @@ async def process_collected_articles(
                 result.countries,
             )
             article.status = "rejected"
-        elif not topics and (not result.is_relevant or not has_middle_east_nexus(result.countries, result.location)):
+        elif not matched_topics and (not result.is_relevant or not has_middle_east_nexus(result.countries, result.location)):
             if result.is_relevant:
                 logger.info(
                     "Article ID %d rejected by the editorial gate: no Middle East country or waterway in countries=%s location=%r.",
@@ -946,7 +950,7 @@ async def process_collected_articles(
             else:
                 logger.info("Article ID %d deemed irrelevant to Middle East intelligence. Marked 'rejected'.", article.id)
             article.status = "rejected"
-        elif not topics and not is_primary_actor(result.countries, result.actors, result.location):
+        elif not matched_topics and not is_primary_actor(result.countries, result.actors, result.location):
             logger.info(
                 "Article ID %d rejected by the editorial gate: Middle East is only a passing mention "
                 "(countries=%s actors=%s location=%r).",
@@ -1000,7 +1004,7 @@ async def process_collected_articles(
                             "source": source_name,
                             "url": article.original_url,
                             "topic": topic.key if topic else None,
-                            "topics": [t.key for t in topics],
+                            "topics": [t.key for t in matched_topics],
                             "content_quality": content_quality,
                             "article_kind": payload_dict.get("article_kind", "standard"),
                             "is_live_digest": is_digest,

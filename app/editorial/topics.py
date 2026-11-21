@@ -86,9 +86,21 @@ class Topic:
         actor_hit = any(_name_appears(alias, actor_text) for alias in self.actors) if actor_text else False
         place_hit = any(_name_appears(place, location_text) for place in self.places) if location_text else False
         keyword_hit = any(_name_appears(word, title_text) for word in self.keywords) if title_text else False
+        # A country name appearing in the title is not enough corroboration: it
+        # would make every story about that country a topic. Only substantive
+        # (non-country) keywords count when the AI omitted the regional actor.
+        country_words = {normalize_place(c) for c in (*self.countries, *self.anchor_countries)}
+        substantive_keyword_hit = any(
+            _name_appears(word, title_text)
+            and normalize_place(word) not in country_words
+            for word in self.keywords
+        ) if title_text else False
 
         if country_hit:
-            return actor_hit or place_hit
+            # A substantive keyword in the title can corroborate the topic even
+            # when the AI omitted the regional actor (e.g. "US Treasury sanctions
+            # Iranian oil revenues"), but a bare country name cannot.
+            return actor_hit or place_hit or (keyword_hit and substantive_keyword_hit)
         # No configured country named in the analysis: the title and a place or actor
         # must both point at the topic (e.g. "Kyiv drone strike" with countries=[]).
         return keyword_hit and (actor_hit or place_hit)
