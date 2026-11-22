@@ -705,12 +705,20 @@ def build_index_page(
     for key, name, topic_items in sections:
         entry = normalize_topic_entry(topic_pages.get(key))
         page_url = str(entry.get("url") or "")
-        link = _anchor(name, page_url)
+        icon = telegraph_topic(key).icon
+        display_name = f"{icon} {name}".strip() if icon else name
+        if page_url and _is_http_url(page_url):
+            link = {"tag": "a", "attrs": {"href": page_url}, "children": [{"tag": "b", "children": [display_name]}]}
+        else:
+            link = None
         part_count = int(entry.get("part_count") or 1)
         suffix = f" — {len(topic_items)} خبر"
         if part_count > 1:
             suffix = f" — {len(topic_items)} خبر در {fa_number(part_count)} صفحه"
-        nodes.append(_paragraph("• ", link if link else name, suffix))
+        if link is not None:
+            nodes.append(_paragraph("• ", link, suffix))
+        else:
+            nodes.append(_paragraph("• ", {"tag": "b", "children": [display_name]}, suffix))
         if part_count > 1:
             # Every part is linked from the index itself, so a reader never has to walk a
             # chain to find the news of a long subject.
