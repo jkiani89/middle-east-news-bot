@@ -6,7 +6,8 @@ engine = create_async_engine(
     settings.database_url_for_asyncpg,
     connect_args=settings.asyncpg_connect_args,
     pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=5,
+    pool_size=3,
+    max_overflow=2,
+    pool_recycle=1800,
 )
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)

@@ -670,6 +670,48 @@ async def reconcile_interrupted_jobs(max_age_minutes: int = 30) -> int:
         return count
 
 
+async def cleanup_heavy_columns() -> None:
+    """Daily: null heavy columns (original_text, ai_payload) for articles older than 7 days.
+
+    Keeps the row, title and content_hash intact so duplicate detection and
+    reporting history remain valid. Only touches rows that still carry heavy
+    data, to avoid extra WAL churn.
+
+    Skipped in APP_ENV=test.
+    """
+    if settings.app_env == "test":
+        logger.debug("Skipping cleanup_heavy_columns in test environment")
+        return
+
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from app.database.connection import SessionLocal
+    from app.database.models import Article
+
+    cutoff = datetime.now(UTC) - timedelta(days=7)
+    try:
+        async with SessionLocal() as session:
+            stmt = (
+                update(Article)
+                .where(
+                    Article.collected_at < cutoff,
+                    (Article.original_text.is_not(None)) | (Article.ai_payload.is_not(None)),
+                )
+                .values(original_text=None, ai_payload=None)
+            )
+            result = await session.execute(stmt)
+            await session.commit()
+            logger.info(
+                "Cleaned heavy columns for %d articles older than 7 days (cutoff=%s)",
+                result.rowcount,
+                cutoff.isoformat(),
+            )
+    except Exception:
+        logger.exception("cleanup_heavy_columns failed")
+
+
 async def cleanup_gemini_request_log() -> None:
     """Daily: delete old rows from gemini_request_log to prevent unbounded growth.
 
@@ -816,6 +858,14 @@ def build_scheduler() -> AsyncIOScheduler:
         cleanup_gemini_request_log,
         trigger=CronTrigger(hour=3, minute=0),
         id="cleanup_gemini_request_log",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=600,
+    )
+    scheduler.add_job(
+        cleanup_heavy_columns,
+        trigger=CronTrigger(hour=3, minute=30),
+        id="cleanup_heavy_columns",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=600,
