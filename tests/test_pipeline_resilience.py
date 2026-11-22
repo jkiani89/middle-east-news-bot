@@ -97,7 +97,7 @@ class AlwaysUnavailableProvider(BaseAIProvider):
     def model_name(self) -> str:
         return "unavailable-model"
 
-    async def generate_json(self, prompt: str, system_instruction: str | None = None, *, purpose: str = "analysis"):
+    async def generate_json(self, prompt: str, system_instruction: str | None = None, *, purpose: str = "analysis", article_id: int | None = None, source_id: int | None = None):
         self.calls += 1
         raise AIServiceUnavailableError("503 UNAVAILABLE: model overloaded")
 
@@ -110,7 +110,7 @@ class AlwaysBrokenProvider(BaseAIProvider):
     def model_name(self) -> str:
         return "broken-model"
 
-    async def generate_json(self, prompt: str, system_instruction: str | None = None, *, purpose: str = "analysis"):
+    async def generate_json(self, prompt: str, system_instruction: str | None = None, *, purpose: str = "analysis", article_id: int | None = None, source_id: int | None = None):
         self.calls += 1
         raise AIProviderError("Pydantic validation failed permanently")
 
@@ -126,7 +126,7 @@ class FlakyJsonProvider(BaseAIProvider):
     def model_name(self) -> str:
         return "flaky-json-model"
 
-    async def generate_json(self, prompt: str, system_instruction: str | None = None, *, purpose: str = "analysis"):
+    async def generate_json(self, prompt: str, system_instruction: str | None = None, *, purpose: str = "analysis", article_id: int | None = None, source_id: int | None = None):
         self.purposes.append(purpose)
         if len(self.purposes) == 1:
             raise AIProviderError("Invalid JSON returned by Gemini: Unterminated string starting at line 4")
@@ -146,7 +146,7 @@ class _ConcurrencyProbeProvider(BaseAIProvider):
     def model_name(self) -> str:
         return "probe-model"
 
-    async def generate_json(self, prompt: str, system_instruction: str | None = None, *, purpose: str = "analysis"):
+    async def generate_json(self, prompt: str, system_instruction: str | None = None, *, purpose: str = "analysis", article_id: int | None = None, source_id: int | None = None):
         self.in_flight += 1
         self.max_in_flight = max(self.max_in_flight, self.in_flight)
         try:
@@ -321,7 +321,7 @@ async def test_persistent_malformed_json_surfaces_as_provider_error():
     from app.ai.summarizer import analyze_article
 
     class BrokenJsonProvider(FlakyJsonProvider):
-        async def generate_json(self, prompt, system_instruction=None, *, purpose="analysis"):
+        async def generate_json(self, prompt, system_instruction=None, *, purpose="analysis", article_id=None, source_id=None):
             self.purposes.append(purpose)
             raise AIProviderError("Invalid JSON returned by Gemini: truncated")
 

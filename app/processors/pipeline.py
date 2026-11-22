@@ -20,6 +20,7 @@ from app.ai.summarizer import (
     analyze_perspectives,
 )
 from app.collectors.rss_collector import fetch_article_full_text, fetch_feed
+from app.collectors.telegram_collector import collect_telegram_posts
 from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, ArticleEvent, Event, JobLog, Source, Summary
@@ -565,6 +566,8 @@ class _ConcurrentAnalysis:
                     body=article.original_text or "",
                     source_name=attempt.source_name,
                     provider=self._provider,
+                    article_id=article.id,
+                    source_id=article.source_id,
                 )
             except Exception as exc:  # noqa: BLE001 - the caller owns status handling
                 attempt.error = exc
@@ -1082,7 +1085,13 @@ async def collect_new_articles(session: AsyncSession) -> int:
     """
     inserted_count = 0
     sources = (
-        await session.scalars(select(Source).where(Source.is_active.is_(True), Source.feed_url.is_not(None)))
+        await session.scalars(
+            select(Source).where(
+                Source.is_active.is_(True),
+                Source.feed_url.is_not(None),
+                Source.source_type != "telegram",
+            )
+        )
     ).all()
     for source in sources:
         try:
@@ -1138,6 +1147,8 @@ async def collect_and_process(provider: BaseAIProvider | None = None):
         await session.flush()
         try:
             inserted = await collect_new_articles(session)
+            telegram_inserted = await collect_telegram_posts(session)
+            inserted += telegram_inserted
             # Commit the collected rows before any AI call. Collection must survive a
             # processing failure: the except block below rolls the session back, and
             # without this commit every article ingested in the same run would be lost

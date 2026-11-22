@@ -198,5 +198,45 @@
     "language": "en",
     "is_active": true,
     "reliability_note": "رسانهٔ اسرائیلی؛ ادعاهای حساس با منابع دیگر تطبیق داده شوند"
+  },
+  {
+    "name": "Telegram: yemenstudies_ir",
+    "base_url": "https://t.me/yemenstudies_ir",
+    "feed_url": "https://t.me/s/yemenstudies_ir",
+    "source_type": "telegram",
+    "country": "Yemen",
+    "language": "fa",
+    "is_active": true,
+    "reliability_note": "کانال عمومی تلگرام؛ متن پست به‌عنوان متن خبر استفاده می‌شود; media فقط به صورت نشانگر Boolean ثبت می‌شود"
+  },
+  {
+    "name": "Telegram: ClashReport",
+    "base_url": "https://t.me/ClashReport",
+    "feed_url": "https://t.me/s/ClashReport",
+    "source_type": "telegram",
+    "country": "International",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "کانال عمومی تلگرام؛ متن پست به‌عنوان متن خبر استفاده می‌شود; media فقط به صورت نشانگر Boolean ثبت می‌شود"
+  },
+  {
+    "name": "Telegram: virtu_ir",
+    "base_url": "https://t.me/virtu_ir",
+    "feed_url": "https://t.me/s/virtu_ir",
+    "source_type": "telegram",
+    "country": "Iran",
+    "language": "fa",
+    "is_active": true,
+    "reliability_note": "کانال عمومی تلگرام؛ متن پست به‌عنوان متن خبر استفاده می‌شود; media فقط به صورت نشانگر Boolean ثبت می‌شود"
+  },
+  {
+    "name": "Telegram: Levi_athan",
+    "base_url": "https://t.me/Levi_athan",
+    "feed_url": "https://t.me/s/Levi_athan",
+    "source_type": "telegram",
+    "country": "International",
+    "language": "en",
+    "is_active": true,
+    "reliability_note": "کانال عمومی تلگرام؛ متن پست به‌عنوان متن خبر استفاده می‌شود; media فقط به صورت نشانگر Boolean ثبت می‌شود"
   }
 ]

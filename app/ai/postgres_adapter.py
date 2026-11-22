@@ -1,7 +1,9 @@
 """PostgreSQL adapter for gemini-api-rotator implementing DBAdapter via psycopg3."""
 
 import logging
+import threading
 import time
+from datetime import UTC, datetime
 from typing import Any, Self
 
 import psycopg
@@ -24,6 +26,7 @@ class PostgresAdapter(DBAdapter):
             dsn = dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
         self._dsn = dsn
         self._conn: psycopg.Connection[dict[str, Any]] | None = None
+        self._lock = threading.RLock()
         self._connect()
 
     def _connect(self) -> None:
@@ -42,14 +45,15 @@ class PostgresAdapter(DBAdapter):
 
     def close(self) -> None:
         """Close the underlying PostgreSQL connection idempotently."""
-        if self._conn is not None:
-            try:
-                if not self._conn.closed:
-                    self._conn.close()
-            except Exception:
-                logger.warning("Error closing PostgreSQL connection", exc_info=True)
-            finally:
-                self._conn = None
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    if not self._conn.closed:
+                        self._conn.close()
+                except Exception:
+                    logger.warning("Error closing PostgreSQL connection", exc_info=True)
+                finally:
+                    self._conn = None
 
     def __enter__(self) -> Self:
         return self
@@ -90,6 +94,25 @@ class PostgresAdapter(DBAdapter):
     # ── Requests and Stats ────────────────────────────────────────────────────
 
     def record_request(
+        self,
+        key: str,
+        event: str,
+        latency: float | None = None,
+        model: str | None = None,
+        *,
+        latency_ms: float | None = None,
+    ) -> None:
+        """Thread-safe wrapper around the single-connection implementation."""
+        with self._lock:
+            self._record_request_unlocked(
+                key,
+                event,
+                latency=latency,
+                model=model,
+                latency_ms=latency_ms,
+            )
+
+    def _record_request_unlocked(
         self,
         key: str,
         event: str,
@@ -226,6 +249,93 @@ class PostgresAdapter(DBAdapter):
             )
             rows = cur.fetchall()
             return [dict(r) for r in rows]
+
+    def record_gemini_usage(
+        self,
+        *,
+        article_id: int | None = None,
+        source_id: int | None = None,
+        model_name: str,
+        prompt_token_count: int | None = None,
+        candidates_token_count: int | None = None,
+        total_token_count: int | None = None,
+        thoughts_token_count: int | None = None,
+        cached_content_token_count: int | None = None,
+        operation: str,
+        status: str = "success",
+        latency_ms: float | None = None,
+        request_timestamp: datetime | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Thread-safe wrapper for inserting one gemini_usage row."""
+        with self._lock:
+            self._record_gemini_usage_unlocked(
+                article_id=article_id,
+                source_id=source_id,
+                model_name=model_name,
+                prompt_token_count=prompt_token_count,
+                candidates_token_count=candidates_token_count,
+                total_token_count=total_token_count,
+                thoughts_token_count=thoughts_token_count,
+                cached_content_token_count=cached_content_token_count,
+                operation=operation,
+                status=status,
+                latency_ms=latency_ms,
+                request_timestamp=request_timestamp,
+                error_message=error_message,
+            )
+
+    def _record_gemini_usage_unlocked(
+        self,
+        *,
+        article_id: int | None = None,
+        source_id: int | None = None,
+        model_name: str,
+        prompt_token_count: int | None = None,
+        candidates_token_count: int | None = None,
+        total_token_count: int | None = None,
+        thoughts_token_count: int | None = None,
+        cached_content_token_count: int | None = None,
+        operation: str,
+        status: str = "success",
+        latency_ms: float | None = None,
+        request_timestamp: datetime | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Insert one gemini_usage row using the shared connection."""
+        if error_message is not None:
+            error_message = error_message[:500]
+        if request_timestamp is None:
+            request_timestamp = datetime.now(UTC)
+
+        conn = self._ensure()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gemini_usage (
+                    article_id, source_id, model_name,
+                    prompt_token_count, candidates_token_count, total_token_count,
+                    thoughts_token_count, cached_content_token_count,
+                    operation, status, latency_ms, request_timestamp, error_message
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    article_id,
+                    source_id,
+                    model_name,
+                    prompt_token_count,
+                    candidates_token_count,
+                    total_token_count,
+                    thoughts_token_count,
+                    cached_content_token_count,
+                    operation,
+                    status,
+                    latency_ms,
+                    request_timestamp,
+                    error_message,
+                ),
+            )
 
     @staticmethod
     def _row_to_stats(r: dict[str, Any]) -> KeyStats:

@@ -375,6 +375,8 @@ async def analyze_perspectives(
         prompt,
         system_instruction=PERSPECTIVES_SYSTEM_PROMPT,
         purpose="perspectives",
+        article_id=None,
+        source_id=None,
     )
     return coerce_perspectives(data, max_items=max_items)
 
@@ -582,6 +584,8 @@ async def analyze_article(
     body: str,
     source_name: str,
     provider: BaseAIProvider | None = None,
+    article_id: int | None = None,
+    source_id: int | None = None,
 ) -> NewsAnalysis:
     """Analyze news article using AI provider with prompt injection defense and strict validation."""
     ai_provider = provider or get_ai_provider()
@@ -592,6 +596,8 @@ async def analyze_article(
             prompt,
             system_instruction=EDITORIAL_SYSTEM_PROMPT,
             purpose="analysis",
+            article_id=article_id,
+            source_id=source_id,
         )
     except AIProviderError as exc:
         if not _is_malformed_json_error(exc):
@@ -616,6 +622,8 @@ async def analyze_article(
             "بازگردان و مقادیر متنی را کوتاه نگه دار تا پاسخ بریده نشود.",
             system_instruction=EDITORIAL_SYSTEM_PROMPT,
             purpose="schema_repair",
+            article_id=article_id,
+            source_id=source_id,
         )
 
     data, normalization_meta = _normalize_model_payload(data)
@@ -630,6 +638,8 @@ async def analyze_article(
             repair_prompt,
             system_instruction=EDITORIAL_SYSTEM_PROMPT,
             purpose="schema_repair",
+            article_id=article_id,
+            source_id=source_id,
         )
         repaired_data, normalization_meta = _normalize_model_payload(repaired_data)
         analysis = NewsAnalysis.model_validate(repaired_data)

@@ -241,6 +241,7 @@ def _article_item(article: Article, source: Source | None) -> dict[str, Any]:
         "summary_missing": True,
         "primary_source": getattr(source, "name", "") or "منبع نامشخص",
         "primary_url": article.original_url or "",
+        "has_media": bool(getattr(article, "has_media", False)),
         "first_seen_at": moment.isoformat() if moment else "",
         "verification_status": "unconfirmed",
         "verification_status_fa": verification_fa,
@@ -457,6 +458,8 @@ def build_item_block(
 
     link = _anchor(url, url)
     nodes.append(_paragraph("🔗 لینک اصلی خبر: ", link if link else "در دسترس نیست"))
+    if item.get("has_media"):
+        nodes.append(_paragraph("🖼 دارای تصویر/ویدئو"))
 
     if item.get("review_pending"):
         nodes.append(

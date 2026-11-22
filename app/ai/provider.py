@@ -260,6 +260,10 @@ class GeminiProvider(BaseAIProvider):
         system_instruction: str | None,
         extra_config: dict[str, Any],
         timeout: float | None = None,
+        *,
+        article_id: int | None = None,
+        source_id: int | None = None,
+        operation: str = "analysis",
     ) -> Any:
         """Run one model call under a hard timeout.
 
@@ -275,15 +279,55 @@ class GeminiProvider(BaseAIProvider):
         (5 attempts, 1/2/4/8s backoff) finish or the connection dies; only then does the
         thread return and its result get dropped.
         """
-        return await asyncio.wait_for(
-            self._rotator.execute(
-                prompt,
-                model=model,
-                system=system_instruction,
-                extra_config=extra_config,
-            ),
-            timeout=timeout if timeout is not None else self._request_timeout,
+        start_time = time.monotonic()
+        try:
+            response = await asyncio.wait_for(
+                self._rotator.execute(
+                    prompt,
+                    model=model,
+                    system=system_instruction,
+                    extra_config=extra_config,
+                ),
+                timeout=timeout if timeout is not None else self._request_timeout,
+            )
+        except Exception as exc:  # noqa: BLE001 - recorded and re-raised
+            latency_ms = (time.monotonic() - start_time) * 1000.0
+            status = "timeout" if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) else "error"
+            await self._record_gemini_usage(
+                article_id=article_id,
+                source_id=source_id,
+                model_name=model,
+                usage=None,
+                operation=operation,
+                status=status,
+                latency_ms=latency_ms,
+                error_message=str(exc),
+            )
+            raise
+
+        latency_ms = (time.monotonic() - start_time) * 1000.0
+        usage = self._extract_usage_metadata(response)
+        has_usage = any(
+            value is not None
+            for value in (
+                usage.get("prompt_token_count"),
+                usage.get("candidates_token_count"),
+                usage.get("total_token_count"),
+                usage.get("thoughts_token_count"),
+                usage.get("cached_content_token_count"),
+            )
         )
+        await self._record_gemini_usage(
+            article_id=article_id,
+            source_id=source_id,
+            model_name=model,
+            usage=usage,
+            operation=operation,
+            status="success" if has_usage else "no_usage",
+            latency_ms=latency_ms,
+            error_message=None,
+        )
+        return response
 
     def _timeout_for(self, purpose: str) -> float:
         """Per-purpose ceiling; a perspective matrix is slower than one article."""
@@ -301,6 +345,8 @@ class GeminiProvider(BaseAIProvider):
         timeout: float,
         attempts: int,
         purpose: str,
+        article_id: int | None = None,
+        source_id: int | None = None,
     ) -> Any:
         """Run one call, retrying at most once and only after a timeout.
 
@@ -319,7 +365,14 @@ class GeminiProvider(BaseAIProvider):
         for attempt in range(1, attempts + 1):
             try:
                 return await self._execute_model(
-                    model, prompt, system_instruction, extra_config, timeout=timeout
+                    model,
+                    prompt,
+                    system_instruction,
+                    extra_config,
+                    timeout=timeout,
+                    article_id=article_id,
+                    source_id=source_id,
+                    operation=purpose,
                 )
             except TimeoutError:
                 if attempt >= attempts:
@@ -352,12 +405,77 @@ class GeminiProvider(BaseAIProvider):
                 self._fallback_model,
             )
 
+    @staticmethod
+    def _extract_usage_metadata(response: Any) -> dict[str, int | None]:
+        """Extract usage metadata from a google.genai response without guessing missing values."""
+        usage = getattr(response, "usage_metadata", None)
+        if usage is None:
+            return {
+                "prompt_token_count": None,
+                "candidates_token_count": None,
+                "total_token_count": None,
+                "thoughts_token_count": None,
+                "cached_content_token_count": None,
+            }
+
+        def _get(name: str) -> int | None:
+            value = getattr(usage, name, None)
+            if value is None and isinstance(usage, dict):
+                value = usage.get(name)
+            return value if isinstance(value, int) else None
+
+        return {
+            "prompt_token_count": _get("prompt_token_count"),
+            "candidates_token_count": _get("candidates_token_count"),
+            "total_token_count": _get("total_token_count"),
+            "thoughts_token_count": _get("thoughts_token_count"),
+            "cached_content_token_count": _get("cached_content_token_count"),
+        }
+
+    async def _record_gemini_usage(
+        self,
+        *,
+        article_id: int | None,
+        source_id: int | None,
+        model_name: str,
+        usage: dict[str, int | None] | None,
+        operation: str,
+        status: str,
+        latency_ms: float,
+        error_message: str | None,
+    ) -> None:
+        """Record one attempt in gemini_usage without failing the Pipeline."""
+        adapter = getattr(self, "_db_adapter", None)
+        if adapter is None or not hasattr(adapter, "record_gemini_usage"):
+            return
+        data = usage or {}
+        try:
+            await asyncio.to_thread(
+                adapter.record_gemini_usage,
+                article_id=article_id,
+                source_id=source_id,
+                model_name=model_name,
+                prompt_token_count=data.get("prompt_token_count"),
+                candidates_token_count=data.get("candidates_token_count"),
+                total_token_count=data.get("total_token_count"),
+                thoughts_token_count=data.get("thoughts_token_count"),
+                cached_content_token_count=data.get("cached_content_token_count"),
+                operation=operation,
+                status=status,
+                latency_ms=latency_ms,
+                error_message=error_message,
+            )
+        except Exception:  # noqa: BLE001 - audit must not break AI pipeline
+            logger.exception("Failed to record gemini_usage row; continuing.")
+
     async def generate_json(
         self,
         prompt: str,
         system_instruction: str | None = None,
         *,
         purpose: Literal["analysis", "preflight", "schema_repair", "perspectives"] = "analysis",
+        article_id: int | None = None,
+        source_id: int | None = None,
     ) -> dict[str, Any]:
         """Generate structured JSON response using Gemini via gemini-api-rotator.
 
@@ -397,6 +515,8 @@ class GeminiProvider(BaseAIProvider):
                 timeout=timeout,
                 attempts=attempts,
                 purpose=purpose,
+                article_id=article_id,
+                source_id=source_id,
             )
             raw_text = getattr(response, "text", "") or ""
             self._last_used_model = target_model
@@ -441,7 +561,14 @@ class GeminiProvider(BaseAIProvider):
                 try:
                     target_model = self._fallback_model
                     response = await self._execute_model(
-                        target_model, prompt, system_instruction, extra_config, timeout=timeout
+                        target_model,
+                        prompt,
+                        system_instruction,
+                        extra_config,
+                        timeout=timeout,
+                        article_id=article_id,
+                        source_id=source_id,
+                        operation=purpose,
                     )
                     raw_text = getattr(response, "text", "") or ""
                     self._last_used_model = target_model
@@ -556,6 +683,8 @@ class MockAIProvider(BaseAIProvider):
         system_instruction: str | None = None,
         *,
         purpose: Literal["analysis", "preflight", "schema_repair", "perspectives"] = "analysis",
+        article_id: int | None = None,
+        source_id: int | None = None,
     ) -> dict[str, Any]:
         """Generate structured JSON mock response.
 

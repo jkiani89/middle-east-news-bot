@@ -69,6 +69,8 @@ class _SequenceProvider(BaseAIProvider):
         system_instruction: str | None = None,
         *,
         purpose: Literal["analysis", "preflight", "schema_repair", "perspectives"] = "analysis",
+        article_id: int | None = None,
+        source_id: int | None = None,
     ) -> dict[str, Any]:
         self.prompts.append(prompt)
         self.systems.append(system_instruction)

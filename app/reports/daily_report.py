@@ -577,6 +577,7 @@ async def fetch_report_items(
             ],
             "primary_source": primary_source_name,
             "primary_url": primary_url,
+            "has_media": any(getattr(art, "has_media", False) for art, _ in linked_arts),
             "additional_sources": additional_sources,
             "total_sources_count": max(1 + len(additional_sources), distinct_sources),
             "distinct_sources_count": distinct_sources,

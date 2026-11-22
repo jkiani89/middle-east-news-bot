@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -62,6 +63,7 @@ class Article(Base):
     attempt_count: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0", nullable=False)
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     text_source: Mapped[str] = mapped_column(String(30), default="rss_summary", server_default="rss_summary", nullable=False)
+    has_media: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     ai_payload: Mapped[dict | None] = mapped_column(JSONB)
     source: Mapped[Source] = relationship(back_populates="articles")
     event_links: Mapped[list[ArticleEvent]] = relationship(back_populates="article")
@@ -184,4 +186,29 @@ class JobLog(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(30), default="running")
     processed_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class GeminiUsage(Base):
+    __tablename__ = "gemini_usage"
+    __table_args__ = (
+        Index("ix_gemini_usage_article_id", "article_id"),
+        Index("ix_gemini_usage_source_id", "source_id"),
+        Index("ix_gemini_usage_request_timestamp", "request_timestamp"),
+        Index("ix_gemini_usage_model_name", "model_name"),
+        Index("ix_gemini_usage_operation", "operation"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    article_id: Mapped[int | None] = mapped_column(ForeignKey("articles.id", ondelete="SET NULL"), nullable=True)
+    source_id: Mapped[int | None] = mapped_column(ForeignKey("sources.id", ondelete="SET NULL"), nullable=True)
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    prompt_token_count: Mapped[int | None] = mapped_column(Integer)
+    candidates_token_count: Mapped[int | None] = mapped_column(Integer)
+    total_token_count: Mapped[int | None] = mapped_column(Integer)
+    thoughts_token_count: Mapped[int | None] = mapped_column(Integer)
+    cached_content_token_count: Mapped[int | None] = mapped_column(Integer)
+    operation: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="success", nullable=False)
+    latency_ms: Mapped[float | None] = mapped_column(Float)
+    request_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text)
