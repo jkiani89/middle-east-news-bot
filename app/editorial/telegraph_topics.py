@@ -42,12 +42,13 @@ class TelegraphTopic:
     key: str
     name_fa: str
     order: int
+    icon: str = ""
 
 
 DEFAULT_TOPICS: tuple[TelegraphTopic, ...] = (
-    TelegraphTopic(key=OTHER_TOPIC_KEY, name_fa=OTHER_TOPIC_NAME, order=99),
-    TelegraphTopic(key=UNPROCESSED_TOPIC_KEY, name_fa=UNPROCESSED_TOPIC_NAME, order=97),
-    TelegraphTopic(key=UNPUBLISHED_TOPIC_KEY, name_fa=UNPUBLISHED_TOPIC_NAME, order=98),
+    TelegraphTopic(key=OTHER_TOPIC_KEY, name_fa=OTHER_TOPIC_NAME, order=99, icon="📌"),
+    TelegraphTopic(key=UNPROCESSED_TOPIC_KEY, name_fa=UNPROCESSED_TOPIC_NAME, order=97, icon="🗂"),
+    TelegraphTopic(key=UNPUBLISHED_TOPIC_KEY, name_fa=UNPUBLISHED_TOPIC_NAME, order=98, icon="📋"),
 )
 
 
@@ -64,16 +65,17 @@ def build_telegraph_topics(payload: dict[str, Any] | None) -> tuple[TelegraphTop
                 key=key,
                 name_fa=str(raw.get("name_fa") or key),
                 order=int(raw.get("order", 50)),
+                icon=str(raw.get("icon") or ""),
             )
         )
     if OTHER_TOPIC_KEY not in seen:
-        topics.append(TelegraphTopic(OTHER_TOPIC_KEY, OTHER_TOPIC_NAME, 99))
+        topics.append(TelegraphTopic(OTHER_TOPIC_KEY, OTHER_TOPIC_NAME, 99, icon="📌"))
     # Presentation-only sections: always available so an item that carries no analysis
     # never falls back into "سایر تحولات", and never disappears when it is empty.
     if UNPROCESSED_TOPIC_KEY not in seen:
-        topics.append(TelegraphTopic(UNPROCESSED_TOPIC_KEY, UNPROCESSED_TOPIC_NAME, 97))
+        topics.append(TelegraphTopic(UNPROCESSED_TOPIC_KEY, UNPROCESSED_TOPIC_NAME, 97, icon="🗂"))
     if UNPUBLISHED_TOPIC_KEY not in seen:
-        topics.append(TelegraphTopic(UNPUBLISHED_TOPIC_KEY, UNPUBLISHED_TOPIC_NAME, 98))
+        topics.append(TelegraphTopic(UNPUBLISHED_TOPIC_KEY, UNPUBLISHED_TOPIC_NAME, 98, icon="📋"))
     return tuple(sorted(topics, key=lambda topic: (topic.order, topic.key)))
 
 

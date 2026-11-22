@@ -5,13 +5,53 @@
     "This file only controls presentation: it can never drop a news item from the report."
   ],
   "topics": [
-    { "key": "ru-ua", "name_fa": "روسیه و اوکراین", "order": 10 },
-    { "key": "ir", "name_fa": "ایران و آمریکا", "order": 20 },
-    { "key": "us", "name_fa": "سیاست داخلی آمریکا", "order": 30 },
-    { "key": "ye", "name_fa": "عربستان و یمن", "order": 40 },
-    { "key": "il", "name_fa": "اسرائیل", "order": 50 },
-    { "key": "us-cn", "name_fa": "آمریکا و چین", "order": 60 },
-    { "key": "me", "name_fa": "تحولات خاورمیانه", "order": 70 },
-    { "key": "other", "name_fa": "سایر تحولات", "order": 99 }
+    {
+      "key": "ru-ua",
+      "name_fa": "روسیه و اوکراین",
+      "order": 10,
+      "icon": "🇷🇺/🇺🇦"
+    },
+    {
+      "key": "ir",
+      "name_fa": "ایران و آمریکا",
+      "order": 20,
+      "icon": "🇮🇷/🇺🇸"
+    },
+    {
+      "key": "us",
+      "name_fa": "سیاست داخلی آمریکا",
+      "order": 30,
+      "icon": "🇺🇸"
+    },
+    {
+      "key": "ye",
+      "name_fa": "عربستان و یمن",
+      "order": 40,
+      "icon": "🇾🇪/🇸🇦"
+    },
+    {
+      "key": "il",
+      "name_fa": "اسرائیل",
+      "order": 50,
+      "icon": "🇮🇱"
+    },
+    {
+      "key": "us-cn",
+      "name_fa": "آمریکا و چین",
+      "order": 60,
+      "icon": "🇺🇸/🇨🇳"
+    },
+    {
+      "key": "me",
+      "name_fa": "تحولات خاورمیانه",
+      "order": 70,
+      "icon": "🌍"
+    },
+    {
+      "key": "other",
+      "name_fa": "سایر تحولات",
+      "order": 99,
+      "icon": "📌"
+    }
   ]
 }

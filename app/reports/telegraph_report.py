@@ -40,6 +40,7 @@ from app.editorial.telegraph_topics import (
     UNPUBLISHED_TOPIC_KEY,
     UNPUBLISHED_TOPIC_NAME,
     group_items_by_telegraph_topic,
+    telegraph_topic,
 )
 from app.editorial.topics import topic_for_event, topics_for_event
 from app.reports.daily_report import (
@@ -798,7 +799,12 @@ def format_telegram_notification(
     for key, name, topic_items in sections:
         entry = normalize_topic_entry(pages.get(key))
         page_url = str(entry.get("url") or "")
-        label_html = f'<a href="{page_url}">{name}</a>' if _is_http_url(page_url) else name
+        icon = telegraph_topic(key).icon
+        icon_prefix = f"{icon} " if icon else ""
+        if _is_http_url(page_url):
+            label_html = f'<a href="{page_url}"><b>{icon_prefix}{name}</b></a>'
+        else:
+            label_html = f"{icon_prefix}<b>{name}</b>"
         part_count = int(entry.get("part_count") or 1)
         suffix = f": {len(topic_items)} خبر"
         if part_count > 1:

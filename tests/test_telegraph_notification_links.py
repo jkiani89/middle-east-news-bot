@@ -43,8 +43,8 @@ def test_notification_links_the_index_and_every_topic_page() -> None:
 
     assert '<a href="https://telegra.ph/report-index-11-18">' in text
     assert "صفحه اصلی گزارش در Telegraph" in text
-    assert '<a href="https://telegra.ph/iran-11-18">ایران و آمریکا</a>' in text
-    assert '<a href="https://telegra.ph/yemen-11-18">عربستان و یمن</a>' in text
+    assert '<a href="https://telegra.ph/iran-11-18"><b>🇮🇷/🇺🇸 ایران و آمریکا</b></a>' in text
+    assert '<a href="https://telegra.ph/yemen-11-18"><b>🇾🇪/🇸🇦 عربستان و یمن</b></a>' in text
 
 
 def test_every_section_keeps_its_item_count_next_to_its_link() -> None:
@@ -57,8 +57,8 @@ def test_every_section_keeps_its_item_count_next_to_its_link() -> None:
         topic_pages=_pages(),
     )
 
-    assert '<a href="https://telegra.ph/iran-11-18">ایران و آمریکا</a>: 2 خبر' in text
-    assert '<a href="https://telegra.ph/yemen-11-18">عربستان و یمن</a>: 1 خبر' in text
+    assert '<a href="https://telegra.ph/iran-11-18"><b>🇮🇷/🇺🇸 ایران و آمریکا</b></a>: 2 خبر' in text
+    assert '<a href="https://telegra.ph/yemen-11-18"><b>🇾🇪/🇸🇦 عربستان و یمن</b></a>: 1 خبر' in text
     assert "3 خبر در 2 موضوع" in text
 
 
@@ -75,8 +75,8 @@ def test_topic_without_a_page_url_is_still_listed_by_name() -> None:
         topic_pages=pages,
     )
 
-    assert '<a href="https://telegra.ph/iran-11-18">ایران و آمریکا</a>' in text
-    assert "• عربستان و یمن: 1 خبر" in text
+    assert '<a href="https://telegra.ph/iran-11-18"><b>🇮🇷/🇺🇸 ایران و آمریکا</b></a>' in text
+    assert "• 🇾🇪/🇸🇦 <b>عربستان و یمن</b>: 1 خبر" in text
     assert "telegra.ph/yemen" not in text
 
 
@@ -91,8 +91,8 @@ def test_no_topic_pages_degrades_to_names_only_and_keeps_the_index_link() -> Non
 
     assert text.count("<a href=") == 1
     assert '<a href="https://telegra.ph/report-index-11-18">' in text
-    assert "• ایران و آمریکا: 2 خبر" in text
-    assert "• عربستان و یمن: 1 خبر" in text
+    assert "• 🇮🇷/🇺🇸 <b>ایران و آمریکا</b>: 2 خبر" in text
+    assert "• 🇾🇪/🇸🇦 <b>عربستان و یمن</b>: 1 خبر" in text
 
 
 def test_a_paginated_topic_lists_its_page_count_and_every_part_link() -> None:
@@ -133,7 +133,7 @@ def test_a_legacy_flat_topic_entry_still_links_its_single_page() -> None:
         topic_pages={"ir": {"path": "iran-legacy", "url": "https://telegra.ph/iran-legacy"}},
     )
 
-    assert '<a href="https://telegra.ph/iran-legacy">ایران و آمریکا</a>: 2 خبر' in text
+    assert '<a href="https://telegra.ph/iran-legacy"><b>🇮🇷/🇺🇸 ایران و آمریکا</b></a>: 2 خبر' in text
     assert "صفحه" not in text.split("خبر")[1]
 
 
@@ -150,4 +150,4 @@ def test_missing_index_url_states_it_instead_of_emitting_a_broken_link() -> None
     assert "لینک گزارش در دسترس نیست." in text
     assert "telegra.ph/report-index" not in text
     # The topic links are independent of the index page and must survive it.
-    assert '<a href="https://telegra.ph/iran-11-18">ایران و آمریکا</a>' in text
+    assert '<a href="https://telegra.ph/iran-11-18"><b>🇮🇷/🇺🇸 ایران و آمریکا</b></a>' in text
