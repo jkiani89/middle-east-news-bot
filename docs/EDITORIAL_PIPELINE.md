@@ -84,7 +84,7 @@ self._failure_budget  = max(1, settings.ai_max_consecutive_failures)    # ۵
 
 ### تایم‌اوت دریافت متن کامل
 ```python
-await asyncio.wait_for(fetch_article_full_text(url), timeout=6.0)   # article_body_fetch_timeout_seconds
+await asyncio.wait_for(fetch_article_full_text(url), timeout=15.0)   # article_body_fetch_timeout_seconds
 ```
 در `TimeoutError` مقاله با خلاصهٔ RSS خودش تحلیل می‌شود؛ یک ناشر کند یک اسلات بچ را قفل نمی‌کند. متن بلندتر از متن فعلی جایگزین می‌شود و `text_source="full_body"` ثبت می‌گردد.
 
@@ -111,7 +111,7 @@ await asyncio.wait_for(fetch_article_full_text(url), timeout=6.0)   # article_bo
 - کدهای مجاز دسته‌بندی: `POL, MIL, DIP, SEC, TER, ECO, ENE, MAR, INT, HUM` — **هیچ کد ورزشی/گردشگری/حادثه‌ای وجود ندارد**؛ همین محدودیت، دلیل وجود گیت واژگانی ۵.۲ است.
 - تزریق تاریخ جاری: `_build_analysis_prompt` خط `تاریخ امروز (UTC): YYYY-MM-DD` را از `datetime.now(UTC).date().isoformat()` می‌سازد (اصل ۱۱ پرامپت). بدون این خط، مدل از دانش آرشیوی خود عنوان مقام‌ها را می‌نوشت («رئیس‌جمهور پیشین» برای ترامپ).
 - JSON خراب: یک تلاش `schema_repair` مشروط (سقف `SCHEMA_REPAIR_RAW_MAX_CHARS`)؛ پاسخ بلندتر از سقف برای بازبینی انسانی fail می‌شود.
-- `ai_request_timeout_seconds=30` سقف سخت هر فراخوانی مدل.
+- `ai_request_timeout_seconds=45` سقف سخت هر فراخوانی مدل.
 
 ### ۵.۲. فیلتر ارزش خبری — `app/editorial/newsworthiness.py` (RC-17)
 `non_political_story_reason(title, summary, countries, actors, location) -> "sport" | "tourism" | "incident" | None`
@@ -348,10 +348,10 @@ GROUP BY 1 ORDER BY 1 DESC;
 | ثابت | مقدار | محل |
 |---|---|---|
 | `ai_processing_concurrency` | ۴ | `app/config.py` |
-| `article_body_fetch_timeout_seconds` | ۶.۰ | `app/config.py` |
+| `article_body_fetch_timeout_seconds` | ۱۵.۰ | `app/config.py` |
 | `ai_max_consecutive_failures` | ۵ | `app/config.py` |
 | `ai_max_attempts` | ۳ | `app/config.py` |
-| `ai_request_timeout_seconds` | ۳۰ | `app/config.py` |
+| `ai_request_timeout_seconds` | ۴۵ | `app/config.py` |
 | `article_max_age_hours` | ۲۴ | `app/config.py` |
 | `max_articles_per_batch` | ۳۰ پیش‌فرض (در CI با `vars.MAX_ARTICLES_PER_BATCH` روی ۴۵) | `app/config.py` / `cron.yml` |
 | `min_importance` (سراسری) | ۲ | `app/config.py` |

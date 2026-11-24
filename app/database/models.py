@@ -101,6 +101,7 @@ class ArticleEvent(Base):
 
 class Summary(Base):
     __tablename__ = "summaries"
+    __table_args__ = (Index("ix_summaries_event_id", "event_id"),)
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
     headline_fa: Mapped[str] = mapped_column(Text, nullable=False)

@@ -50,7 +50,7 @@ DEFAULT_ARTICLE_HEADERS = {
     "Accept-Encoding": "gzip, deflate",
 }
 
-DEFAULT_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
+DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
 
 class CollectorError(Exception):

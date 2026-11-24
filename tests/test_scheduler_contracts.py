@@ -184,10 +184,10 @@ async def test_hourly_proceeds_when_primary_down_but_fallback_available(mock_ses
 async def test_hourly_skips_only_when_both_models_unavailable(mock_session_local):
     """Only skip the hour when BOTH primary and fallback models return 429 or 503."""
     mock_primary = MagicMock()
-    mock_primary.generate_json = AsyncMock(side_effect=AIRateLimitError("429 Primary exhausted"))
+    mock_primary.generate_json = AsyncMock(side_effect=AIProviderError("permanent failure: primary model"))
 
     mock_fallback = MagicMock()
-    mock_fallback.generate_json = AsyncMock(side_effect=AIServiceUnavailableError("503 Fallback unavailable"))
+    mock_fallback.generate_json = AsyncMock(side_effect=AIProviderError("permanent failure: fallback model"))
 
     is_alive = await check_any_model_available(
         primary_provider=mock_primary,
@@ -252,10 +252,12 @@ async def test_check_any_model_available_logic(monkeypatch):
     fb_503.generate_json.assert_called_once()
     p_ok.generate_json.assert_called_once()
 
-    # 3. Fallback enabled, but both fail -> Returns False
+    # 3. Fallback enabled, but both fail with hard (non-transient) errors -> Returns False
     p_fail = MagicMock()
-    p_fail.generate_json = AsyncMock(side_effect=AIRateLimitError("429 primary quota"))
-    assert await check_any_model_available(primary_provider=p_fail, fallback_provider=fb_503) is False
+    p_fail.generate_json = AsyncMock(side_effect=AIProviderError("permanent failure: primary model"))
+    fb_hard = MagicMock()
+    fb_hard.generate_json = AsyncMock(side_effect=AIProviderError("permanent failure: fallback model"))
+    assert await check_any_model_available(primary_provider=p_fail, fallback_provider=fb_hard) is False
 
     # 4. Fallback disabled -> Tests primary directly; fallback is never called
     monkeypatch.setattr(settings, "gemini_enable_fallback", False)

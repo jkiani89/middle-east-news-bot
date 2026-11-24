@@ -196,7 +196,7 @@ async def test_transient_failure_keeps_article_retryable(monkeypatch):
     assert article.status == "failed"
     assert article.attempt_count == 1
     assert article.last_attempt_at is not None
-    assert session.commit_count == 1
+    assert session.commit_count == 2
     assert last_batch_stopped_by_circuit_breaker() is False
 
 
@@ -251,8 +251,8 @@ async def test_analysis_is_parallel_but_database_writes_stay_serial_and_ordered(
 
     assert count == 8
     assert provider.max_in_flight == 4
-    assert session.commit_count == 8
-    assert session.snapshots == [list(range(1, n + 1)) for n in range(1, 9)]
+    assert session.commit_count == 9
+    assert session.snapshots == [[]] + [list(range(1, n + 1)) for n in range(1, 9)]
     assert all(a.status == "rejected" for a in articles)
 
 
@@ -282,7 +282,7 @@ async def test_each_article_is_committed_individually(monkeypatch):
     count = await process_collected_articles(session, limit=10, provider=provider)
 
     assert count == 3
-    assert session.commit_count == 3
+    assert session.commit_count == 4
     assert all(a.status == "rejected" for a in articles)
 
 

@@ -111,5 +111,5 @@ def test_rotator_configured_with_single_retry():
         provider.close()
 
 
-def test_request_timeout_defaults_to_30_seconds():
-    assert settings.ai_request_timeout_seconds == 30
+def test_request_timeout_defaults_to_45_seconds():
+    assert settings.ai_request_timeout_seconds == 45

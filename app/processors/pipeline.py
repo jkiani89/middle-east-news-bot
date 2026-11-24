@@ -212,6 +212,10 @@ async def _refresh_event_perspectives(
     if sorted(details.get("perspectives_orientations") or []) == covered and details.get("perspectives"):
         return False
 
+    # Persist pending event/summary changes before the network call so the session
+    # is not left "idle in transaction" while the model is generating.
+    await session.commit()
+
     try:
         result = await analyze_perspectives(
             event_title=event_title,
@@ -656,7 +660,13 @@ async def process_collected_articles(
         logger.info("No unanalyzed articles found. Skipping AI processing (Gemini calls = 0).")
         return 0
 
+    # Close the initial read transaction before any network work (full-text fetch /
+    # model calls) starts, so no database transaction stays "idle in transaction"
+    # while we wait on the network.
+    await session.commit()
+
     ai_provider = provider or get_ai_provider()
+    _created_provider = provider is None
     processed_count = 0
     consecutive_failures = 0
     immediate_published = 0
@@ -671,406 +681,413 @@ async def process_collected_articles(
         s_rows = await s_rows
     sources_map = dict(s_rows)
 
-    analysis = _ConcurrentAnalysis(articles_list, ai_provider, sources_map)
-    for _ in range(len(articles_list)):
-        attempt = await analysis.next_attempt(consecutive_failures)
-        if attempt is None:
-            break
+    try:
+        analysis = _ConcurrentAnalysis(articles_list, ai_provider, sources_map)
+        for _ in range(len(articles_list)):
+            attempt = await analysis.next_attempt(consecutive_failures)
+            if attempt is None:
+                break
 
-        article = attempt.article
-        source_name = attempt.source_name
-        # Attempt bookkeeping stays in the serial half: a request the breaker cancels
-        # must not consume one of the article's remaining retries.
-        article.attempt_count = (article.attempt_count or 0) + 1
-        article.last_attempt_at = datetime.now(UTC)
-        immediate_analysis: ImmediateAnalysis | None = None
-        immediate_admin_only = False
+            article = attempt.article
+            source_name = attempt.source_name
+            # Attempt bookkeeping stays in the serial half: a request the breaker cancels
+            # must not consume one of the article's remaining retries.
+            article.attempt_count = (article.attempt_count or 0) + 1
+            article.last_attempt_at = datetime.now(UTC)
+            immediate_analysis: ImmediateAnalysis | None = None
+            immediate_admin_only = False
 
-        if attempt.error is not None:
-            exc = attempt.error
-            if attempt.transient:
-                article.status = "failed"
-                consecutive_failures += 1
-                logger.warning(
-                    "Transient AI failure for article ID %d (%s), attempt %d/%d; "
-                    "it stays queued for a later run: %s",
-                    article.id,
-                    article.title,
-                    article.attempt_count,
-                    settings.ai_max_attempts,
-                    exc,
-                )
-                await session.commit()
-                if consecutive_failures >= settings.ai_max_consecutive_failures:
-                    _circuit_breaker_tripped = True
-                    logger.error(
-                        "Circuit breaker tripped after %d consecutive transient AI failures; "
-                        "stopping this batch and leaving the rest of the queue untouched.",
-                        consecutive_failures,
+            if attempt.error is not None:
+                exc = attempt.error
+                if attempt.transient:
+                    article.status = "failed"
+                    consecutive_failures += 1
+                    logger.warning(
+                        "Transient AI failure for article ID %d (%s), attempt %d/%d; "
+                        "it stays queued for a later run: %s",
+                        article.id,
+                        article.title,
+                        article.attempt_count,
+                        settings.ai_max_attempts,
+                        exc,
                     )
-                    break
+                    await session.commit()
+                    if consecutive_failures >= settings.ai_max_consecutive_failures:
+                        _circuit_breaker_tripped = True
+                        logger.error(
+                            "Circuit breaker tripped after %d consecutive transient AI failures; "
+                            "stopping this batch and leaving the rest of the queue untouched.",
+                            consecutive_failures,
+                        )
+                        break
+                    continue
+
+                logger.error("AI analysis failed for article ID %d (%s): %s", article.id, article.title, exc)
+                article.status = "failed"
+                processed_count += 1
+                await session.commit()
                 continue
 
-            logger.error("AI analysis failed for article ID %d (%s): %s", article.id, article.title, exc)
-            article.status = "failed"
-            processed_count += 1
-            await session.commit()
-            continue
+            result = attempt.result
+            if result is None:
+                # Defensive: a worker returns either a result or an error. A silent gap must
+                # never leave the article looking analyzed.
+                logger.error("Analysis of article ID %d produced no result; marking it failed.", article.id)
+                article.status = "failed"
+                processed_count += 1
+                await session.commit()
+                continue
 
-        result = attempt.result
-        if result is None:
-            # Defensive: a worker returns either a result or an error. A silent gap must
-            # never leave the article looking analyzed.
-            logger.error("Analysis of article ID %d produced no result; marking it failed.", article.id)
-            article.status = "failed"
-            processed_count += 1
-            await session.commit()
-            continue
+            # Phase Y-11 prefilter, computed by the worker over exactly the text the model saw.
+            prefilter = attempt.prefilter or {}
+            consecutive_failures = 0
+            payload_dict = result.model_dump(mode="json")
+            payload_dict["model_name"] = ai_provider.model_name
 
-        # Phase Y-11 prefilter, computed by the worker over exactly the text the model saw.
-        prefilter = attempt.prefilter or {}
-        consecutive_failures = 0
-        payload_dict = result.model_dump(mode="json")
-        payload_dict["model_name"] = ai_provider.model_name
+            # Phase Y-13: Liveblog / Rolling Digest detection
+            is_digest = is_live_digest(article.canonical_url or article.original_url, article.title)
+            article_kind = "live_digest" if is_digest else "standard"
+            payload_dict["article_kind"] = article_kind
+            payload_dict["is_live_digest"] = is_digest
+            if is_digest:
+                result.importance = min(result.importance, getattr(settings, "liveblog_max_importance", 3))
+                payload_dict["importance"] = result.importance
 
-        # Phase Y-13: Liveblog / Rolling Digest detection
-        is_digest = is_live_digest(article.canonical_url or article.original_url, article.title)
-        article_kind = "live_digest" if is_digest else "standard"
-        payload_dict["article_kind"] = article_kind
-        payload_dict["is_live_digest"] = is_digest
-        if is_digest:
-            result.importance = min(result.importance, getattr(settings, "liveblog_max_importance", 3))
-            payload_dict["importance"] = result.importance
+            # Phase Y-13: Closed-set canonicalization of approved names
+            result.headline_fa = canonicalize_approved_names(result.headline_fa)
+            result.summary_fa = canonicalize_approved_names(result.summary_fa)
+            if result.event_title:
+                result.event_title = canonicalize_approved_names(result.event_title)
+            if result.actors:
+                result.actors = [canonicalize_approved_names(a) for a in result.actors]
+            if result.countries:
+                result.countries = [canonicalize_approved_names(c) for c in result.countries]
+            payload_dict["headline_fa"] = result.headline_fa
+            payload_dict["summary_fa"] = result.summary_fa
+            payload_dict["event_title"] = result.event_title
+            payload_dict["actors"] = result.actors
+            payload_dict["countries"] = result.countries
 
-        # Phase Y-13: Closed-set canonicalization of approved names
-        result.headline_fa = canonicalize_approved_names(result.headline_fa)
-        result.summary_fa = canonicalize_approved_names(result.summary_fa)
-        if result.event_title:
-            result.event_title = canonicalize_approved_names(result.event_title)
-        if result.actors:
-            result.actors = [canonicalize_approved_names(a) for a in result.actors]
-        if result.countries:
-            result.countries = [canonicalize_approved_names(c) for c in result.countries]
-        payload_dict["headline_fa"] = result.headline_fa
-        payload_dict["summary_fa"] = result.summary_fa
-        payload_dict["event_title"] = result.event_title
-        payload_dict["actors"] = result.actors
-        payload_dict["countries"] = result.countries
+            # Phase Y-1: every number in the Persian output must be grounded in the exact
+            # text the model saw (title + body truncated by the prompt builder). A checker
+            # failure is contained (Y-1b) so one odd article cannot abort the batch.
+            number_check = safe_check_numbers(
+                headline=result.headline_fa,
+                summary=result.summary_fa,
+                source_title=article.title or "",
+                source_body=article.original_text or "",
+                mode=settings.number_check_mode,
+            )
+            payload_dict["number_check"] = number_check
+            # Phase Y-8: log-only watchlist for Arabic-flavoured Persian words. It never
+            # changes the status or blocks a publication.
+            payload_dict["persian_lint"] = lint_persian_output(
+                result.headline_fa, result.summary_fa
+            )
+            payload_dict["prefilter"] = prefilter
+            content_quality = classify_content_quality(
+                article.title, article.original_text, article.text_source
+            )
+            payload_dict["content_quality"] = content_quality
+            if result.prompt_meta:
+                payload_dict["normalization"] = result.prompt_meta.get("normalization")
+                payload_dict["glossary"] = result.prompt_meta.get("glossary")
 
-        # Phase Y-1: every number in the Persian output must be grounded in the exact
-        # text the model saw (title + body truncated by the prompt builder). A checker
-        # failure is contained (Y-1b) so one odd article cannot abort the batch.
-        number_check = safe_check_numbers(
-            headline=result.headline_fa,
-            summary=result.summary_fa,
-            source_title=article.title or "",
-            source_body=article.original_text or "",
-            mode=settings.number_check_mode,
-        )
-        payload_dict["number_check"] = number_check
-        # Phase Y-8: log-only watchlist for Arabic-flavoured Persian words. It never
-        # changes the status or blocks a publication.
-        payload_dict["persian_lint"] = lint_persian_output(
-            result.headline_fa, result.summary_fa
-        )
-        payload_dict["prefilter"] = prefilter
-        content_quality = classify_content_quality(
-            article.title, article.original_text, article.text_source
-        )
-        payload_dict["content_quality"] = content_quality
-        if result.prompt_meta:
-            payload_dict["normalization"] = result.prompt_meta.get("normalization")
-            payload_dict["glossary"] = result.prompt_meta.get("glossary")
-
-        # The channel now covers several briefings, not only the Middle East: a story
-        # is accepted when it is the primary subject of a configured topic. Without a
-        # topic it falls back to the audited regional rule below, unchanged.
-        topic_title = result.event_title or article.title
-        topic_summary = f"{result.headline_fa} {result.summary_fa}"
-        # RC-17 newsworthiness gate: a regional league result, a resort promotion or a
-        # routine road accident names a regional country and clears the geography gate,
-        # but there is nothing to brief. The gate runs before topic matching and before
-        # the regional rescue, and any political/security term vetoes it inside the gate.
-        editorial_exclusion = non_political_story_reason(
-            topic_title,
-            topic_summary,
-            result.countries,
-            result.actors,
-            result.location,
-        )
-        payload_dict["editorial_exclusion"] = editorial_exclusion
-        # Evaluate matched topics right after the newsworthiness gate: a specific topic
-        # match (anchor country + keyword/actor/place + importance floor) means the
-        # story is about that briefing, even if the regional "primary actor" gate
-        # would otherwise treat the Middle East as a passing mention.
-        matched_topics = (
-            []
-            if editorial_exclusion
-            else match_topics(
-                result.countries,
-                result.actors,
-                result.location,
+            # The channel now covers several briefings, not only the Middle East: a story
+            # is accepted when it is the primary subject of a configured topic. Without a
+            # topic it falls back to the audited regional rule below, unchanged.
+            topic_title = result.event_title or article.title
+            topic_summary = f"{result.headline_fa} {result.summary_fa}"
+            # RC-17 newsworthiness gate: a regional league result, a resort promotion or a
+            # routine road accident names a regional country and clears the geography gate,
+            # but there is nothing to brief. The gate runs before topic matching and before
+            # the regional rescue, and any political/security term vetoes it inside the gate.
+            editorial_exclusion = non_political_story_reason(
                 topic_title,
-                result.importance,
                 topic_summary,
-            )
-        )
-        # Phase B: a story whose whole country list is regional cannot be a "passing
-        # mention" of the region. It used to be rejected when no configured briefing
-        # topic covered it (the Qatari emir's Berlin visit, WFP aid cuts for Yemen), even
-        # though the region was its entire subject. The model's relevance flag and an
-        # importance floor guard the rescue, so an incidental single country in a global
-        # round-up and a low-value local item stay out.
-        if (
-            not editorial_exclusion
-            and not matched_topics
-            and result.is_relevant
-            and result.importance >= 2
-            and has_middle_east_nexus(result.countries, result.location)
-            and is_regional_only_story(result.countries)
-        ):
-            matched_topics = [REGIONAL_TOPIC]
-            logger.info(
-                "Article ID %d has no specific briefing topic; publishing it under "
-                "the regional topic (importance=%d, countries=%s).",
-                article.id,
-                result.importance,
-                result.countries,
-            )
-        topic = matched_topics[0] if matched_topics else None
-        payload_dict["topic_key"] = topic.key if topic else None
-        payload_dict["topic_keys"] = [t.key for t in matched_topics]
-        article.ai_payload = payload_dict
-
-        if result.is_injection_attempt:
-            logger.warning(
-                "Security Alert: Article ID %d contains potential prompt injection. "
-                "Setting status to 'flagged_for_review' (preserving intelligence for human review).",
-                article.id,
-            )
-            article.status = "flagged_for_review"
-            flag_alerts.append(
-                {
-                    "article_id": article.id,
-                    "reason": "injection_detected",
-                    "headline_fa": result.headline_fa,
-                    "source_name": source_name,
-                    "source_url": article.original_url,
-                    "numbers": [],
-                }
-            )
-            # Intelligence is preserved in DB, but blocked from automatic publishing
-            event = Event(
-                title=f"[FLAGGED] {result.event_title}",
-                event_type=result.categories[0] if result.categories else "SEC",
-                countries=result.countries,
-                actors=result.actors,
-                location=result.location,
-                importance=result.importance,
-                status="flagged",
-            )
-            session.add(event)
-            await session.flush()
-            session.add(ArticleEvent(article_id=article.id, event_id=event.id, match_type="initial", confidence=0.50))
-            session.add(
-                Summary(
-                    event_id=event.id,
-                    headline_fa=result.headline_fa,
-                    summary_fa=result.summary_fa,
-                    details_fa={"source": source_name, "url": article.original_url, "flag": "injection_detected"},
-                    verification_status="disputed",
-                    model_name=ai_provider.model_name,
-                    prompt_version=PROMPT_VERSION,
-                )
-            )
-        elif settings.number_check_mode == "flag" and number_check["blocking"]:
-            logger.warning(
-                "Number grounding check failed for article ID %d (%d ungrounded number(s): %s); "
-                "status set to 'flagged_for_review' and automatic publishing is blocked.",
-                article.id,
-                len(number_check["unmatched"]),
-                ", ".join(item["value"] for item in number_check["unmatched"]),
-            )
-            article.status = "flagged_for_review"
-            flag_alerts.append(
-                {
-                    "article_id": article.id,
-                    "reason": "number_mismatch",
-                    "headline_fa": result.headline_fa,
-                    "source_name": source_name,
-                    "source_url": article.original_url,
-                    "numbers": [item["value"] for item in number_check["unmatched"]],
-                }
-            )
-            # Intelligence is preserved like the injection path, but the event is parked
-            # with status='flagged' so EventMatcher never merges a later article into it.
-            event = Event(
-                title=f"[FLAGGED: NUM] {result.event_title}",
-                event_type=result.categories[0] if result.categories else "GEN",
-                countries=result.countries,
-                actors=result.actors,
-                location=result.location,
-                importance=result.importance,
-                status="flagged",
-            )
-            session.add(event)
-            await session.flush()
-            session.add(ArticleEvent(article_id=article.id, event_id=event.id, match_type="initial", confidence=0.50))
-            session.add(
-                Summary(
-                    event_id=event.id,
-                    headline_fa=result.headline_fa,
-                    summary_fa=result.summary_fa,
-                    details_fa={
-                        "source": source_name,
-                        "url": article.original_url,
-                        "flag": "number_mismatch",
-                        "number_check": number_check,
-                    },
-                    verification_status="unconfirmed",
-                    model_name=ai_provider.model_name,
-                    prompt_version=PROMPT_VERSION,
-                )
-            )
-        elif editorial_exclusion:
-            logger.info(
-                "Article ID %d rejected by the newsworthiness gate (%s; importance=%d, "
-                "countries=%s): sport, tourism and routine incidents are not briefed.",
-                article.id,
-                editorial_exclusion,
-                result.importance,
-                result.countries,
-            )
-            article.status = "rejected"
-        elif not matched_topics and (not result.is_relevant or not has_middle_east_nexus(result.countries, result.location)):
-            if result.is_relevant:
-                logger.info(
-                    "Article ID %d rejected by the editorial gate: no Middle East country or waterway in countries=%s location=%r.",
-                    article.id,
-                    result.countries,
-                    result.location,
-                )
-            else:
-                logger.info("Article ID %d deemed irrelevant to Middle East intelligence. Marked 'rejected'.", article.id)
-            article.status = "rejected"
-        elif not matched_topics and not is_primary_actor(result.countries, result.actors, result.location):
-            logger.info(
-                "Article ID %d rejected by the editorial gate: Middle East is only a passing mention "
-                "(countries=%s actors=%s location=%r).",
-                article.id,
                 result.countries,
                 result.actors,
                 result.location,
             )
-            article.status = "rejected"
-        else:
-            # Phase 5: Event Matching & Clustering
-            matcher = EventMatcher()
-            match_res = await matcher.match_or_create_event(
-                session=session,
-                article=article,
-                analysis_data=result.model_dump(mode="json"),
-                source_name=source_name,
-            )
-
-            session.add(
-                ArticleEvent(
-                    article_id=article.id,
-                    event_id=match_res.event_id,
-                    match_type=match_res.match_type,
-                    confidence=match_res.confidence,
+            payload_dict["editorial_exclusion"] = editorial_exclusion
+            # Evaluate matched topics right after the newsworthiness gate: a specific topic
+            # match (anchor country + keyword/actor/place + importance floor) means the
+            # story is about that briefing, even if the regional "primary actor" gate
+            # would otherwise treat the Middle East as a passing mention.
+            matched_topics = (
+                []
+                if editorial_exclusion
+                else match_topics(
+                    result.countries,
+                    result.actors,
+                    result.location,
+                    topic_title,
+                    result.importance,
+                    topic_summary,
                 )
             )
-            await session.flush()
-
-            source_count = await _count_event_sources(session, match_res.event_id)
-            verification_status = resolve_verification_status(result.verification_status, source_count)
-            payload_dict["verification_status_resolved"] = verification_status
-
-            if source_count >= 2:
-                await _refresh_event_perspectives(
-                    session=session,
-                    event_id=match_res.event_id,
-                    event_title=result.event_title or article.title,
-                    provider=ai_provider,
-                    topic_key=topic.key if topic else None,
-                    topic_fa=topic.name_fa if topic else None,
+            # Phase B: a story whose whole country list is regional cannot be a "passing
+            # mention" of the region. It used to be rejected when no configured briefing
+            # topic covered it (the Qatari emir's Berlin visit, WFP aid cuts for Yemen), even
+            # though the region was its entire subject. The model's relevance flag and an
+            # importance floor guard the rescue, so an incidental single country in a global
+            # round-up and a low-value local item stay out.
+            if (
+                not editorial_exclusion
+                and not matched_topics
+                and result.is_relevant
+                and result.importance >= 2
+                and has_middle_east_nexus(result.countries, result.location)
+                and is_regional_only_story(result.countries)
+            ):
+                matched_topics = [REGIONAL_TOPIC]
+                logger.info(
+                    "Article ID %d has no specific briefing topic; publishing it under "
+                    "the regional topic (importance=%d, countries=%s).",
+                    article.id,
+                    result.importance,
+                    result.countries,
                 )
+            topic = matched_topics[0] if matched_topics else None
+            payload_dict["topic_key"] = topic.key if topic else None
+            payload_dict["topic_keys"] = [t.key for t in matched_topics]
+            article.ai_payload = payload_dict
 
-            if match_res.is_new_event:
+            if result.is_injection_attempt:
+                logger.warning(
+                    "Security Alert: Article ID %d contains potential prompt injection. "
+                    "Setting status to 'flagged_for_review' (preserving intelligence for human review).",
+                    article.id,
+                )
+                article.status = "flagged_for_review"
+                flag_alerts.append(
+                    {
+                        "article_id": article.id,
+                        "reason": "injection_detected",
+                        "headline_fa": result.headline_fa,
+                        "source_name": source_name,
+                        "source_url": article.original_url,
+                        "numbers": [],
+                    }
+                )
+                # Intelligence is preserved in DB, but blocked from automatic publishing
+                event = Event(
+                    title=f"[FLAGGED] {result.event_title}",
+                    event_type=result.categories[0] if result.categories else "SEC",
+                    countries=result.countries,
+                    actors=result.actors,
+                    location=result.location,
+                    importance=result.importance,
+                    status="flagged",
+                )
+                session.add(event)
+                await session.flush()
+                session.add(ArticleEvent(article_id=article.id, event_id=event.id, match_type="initial", confidence=0.50))
                 session.add(
                     Summary(
-                        event_id=match_res.event_id,
+                        event_id=event.id,
+                        headline_fa=result.headline_fa,
+                        summary_fa=result.summary_fa,
+                        details_fa={"source": source_name, "url": article.original_url, "flag": "injection_detected"},
+                        verification_status="disputed",
+                        model_name=ai_provider.model_name,
+                        prompt_version=PROMPT_VERSION,
+                    )
+                )
+            elif settings.number_check_mode == "flag" and number_check["blocking"]:
+                logger.warning(
+                    "Number grounding check failed for article ID %d (%d ungrounded number(s): %s); "
+                    "status set to 'flagged_for_review' and automatic publishing is blocked.",
+                    article.id,
+                    len(number_check["unmatched"]),
+                    ", ".join(item["value"] for item in number_check["unmatched"]),
+                )
+                article.status = "flagged_for_review"
+                flag_alerts.append(
+                    {
+                        "article_id": article.id,
+                        "reason": "number_mismatch",
+                        "headline_fa": result.headline_fa,
+                        "source_name": source_name,
+                        "source_url": article.original_url,
+                        "numbers": [item["value"] for item in number_check["unmatched"]],
+                    }
+                )
+                # Intelligence is preserved like the injection path, but the event is parked
+                # with status='flagged' so EventMatcher never merges a later article into it.
+                event = Event(
+                    title=f"[FLAGGED: NUM] {result.event_title}",
+                    event_type=result.categories[0] if result.categories else "GEN",
+                    countries=result.countries,
+                    actors=result.actors,
+                    location=result.location,
+                    importance=result.importance,
+                    status="flagged",
+                )
+                session.add(event)
+                await session.flush()
+                session.add(ArticleEvent(article_id=article.id, event_id=event.id, match_type="initial", confidence=0.50))
+                session.add(
+                    Summary(
+                        event_id=event.id,
                         headline_fa=result.headline_fa,
                         summary_fa=result.summary_fa,
                         details_fa={
                             "source": source_name,
                             "url": article.original_url,
-                            "topic": topic.key if topic else None,
-                            "topics": [t.key for t in matched_topics],
-                            "content_quality": content_quality,
-                            "article_kind": payload_dict.get("article_kind", "standard"),
-                            "is_live_digest": is_digest,
-                            "sources": [{
+                            "flag": "number_mismatch",
+                            "number_check": number_check,
+                        },
+                        verification_status="unconfirmed",
+                        model_name=ai_provider.model_name,
+                        prompt_version=PROMPT_VERSION,
+                    )
+                )
+            elif editorial_exclusion:
+                logger.info(
+                    "Article ID %d rejected by the newsworthiness gate (%s; importance=%d, "
+                    "countries=%s): sport, tourism and routine incidents are not briefed.",
+                    article.id,
+                    editorial_exclusion,
+                    result.importance,
+                    result.countries,
+                )
+                article.status = "rejected"
+            elif not matched_topics and (not result.is_relevant or not has_middle_east_nexus(result.countries, result.location)):
+                if result.is_relevant:
+                    logger.info(
+                        "Article ID %d rejected by the editorial gate: no Middle East country or waterway in countries=%s location=%r.",
+                        article.id,
+                        result.countries,
+                        result.location,
+                    )
+                else:
+                    logger.info("Article ID %d deemed irrelevant to Middle East intelligence. Marked 'rejected'.", article.id)
+                article.status = "rejected"
+            elif not matched_topics and not is_primary_actor(result.countries, result.actors, result.location):
+                logger.info(
+                    "Article ID %d rejected by the editorial gate: Middle East is only a passing mention "
+                    "(countries=%s actors=%s location=%r).",
+                    article.id,
+                    result.countries,
+                    result.actors,
+                    result.location,
+                )
+                article.status = "rejected"
+            else:
+                # Phase 5: Event Matching & Clustering
+                matcher = EventMatcher()
+                match_res = await matcher.match_or_create_event(
+                    session=session,
+                    article=article,
+                    analysis_data=result.model_dump(mode="json"),
+                    source_name=source_name,
+                )
+
+                session.add(
+                    ArticleEvent(
+                        article_id=article.id,
+                        event_id=match_res.event_id,
+                        match_type=match_res.match_type,
+                        confidence=match_res.confidence,
+                    )
+                )
+                await session.flush()
+
+                source_count = await _count_event_sources(session, match_res.event_id)
+                verification_status = resolve_verification_status(result.verification_status, source_count)
+                payload_dict["verification_status_resolved"] = verification_status
+
+                if source_count >= 2:
+                    await _refresh_event_perspectives(
+                        session=session,
+                        event_id=match_res.event_id,
+                        event_title=result.event_title or article.title,
+                        provider=ai_provider,
+                        topic_key=topic.key if topic else None,
+                        topic_fa=topic.name_fa if topic else None,
+                    )
+
+                if match_res.is_new_event:
+                    session.add(
+                        Summary(
+                            event_id=match_res.event_id,
+                            headline_fa=result.headline_fa,
+                            summary_fa=result.summary_fa,
+                            details_fa={
                                 "source": source_name,
                                 "url": article.original_url,
-                                "article_id": article.id,
-                                "added_at": (article.collected_at or datetime.now(UTC)).isoformat(),
-                            }],
-                        },
-                                            verification_status=verification_status,
-                    model_name=ai_provider.model_name,
-                    prompt_version=PROMPT_VERSION,
+                                "topic": topic.key if topic else None,
+                                "topics": [t.key for t in matched_topics],
+                                "content_quality": content_quality,
+                                "article_kind": payload_dict.get("article_kind", "standard"),
+                                "is_live_digest": is_digest,
+                                "sources": [{
+                                    "source": source_name,
+                                    "url": article.original_url,
+                                    "article_id": article.id,
+                                    "added_at": (article.collected_at or datetime.now(UTC)).isoformat(),
+                                }],
+                            },
+                                                verification_status=verification_status,
+                        model_name=ai_provider.model_name,
+                        prompt_version=PROMPT_VERSION,
+                    )
                 )
-            )
-            else:
-                # A second source corroborates an existing event: refresh its label.
-                await session.execute(
-                    update(Summary)
-                    .where(Summary.event_id == match_res.event_id)
-                    .values(verification_status=verification_status)
-                )
+                else:
+                    # A second source corroborates an existing event: refresh its label.
+                    await session.execute(
+                        update(Summary)
+                        .where(Summary.event_id == match_res.event_id)
+                        .values(verification_status=verification_status)
+                    )
 
-            article.status = "summarized"
+                article.status = "summarized"
 
-            should_publish = match_res.is_new_event or not settings.immediate_publish_only_new_events
-            if should_publish and result.importance >= settings.immediate_publish_min_importance:
-                immediate_analysis = ImmediateAnalysis.from_analysis_result(
-                    result, source_name, article.original_url
-                )
-                immediate_analysis.verification_status = verification_status
-                if content_quality:
-                    immediate_analysis.content_quality = content_quality.get("status", "full_text")
-                    immediate_analysis.content_quality_fa = content_quality.get("label_fa", "متن کامل")
-                    immediate_analysis.is_insufficient = content_quality.get("is_insufficient", False)
-                # Only rank 4-5 stories are published to the public channel, regardless of
-                # single vs. multi source. Nothing is routed to the admin/personal chat.
-                immediate_admin_only = False
+                should_publish = match_res.is_new_event or not settings.immediate_publish_only_new_events
+                if should_publish and result.importance >= settings.immediate_publish_min_importance:
+                    immediate_analysis = ImmediateAnalysis.from_analysis_result(
+                        result, source_name, article.original_url
+                    )
+                    immediate_analysis.verification_status = verification_status
+                    if content_quality:
+                        immediate_analysis.content_quality = content_quality.get("status", "full_text")
+                        immediate_analysis.content_quality_fa = content_quality.get("label_fa", "متن کامل")
+                        immediate_analysis.is_insufficient = content_quality.get("is_insufficient", False)
+                    # Only rank 4-5 stories are published to the public channel, regardless of
+                    # single vs. multi source. Nothing is routed to the admin/personal chat.
+                    immediate_admin_only = False
 
-        processed_count += 1
-        await session.commit()
+            processed_count += 1
+            await session.commit()
 
-        if immediate_analysis is not None:
-            if immediate_published < settings.immediate_publish_max_per_run:
-                await _publish_immediate_safely(immediate_analysis, admin_only=immediate_admin_only)
-                immediate_published += 1
-            else:
-                logger.info(
-                    "Immediate publish cap (%d) reached; article ID %d stays for the daily report only.",
-                    settings.immediate_publish_max_per_run,
-                    article.id,
-                )
+            if immediate_analysis is not None:
+                if immediate_published < settings.immediate_publish_max_per_run:
+                    await _publish_immediate_safely(immediate_analysis, admin_only=immediate_admin_only)
+                    immediate_published += 1
+                else:
+                    logger.info(
+                        "Immediate publish cap (%d) reached; article ID %d stays for the daily report only.",
+                        settings.immediate_publish_max_per_run,
+                        article.id,
+                    )
 
-    await analysis.aclose()
+        await analysis.aclose()
 
-    if flag_alerts:
-        try:
-            await publish_flag_alert(flag_alerts, total=len(flag_alerts))
-        except Exception:  # noqa: BLE001 - the alert is a convenience, never a gate
-            logger.exception("Failed to send the flag alert; the batch continues.")
+        if flag_alerts:
+            try:
+                await publish_flag_alert(flag_alerts, total=len(flag_alerts))
+            except Exception:  # noqa: BLE001 - the alert is a convenience, never a gate
+                logger.exception("Failed to send the flag alert; the batch continues.")
 
-    logger.info("Successfully processed %d articles via %s.", processed_count, ai_provider.model_name)
-    return processed_count
+        logger.info("Successfully processed %d articles via %s.", processed_count, ai_provider.model_name)
+        return processed_count
+    finally:
+        if _created_provider:
+            try:
+                ai_provider.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to close AI provider", exc_info=True)
 
 
 async def collect_new_articles(session: AsyncSession) -> int:

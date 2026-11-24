@@ -45,6 +45,7 @@ from app.reports.daily_report import (  # noqa: E402
 )
 from app.scheduler.jobs import (  # noqa: E402
     cleanup_gemini_request_log,
+    cleanup_heavy_columns,
     daily_report,
     reconcile_interrupted_jobs,
     run_scheduled_briefings,
@@ -246,6 +247,7 @@ async def run_batch_pipeline(
     # 4. Clean up old logs
     logger.info("Step 4/4: Running routine maintenance...")
     await cleanup_gemini_request_log()
+    await cleanup_heavy_columns()
 
     logger.info("=== Batch pipeline run finished successfully ===")
     return 0

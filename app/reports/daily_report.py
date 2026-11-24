@@ -1164,6 +1164,14 @@ async def _backfill_perspectives(
         ]
         changed = True
 
+    if provider is not None:
+        close = getattr(provider, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to close AI provider", exc_info=True)
+
     if changed:
         await session.commit()
     return changed

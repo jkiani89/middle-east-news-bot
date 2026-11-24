@@ -22,6 +22,7 @@ from app.ai.provider import (
     AIServiceUnavailableError,
     BaseAIProvider,
     GeminiProvider,
+    is_retryable_ai_error,
 )
 from app.config import settings
 from app.database.connection import SessionLocal
@@ -89,15 +90,25 @@ async def _check_any_model_available_impl(
     If the fallback test succeeds, API connectivity and authentication are proven.
     If the fallback test fails, it falls back to checking the primary model.
     Skipping the hourly run only happens if BOTH models are unavailable.
+
+    Transient failures (rate limit / 503 / timeout / network blip) are NOT treated as
+    proof of unavailability: a flaky first probe or a single exhausted key must not
+    stop the whole hourly run, because other keys in the rotator may still be healthy.
     """
     has_fallback = bool(settings.gemini_enable_fallback and settings.gemini_fallback_model)
 
+    had_transient = False
+
+    def _is_transient(exc: BaseException) -> bool:
+        if isinstance(exc, (AIRateLimitError, AIServiceUnavailableError, TimeoutError)):
+            return True
+        return is_retryable_ai_error(exc)
+
     if prefer_fallback and has_fallback:
-        # 1. Test fallback model first to save primary 20 RPD quota
         if fallback_provider is None:
             fallback_provider = make_provider(
                 primary_model=settings.gemini_fallback_model,
-                enable_fallback=False,  # Test fallback directly
+                enable_fallback=False,
             )
         try:
             res = await fallback_provider.generate_json('Respond with {"ok": true}', purpose="preflight")
@@ -108,68 +119,79 @@ async def _check_any_model_available_impl(
                     settings.gemini_primary_model,
                 )
                 return True
-        except (AIRateLimitError, AIServiceUnavailableError) as exc:
-            logger.warning(
-                "Fallback model %s unavailable during pre-flight (%s). Checking primary model...",
-                settings.gemini_fallback_model,
-                exc,
-            )
-        except Exception as exc:
-            logger.warning("Fallback model pre-flight check error: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - classify and decide below
+            if _is_transient(exc):
+                had_transient = True
+                logger.warning(
+                    "Fallback model %s hit a transient pre-flight error (%s); "
+                    "not treating this as unavailable, checking primary model...",
+                    settings.gemini_fallback_model,
+                    exc,
+                )
+            else:
+                logger.warning("Fallback model pre-flight check error: %s", exc)
 
-        # 2. Fallback failed, test primary model as second chance
         if primary_provider is None:
             primary_provider = make_provider(
                 primary_model=settings.gemini_primary_model,
-                enable_fallback=False,  # Test only primary
+                enable_fallback=False,
             )
         try:
             res = await primary_provider.generate_json('Respond with {"ok": true}', purpose="preflight")
             if res and res.get("ok") is True:
                 logger.info("Primary model %s is available during pre-flight.", settings.gemini_primary_model)
                 return True
-        except (AIRateLimitError, AIServiceUnavailableError):
-            logger.warning("Primary model %s also unavailable during pre-flight.", settings.gemini_primary_model)
-        except Exception as exc:
-            logger.warning("Primary model pre-flight check error: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - classify and decide below
+            if _is_transient(exc):
+                had_transient = True
+                logger.warning(
+                    "Primary model %s hit a transient pre-flight error (%s).",
+                    settings.gemini_primary_model,
+                    exc,
+                )
+            else:
+                logger.warning("Primary model pre-flight check error: %s", exc)
 
-        return False
+        return had_transient
 
     else:
-        # Fallback disabled or prefer_fallback=False: Test primary first
         if primary_provider is None:
             primary_provider = make_provider(
                 primary_model=settings.gemini_primary_model,
-                enable_fallback=False,  # Test only primary
+                enable_fallback=False,
             )
         try:
             res = await primary_provider.generate_json('Respond with {"ok": true}', purpose="preflight")
             if res and res.get("ok") is True:
                 return True
-        except (AIRateLimitError, AIServiceUnavailableError):
-            logger.info("Primary model %s unavailable during pre-flight. Checking fallback...", settings.gemini_primary_model)
-        except Exception as exc:
-            logger.warning("Primary model pre-flight check error: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - classify and decide below
+            if _is_transient(exc):
+                had_transient = True
+                logger.info("Primary model %s hit a transient pre-flight error (%s).", settings.gemini_primary_model, exc)
+            else:
+                logger.warning("Primary model pre-flight check error: %s", exc)
 
         if not has_fallback:
-            return False
+            return had_transient
 
         if fallback_provider is None:
             fallback_provider = make_provider(
                 primary_model=settings.gemini_fallback_model,
-                enable_fallback=False,  # Test fallback directly
+                enable_fallback=False,
             )
         try:
             res = await fallback_provider.generate_json('Respond with {"ok": true}', purpose="preflight")
             if res and res.get("ok") is True:
                 logger.info("Fallback model %s is available and healthy during pre-flight.", settings.gemini_fallback_model)
                 return True
-        except (AIRateLimitError, AIServiceUnavailableError):
-            logger.warning("Fallback model %s also unavailable during pre-flight.", settings.gemini_fallback_model)
-        except Exception as exc:
-            logger.warning("Fallback model pre-flight check error: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - classify and decide below
+            if _is_transient(exc):
+                had_transient = True
+                logger.warning("Fallback model %s hit a transient pre-flight error (%s).", settings.gemini_fallback_model, exc)
+            else:
+                logger.warning("Fallback model pre-flight check error: %s", exc)
 
-        return False
+        return had_transient
 
 
 async def check_any_model_available(
@@ -691,21 +713,36 @@ async def cleanup_heavy_columns() -> None:
     from app.database.models import Article
 
     cutoff = datetime.now(UTC) - timedelta(days=7)
+    batch_size = 1000
+    total_cleaned = 0
     try:
         async with SessionLocal() as session:
-            stmt = (
-                update(Article)
-                .where(
-                    Article.collected_at < cutoff,
-                    (Article.original_text.is_not(None)) | (Article.ai_payload.is_not(None)),
+            while True:
+                id_stmt = (
+                    select(Article.id)
+                    .where(
+                        Article.collected_at < cutoff,
+                        (Article.original_text.is_not(None)) | (Article.ai_payload.is_not(None)),
+                    )
+                    .limit(batch_size)
                 )
-                .values(original_text=None, ai_payload=None)
-            )
-            result = await session.execute(stmt)
-            await session.commit()
+                ids = (await session.scalars(id_stmt)).all()
+                if not ids:
+                    break
+                stmt = (
+                    update(Article)
+                    .where(Article.id.in_(ids))
+                    .values(original_text=None, ai_payload=None)
+                )
+                result = await session.execute(stmt)
+                await session.commit()
+                cleaned = result.rowcount if isinstance(result.rowcount, int) else 0
+                total_cleaned += cleaned
+                if len(ids) < batch_size:
+                    break
             logger.info(
                 "Cleaned heavy columns for %d articles older than 7 days (cutoff=%s)",
-                result.rowcount,
+                total_cleaned,
                 cutoff.isoformat(),
             )
     except Exception:
