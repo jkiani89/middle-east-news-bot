@@ -344,3 +344,37 @@ async def test_run_batch_pipeline_flow():
         mock_daily.assert_awaited_once_with(dry_run=True)
         mock_clean.assert_awaited_once()
         mock_engine.dispose.assert_awaited_once()
+
+
+def test_main_hard_exits_instead_of_joining_lingering_workers(monkeypatch):
+    """asyncio.run()'s 300-second executor join must never delay the workflow exit.
+
+    ``asyncio.run`` calls ``Runner.close()`` -> ``shutdown_default_executor(300)``; a
+    google-genai call that outlived its ``wait_for`` keeps such a worker busy, so the
+    process used to hang after "Step 4/4". main() now drives the loop itself and leaves
+    with ``os._exit`` as soon as a non-daemon thread is still alive.
+    """
+    import scripts.run_once as run_once_module
+
+    async def _fake_pipeline(**_kwargs):
+        return 0
+
+    exited: list[int] = []
+
+    def _fake_os_exit(code: int = 0) -> None:
+        exited.append(code)
+        raise SystemExit(code)
+
+    monkeypatch.setattr(run_once_module, "run_batch_pipeline", _fake_pipeline)
+    monkeypatch.setattr(run_once_module, "_lingering_non_daemon_threads", lambda: [object()])
+    monkeypatch.setattr(run_once_module, "flush_gemini_audit", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(run_once_module.logging, "shutdown", lambda: None)
+    monkeypatch.setattr(run_once_module.os, "_exit", _fake_os_exit)
+    monkeypatch.setattr(run_once_module.sys, "argv", ["run_once.py"])
+    monkeypatch.setattr(settings, "immediate_publish_dry_run", settings.immediate_publish_dry_run)
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_once_module.main()
+
+    assert exited == [0]
+    assert excinfo.value.code == 0

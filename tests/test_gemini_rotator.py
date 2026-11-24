@@ -1,5 +1,6 @@
 """Unit tests for Phase 7.5 Gemini API Rotator, SQLite persistence, and model fallback."""
 
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -543,7 +544,7 @@ async def test_generate_json_pins_v1beta_api_version():
     provider = GeminiProvider(rotator=mock_rotator, primary_model="gemini-3.8-flash")
     assert await provider.generate_json("prompt", "system instruction") == {"status": "ok"}
     extra_config = mock_rotator.execute.call_args.kwargs["extra_config"]
-    assert extra_config["http_options"] == {"api_version": "v1beta"}
+    assert extra_config["http_options"]["api_version"] == "v1beta"
     assert GEMINI_API_VERSION == "v1beta"
 
 
@@ -563,7 +564,52 @@ def test_tertiary_model_defaults_to_gemini_3_8_flash():
         provider.close()
 
 
+@pytest.mark.asyncio
+async def test_http_options_timeout_mirrors_the_request_ceiling():
+    """HttpOptions.timeout is in MILLISECONDS and must equal the per-purpose ceiling.
+
+    Without it, ``asyncio.wait_for`` only detaches the awaiter and the SDK request keeps
+    its executor thread busy until the SDK's own retries end.
+    """
+    mock_rotator = MagicMock()
+    success = MagicMock()
+    success.text = '{"status": "ok"}'
+    mock_rotator.execute = AsyncMock(return_value=success)
+
+    provider = GeminiProvider(rotator=mock_rotator, primary_model="gemini-3.8-flash")
+
+    await provider.generate_json("prompt", "system instruction")
+    analysis = mock_rotator.execute.call_args.kwargs["extra_config"]["http_options"]
+    assert analysis["timeout"] == settings.ai_request_timeout_seconds * 1000
+
+    await provider.generate_json("prompt", "system instruction", purpose="perspectives")
+    perspectives = mock_rotator.execute.call_args.kwargs["extra_config"]["http_options"]
+    assert perspectives["timeout"] == settings.ai_perspectives_timeout_seconds * 1000
 
 
+@pytest.mark.asyncio
+async def test_slow_usage_audit_does_not_delay_the_model_response():
+    """A slow gemini_usage insert must not sit between the model answer and its caller."""
+    from app.ai.provider import flush_gemini_audit
 
+    written: list[str] = []
 
+    class _SlowAdapter:
+        def record_gemini_usage(self, **kwargs):
+            time.sleep(0.4)
+            written.append(kwargs["status"])
+
+    mock_rotator = MagicMock()
+    success = MagicMock()
+    success.text = '{"status": "ok"}'
+    mock_rotator.execute = AsyncMock(return_value=success)
+
+    provider = GeminiProvider(rotator=mock_rotator, primary_model="gemini-3.8-flash")
+    provider._db_adapter = _SlowAdapter()
+
+    started = time.monotonic()
+    assert await provider.generate_json("prompt") == {"status": "ok"}
+    assert time.monotonic() - started < 0.4
+
+    assert flush_gemini_audit(5.0) == 0
+    assert written == ["no_usage"]

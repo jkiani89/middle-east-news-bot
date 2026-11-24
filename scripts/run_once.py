@@ -16,6 +16,7 @@ import logging
 import os
 import sys
 import threading
+import traceback
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -32,6 +33,7 @@ env_file = ROOT_DIR / ".env"
 if env_file.is_file():
     load_dotenv(env_file)
 
+from app.ai.provider import flush_gemini_audit  # noqa: E402
 from app.collectors.source_manager import sync_sources  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.database.connection import SessionLocal, engine  # noqa: E402
@@ -58,6 +60,9 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("run_once")
+
+# Ceiling for the audit rows still queued on the provider's daemon writer thread.
+AUDIT_FLUSH_TIMEOUT_SECONDS = 5.0
 
 
 def local_now(tz: ZoneInfo | None = None) -> datetime:
@@ -329,8 +334,16 @@ def main() -> None:
     settings.immediate_publish_dry_run = args.dry_run_daily_report
 
     exit_code = 0
+    error: BaseException | None = None
+    # asyncio.run() would call Runner.close(), which joins the default executor for up to
+    # asyncio.constants.THREAD_JOIN_TIMEOUT (300 seconds in 3.12+). A google-genai call
+    # that outlived its ``wait_for`` keeps running on such a worker, so the process hung
+    # for minutes after "Step 4/4" while the batch was already fully persisted. The loop is
+    # driven explicitly and the process leaves through os._exit instead of that join.
+    loop = asyncio.new_event_loop()
     try:
-        exit_code = asyncio.run(
+        asyncio.set_event_loop(loop)
+        exit_code = loop.run_until_complete(
             run_batch_pipeline(
                 force_daily_report=args.force_daily_report,
                 dry_run_daily_report=args.dry_run_daily_report,
@@ -338,26 +351,39 @@ def main() -> None:
                 scheduled_briefings=scheduled_briefings,
             )
         )
+    except BaseException as exc:  # noqa: BLE001 - reported below, then exit code 1
+        error = exc
+        exit_code = 1
     finally:
+        # Audit rows are queued on a daemon thread; give them a bounded chance to land.
+        try:
+            pending = flush_gemini_audit(AUDIT_FLUSH_TIMEOUT_SECONDS)
+            if pending:
+                logger.warning("%d gemini_usage row(s) were still queued at exit.", pending)
+        except Exception:  # noqa: BLE001
+            logger.exception("Audit flush failed; continuing.")
         # Handlers keep buffered records; flush them before any hard exit.
         logging.shutdown()
 
-    # asyncio.run() closes the loop with executor.shutdown(wait=False), so a
-    # google-genai call still retrying on an executor thread survives it. Those
-    # workers are non-daemon, and interpreter exit joins them: the process then
-    # hangs after "Step 4/4" until the SDK's own retries finish. The batch is fully
-    # persisted at this point, so nothing is lost by leaving immediately.
+    if error is not None:
+        traceback.print_exception(type(error), error, error.__traceback__)
+
+    sys.stdout.flush()
+    sys.stderr.flush()
     lingering = _lingering_non_daemon_threads()
     if lingering:
-        sys.stdout.flush()
-        sys.stderr.flush()
         print(
             f"Exiting with {len(lingering)} background thread(s) still alive; "
             "forcing process exit.",
             file=sys.stderr,
             flush=True,
         )
+    if lingering or error is not None:
+        # os._exit skips the interpreter-exit join of those workers (and the executor
+        # shutdown asyncio.run would perform), so the workflow step ends immediately.
         os._exit(exit_code)
+
+    loop.close()
     sys.exit(exit_code)
 
 

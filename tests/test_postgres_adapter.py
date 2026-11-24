@@ -198,3 +198,29 @@ def test_convert_dsn_from_asyncpg_format() -> None:
         GeminiProvider._convert_dsn("postgres+asyncpg://user:pass@127.0.0.1:5432/db")
         == "postgresql://user:pass@127.0.0.1:5432/db"
     )
+
+
+def test_connect_uses_a_bounded_connect_timeout(monkeypatch) -> None:
+    """A pooler that accepts the socket and never answers must not freeze the event loop."""
+    from app.ai import postgres_adapter as adapter_module
+    from app.ai.postgres_adapter import CONNECT_TIMEOUT_SECONDS
+
+    captured: dict = {}
+
+    class _FakeConnection:
+        closed = False
+
+    def _fake_connect(dsn, **kwargs):
+        captured["dsn"] = dsn
+        captured.update(kwargs)
+        return _FakeConnection()
+
+    monkeypatch.setattr(adapter_module.psycopg, "connect", _fake_connect)
+
+    adapter = PostgresAdapter("postgresql://user:pass@localhost:5432/newsbot")
+    try:
+        assert captured["connect_timeout"] == CONNECT_TIMEOUT_SECONDS
+        assert captured["autocommit"] is True
+        assert adapter._ensure() is not None
+    finally:
+        adapter._conn = None

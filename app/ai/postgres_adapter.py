@@ -13,6 +13,12 @@ from psycopg.rows import dict_row
 
 logger = logging.getLogger(__name__)
 
+# libpq ``connect_timeout`` in seconds. The Aiven pooler can accept a TCP connection and
+# then never answer; because this adapter is synchronous and is called from the event loop
+# (rotator bookkeeping, cleanup_gemini_request_log), an unbounded connect froze the whole
+# batch - run #237 sat on "Step 4/4" with no further log line.
+CONNECT_TIMEOUT_SECONDS = 10
+
 
 class PostgresAdapter(DBAdapter):
     """Synchronous DBAdapter backed by PostgreSQL via psycopg3.
@@ -35,6 +41,7 @@ class PostgresAdapter(DBAdapter):
                 self._dsn,
                 autocommit=True,
                 row_factory=dict_row,
+                connect_timeout=CONNECT_TIMEOUT_SECONDS,
             )
 
     def _ensure(self) -> psycopg.Connection[dict[str, Any]]:

@@ -3,6 +3,8 @@
 import asyncio
 import json
 import logging
+import queue
+import threading
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -22,6 +24,61 @@ logger = logging.getLogger(__name__)
 # gemini_rotator builds genai.Client without http_options, so the version is pinned
 # per request through GenerateContentConfig.http_options for every model in the chain.
 GEMINI_API_VERSION = "v1beta"
+
+# gemini_usage rows used to be written with ``asyncio.to_thread``, i.e. on the same
+# default executor that runs the blocking google-genai calls. A call that timed out was
+# only detached, its worker thread stayed alive inside the SDK, and the audit insert of
+# the *next* successful call queued behind it: one article then took minutes although
+# the model had answered in seconds (the 171-second gaps between consecutive articles in
+# run #237). An audit row is never needed synchronously, so it goes to one daemon worker
+# thread instead of the shared pool.
+_AUDIT_QUEUE: queue.Queue[tuple[Any, dict[str, Any]] | None] = queue.Queue()
+_AUDIT_THREAD: threading.Thread | None = None
+_AUDIT_THREAD_LOCK = threading.Lock()
+
+
+def _audit_worker() -> None:
+    """Write queued gemini_usage rows one at a time; never raise into the caller."""
+    while True:
+        item = _AUDIT_QUEUE.get()
+        try:
+            if item is None:
+                return
+            func, kwargs = item
+            func(**kwargs)
+        except Exception:  # noqa: BLE001 - audit must not break the AI pipeline
+            logger.exception("Failed to record gemini_usage row; continuing.")
+        finally:
+            _AUDIT_QUEUE.task_done()
+
+
+def _ensure_audit_worker() -> None:
+    """Start the audit writer on first use; the thread is a daemon on purpose.
+
+    A non-daemon thread would be joined at interpreter exit, which is exactly the
+    end-of-run hang this module avoids: ``scripts/run_once.py`` leaves with
+    ``os._exit`` and must never wait for a pending audit insert.
+    """
+    global _AUDIT_THREAD
+    if _AUDIT_THREAD is not None:
+        return
+    with _AUDIT_THREAD_LOCK:
+        if _AUDIT_THREAD is None:
+            thread = threading.Thread(
+                target=_audit_worker,
+                name="gemini-usage-audit",
+                daemon=True,
+            )
+            thread.start()
+            _AUDIT_THREAD = thread
+
+
+def flush_gemini_audit(timeout_seconds: float = 5.0) -> int:
+    """Wait at most ``timeout_seconds`` for queued audit rows; returns rows still queued."""
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    while _AUDIT_QUEUE.unfinished_tasks and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return _AUDIT_QUEUE.unfinished_tasks
 
 
 class AIProviderError(Exception):
@@ -273,7 +330,16 @@ class GeminiProvider(BaseAIProvider):
         return self._rotator
 
     def close(self) -> None:
-        """Close database adapter connection if present."""
+        """Close database adapter connection if present.
+
+        Pending audit rows are flushed first (bounded): the adapter owns a single
+        connection, so closing it under the audit thread would lose those rows.
+        """
+        pending = flush_gemini_audit(5.0)
+        if pending:
+            logger.warning(
+                "%d gemini_usage row(s) were still queued when the provider closed.", pending
+            )
         if self._db_adapter and hasattr(self._db_adapter, "close"):
             self._db_adapter.close()
 
@@ -297,16 +363,18 @@ class GeminiProvider(BaseAIProvider):
         """Run one model call under a hard timeout.
 
         The google-genai SDK retries 5xx internally with its own backoff, which in
-        production produced single calls that blocked for 700+ seconds. ``wait_for``
-        bounds the wait; the worker thread that is still running cannot be cancelled,
-        so it finishes in the background and its result is discarded.
+        production produced single calls that blocked for 700+ seconds. Two ceilings
+        stop that: ``http_options["timeout"]`` (built in ``generate_json``) makes the
+        SDK's own HTTP request abort at the same ceiling in milliseconds, and ``wait_for``
+        bounds the await.
 
         Cancellation boundary (do not "fix" this by assuming otherwise): the rotator
         runs the blocking SDK call in ``loop.run_in_executor`` (gemini_rotator
-        middleware), so cancelling the awaited future only detaches the awaiter. The
-        HTTP request keeps running on its executor thread until the SDK's own retries
-        (5 attempts, 1/2/4/8s backoff) finish or the connection dies; only then does the
-        thread return and its result get dropped.
+        middleware), so cancelling the awaited future only detaches the awaiter. With the
+        SDK-level timeout the request now dies at the ceiling instead of keeping its
+        worker thread busy for the SDK's whole retry cycle - that leftover thread is what
+        starved the shared default executor and produced the 171-second gaps between
+        consecutive articles in run #237.
         """
         start_time = time.monotonic()
         try:
@@ -473,29 +541,39 @@ class GeminiProvider(BaseAIProvider):
         latency_ms: float,
         error_message: str | None,
     ) -> None:
-        """Record one attempt in gemini_usage without failing the Pipeline."""
+        """Queue one attempt for gemini_usage without delaying the model response.
+
+        The insert runs on the dedicated audit thread (see ``_audit_worker``), never on
+        the default executor that carries the blocking SDK calls: awaiting it there put a
+        slow or queued audit write in front of every successful model answer.
+        """
         adapter = getattr(self, "_db_adapter", None)
         if adapter is None or not hasattr(adapter, "record_gemini_usage"):
             return
         data = usage or {}
         try:
-            await asyncio.to_thread(
-                adapter.record_gemini_usage,
-                article_id=article_id,
-                source_id=source_id,
-                model_name=model_name,
-                prompt_token_count=data.get("prompt_token_count"),
-                candidates_token_count=data.get("candidates_token_count"),
-                total_token_count=data.get("total_token_count"),
-                thoughts_token_count=data.get("thoughts_token_count"),
-                cached_content_token_count=data.get("cached_content_token_count"),
-                operation=operation,
-                status=status,
-                latency_ms=latency_ms,
-                error_message=error_message,
+            _ensure_audit_worker()
+            _AUDIT_QUEUE.put(
+                (
+                    adapter.record_gemini_usage,
+                    {
+                        "article_id": article_id,
+                        "source_id": source_id,
+                        "model_name": model_name,
+                        "prompt_token_count": data.get("prompt_token_count"),
+                        "candidates_token_count": data.get("candidates_token_count"),
+                        "total_token_count": data.get("total_token_count"),
+                        "thoughts_token_count": data.get("thoughts_token_count"),
+                        "cached_content_token_count": data.get("cached_content_token_count"),
+                        "operation": operation,
+                        "status": status,
+                        "latency_ms": latency_ms,
+                        "error_message": error_message,
+                    },
+                )
             )
         except Exception:  # noqa: BLE001 - audit must not break AI pipeline
-            logger.exception("Failed to record gemini_usage row; continuing.")
+            logger.exception("Failed to queue the gemini_usage row; continuing.")
 
     async def generate_json(
         self,
@@ -516,10 +594,18 @@ class GeminiProvider(BaseAIProvider):
                 - "preflight": health check (separate counter)
                 - "schema_repair": retry after Pydantic validation failure
         """
+        timeout = self._timeout_for(purpose)
+        # HttpOptions.timeout is the SDK's per-request ceiling in MILLISECONDS
+        # (google.genai.types.HttpOptions: "Timeout for the request in milliseconds").
+        # Without it the request outlives ``wait_for`` on its executor thread until the
+        # SDK's own retries finish; with it the client closes the connection itself.
         extra_config: dict[str, Any] = {
             "response_mime_type": "application/json",
             "temperature": 0.1,
-            "http_options": {"api_version": GEMINI_API_VERSION},
+            "http_options": {
+                "api_version": GEMINI_API_VERSION,
+                "timeout": int(timeout * 1000),
+            },
         }
 
         # Ordered chain: primary, then the Lite fallback, then the last-resort tertiary
@@ -532,7 +618,6 @@ class GeminiProvider(BaseAIProvider):
         start_time = time.monotonic()
         raw_text: str | None = None
 
-        timeout = self._timeout_for(purpose)
         # Clamped again at the call site: a directly mutated setting must never turn
         # into an unbounded retry loop.
         perspective_retries = min(max(int(settings.ai_perspectives_retries), 0), 1)
