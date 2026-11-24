@@ -191,12 +191,13 @@ async def test_gemini_provider_service_unavailable_error():
 
 @pytest.mark.asyncio
 async def test_gemini_provider_fallback_failure_raises():
-    """Verify GeminiProvider raises when both primary and fallback fail."""
+    """Verify GeminiProvider raises when primary, fallback and tertiary all fail."""
     mock_rotator = MagicMock()
     mock_rotator.execute = AsyncMock(
         side_effect=[
             Exception("429 Quota exhausted"),
             Exception("503 Fallback also failed"),
+            Exception("503 Tertiary also failed"),
         ]
     )
 
@@ -205,10 +206,12 @@ async def test_gemini_provider_fallback_failure_raises():
         enable_fallback=True,
         primary_model="gemini-3.8-flash",
         fallback_model="gemini-3.5-flash-lite",
+        tertiary_model="gemini-2.5-flash",
     )
     from app.ai.provider import AIServiceUnavailableError
     with pytest.raises(AIServiceUnavailableError):
         await provider.generate_json("Test prompt")
+    assert mock_rotator.execute.call_count == 3
 
 
 @pytest.mark.asyncio
@@ -329,13 +332,14 @@ async def test_provider_auxiliary_and_defensive_branches(tmp_path: Path, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_last_used_model_resets_when_both_models_fail():
-    """Verify _last_used_model resets to primary_model when both primary and fallback fail."""
+async def test_last_used_model_resets_when_all_models_fail():
+    """Verify _last_used_model resets to primary_model when every fallback fails."""
     mock_rotator = MagicMock()
     mock_rotator.execute = AsyncMock(
         side_effect=[
             Exception("429 Quota exhausted for primary"),
             Exception("429 Quota exhausted for fallback"),
+            Exception("429 Quota exhausted for tertiary"),
         ]
     )
 
@@ -343,6 +347,7 @@ async def test_last_used_model_resets_when_both_models_fail():
         rotator=mock_rotator,
         primary_model="gemini-3.8-flash",
         fallback_model="gemini-3.5-flash-lite",
+        tertiary_model="gemini-2.5-flash",
         enable_fallback=True,
     )
 
@@ -431,6 +436,113 @@ async def test_fallback_triggers_on_503_via_code_attribute():
     assert result == {"status": "ok_via_code_attribute"}
     assert provider.model_name == "gemini-3.5-flash-lite"
     assert mock_rotator.execute.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_tertiary_fallback_used_when_both_lite_models_hit_503():
+    """503 high-demand on primary and fallback must continue to gemini-2.5-flash."""
+    mock_rotator = MagicMock()
+    high_demand = "503 UNAVAILABLE: This model is currently experiencing high demand"
+    success = MagicMock()
+    success.text = '{"status": "ok_via_tertiary_after_503"}'
+    mock_rotator.execute = AsyncMock(
+        side_effect=[Exception(high_demand), Exception(high_demand), success]
+    )
+
+    provider = GeminiProvider(
+        rotator=mock_rotator,
+        primary_model="gemini-3.5-flash-lite",
+        fallback_model="gemini-3.1-flash-lite",
+        tertiary_model="gemini-2.5-flash",
+        enable_fallback=True,
+    )
+
+    result = await provider.generate_json("test prompt")
+
+    assert result == {"status": "ok_via_tertiary_after_503"}
+    assert provider.model_name == "gemini-2.5-flash"
+    assert [c.kwargs["model"] for c in mock_rotator.execute.call_args_list] == [
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-2.5-flash",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tertiary_fallback_used_when_both_lite_models_hit_429():
+    """Quota exhaustion on both Lite models must also continue to the tertiary model."""
+    mock_rotator = MagicMock()
+    quota = "429 RESOURCE_EXHAUSTED: Free tier quota reached"
+    success = MagicMock()
+    success.text = '{"status": "ok_via_tertiary_after_429"}'
+    mock_rotator.execute = AsyncMock(side_effect=[Exception(quota), Exception(quota), success])
+
+    provider = GeminiProvider(
+        rotator=mock_rotator,
+        primary_model="gemini-3.5-flash-lite",
+        fallback_model="gemini-3.1-flash-lite",
+        tertiary_model="gemini-2.5-flash",
+        enable_fallback=True,
+    )
+
+    assert await provider.generate_json("test prompt") == {"status": "ok_via_tertiary_after_429"}
+    assert provider.model_name == "gemini-2.5-flash"
+    assert mock_rotator.execute.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_tertiary_not_attempted_for_non_retryable_error():
+    """A malformed request must not burn quota on the other two models."""
+    mock_rotator = MagicMock()
+    mock_rotator.execute = AsyncMock(side_effect=Exception("400 INVALID_ARGUMENT: bad request"))
+
+    provider = GeminiProvider(
+        rotator=mock_rotator,
+        primary_model="gemini-3.5-flash-lite",
+        fallback_model="gemini-3.1-flash-lite",
+        tertiary_model="gemini-2.5-flash",
+        enable_fallback=True,
+    )
+
+    with pytest.raises(AIProviderError):
+        await provider.generate_json("test prompt")
+    assert mock_rotator.execute.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_empty_tertiary_model_keeps_two_model_chain():
+    """An explicitly disabled tertiary model must not add a third attempt."""
+    mock_rotator = MagicMock()
+    mock_rotator.execute = AsyncMock(
+        side_effect=[Exception("429 quota"), Exception("429 quota")]
+    )
+
+    provider = GeminiProvider(
+        rotator=mock_rotator,
+        primary_model="gemini-3.5-flash-lite",
+        fallback_model="gemini-3.1-flash-lite",
+        tertiary_model="",
+        enable_fallback=True,
+    )
+
+    with pytest.raises(AIRateLimitError):
+        await provider.generate_json("test prompt")
+    assert mock_rotator.execute.call_count == 2
+
+
+def test_tertiary_model_defaults_to_gemini_2_5_flash():
+    """The last-resort model is configured in settings and in the cron workflow."""
+    assert settings.gemini_tertiary_model == "gemini-2.5-flash"
+    provider = GeminiProvider(api_key="AIzaSyTest123")
+    try:
+        assert provider.tertiary_model == "gemini-2.5-flash"
+        assert provider._model_chain() == [
+            settings.gemini_primary_model,
+            settings.gemini_fallback_model,
+            "gemini-2.5-flash",
+        ]
+    finally:
+        provider.close()
 
 
 

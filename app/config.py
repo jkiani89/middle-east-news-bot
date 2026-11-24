@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_primary_model: str = "gemini-3.8-flash"
     gemini_fallback_model: str = "gemini-3.5-flash-lite"
+    # Tertiary fallback: both Lite models answer 503 (high demand) at peak hours, and a
+    # failure of the fallback used to end the batch. This model is tried last so a single
+    # run survives the simultaneous unavailability of the two Lite models.
+    gemini_tertiary_model: str = "gemini-2.5-flash"
     gemini_enable_fallback: bool = True
     gemini_key_db_path: str = "data/gemini_keys.db"  # DEPRECATED (F-1): ignored; SQLite removed, state in PostgreSQL
     gemini_log_retention_days: int = 30  # Retention days for gemini_request_log cleanup

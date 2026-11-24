@@ -12,6 +12,7 @@ from app.config import settings
 
 PRIMARY = "gemini-primary"
 FALLBACK = "gemini-fallback"
+TERTIARY = "gemini-tertiary"
 
 
 class FakeRotator:
@@ -36,6 +37,7 @@ def _provider(rotator: FakeRotator, timeout: float = 30.0) -> GeminiProvider:
         rotator=rotator,  # type: ignore[arg-type]
         primary_model=PRIMARY,
         fallback_model=FALLBACK,
+        tertiary_model=TERTIARY,
         enable_fallback=True,
     )
     provider._request_timeout = timeout
@@ -85,12 +87,23 @@ async def test_slow_primary_call_times_out_and_falls_back():
     rotator = FakeRotator(delay=0.5)
     provider = _provider(rotator, timeout=0.05)
 
-    # Both models are slow here, so the timeout surfaces as a provider error,
-    # but the important part is that no call may hang for the SDK's own retries.
+    # Every model in the chain is slow here, so the timeout surfaces as a provider
+    # error, but the important part is that no call may hang for the SDK's own retries.
     with pytest.raises(AIProviderError):
         await provider.generate_json("prompt")
 
-    assert rotator.calls == [PRIMARY, FALLBACK]
+    assert rotator.calls == [PRIMARY, FALLBACK, TERTIARY]
+
+
+@pytest.mark.asyncio
+async def test_tertiary_model_rescues_run_when_both_lite_models_are_unavailable():
+    """503 on primary and fallback must continue to the tertiary model, not fail."""
+    rotator = FakeRotator(failing={PRIMARY, FALLBACK})
+    provider = _provider(rotator)
+
+    assert await provider.generate_json("prompt") == {"ok": True}
+    assert rotator.calls == [PRIMARY, FALLBACK, TERTIARY]
+    assert provider.model_name == TERTIARY
 
 
 @pytest.mark.asyncio

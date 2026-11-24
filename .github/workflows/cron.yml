@@ -48,6 +48,9 @@ jobs:
       # per day, so the default when the repository variable is unset is a Lite model.
       GEMINI_PRIMARY_MODEL: ${{ vars.GEMINI_PRIMARY_MODEL || 'gemini-3.5-flash-lite' }}
       GEMINI_FALLBACK_MODEL: ${{ vars.GEMINI_FALLBACK_MODEL || 'gemini-3.1-flash-lite' }}
+      # Last resort: both Lite models answer 503 at peak hours, so the batch continues on
+      # a non-Lite model instead of failing the article and tripping the circuit breaker.
+      GEMINI_TERTIARY_MODEL: ${{ vars.GEMINI_TERTIARY_MODEL || 'gemini-2.5-flash' }}
       GEMINI_ENABLE_FALLBACK: ${{ vars.GEMINI_ENABLE_FALLBACK || 'true' }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}

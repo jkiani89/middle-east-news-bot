@@ -21,6 +21,7 @@ def test_settings_default_values():
     assert settings.report_slots == "8,20"
     assert settings.daily_report_minute == 0
     assert settings.max_articles_per_batch == 35
+    assert settings.gemini_tertiary_model == "gemini-2.5-flash"
     assert settings.min_importance == 2
     assert settings.min_summary_len_for_full_text == 800
     assert settings.slot_grace_hours == 6

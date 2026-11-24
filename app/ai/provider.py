@@ -161,12 +161,16 @@ class GeminiProvider(BaseAIProvider):
         rotator: GeminiAPIRotator | None = None,
         primary_model: str | None = None,
         fallback_model: str | None = None,
+        tertiary_model: str | None = None,
         enable_fallback: bool | None = None,
         key_db_path: str | Path | None = None,  # DEPRECATED: ignored; SQLite removed in F-1
         config: RotatorConfig | None = None,
     ):
         self._primary_model = primary_model or model or settings.gemini_primary_model
         self._fallback_model = fallback_model or settings.gemini_fallback_model
+        self._tertiary_model = (
+            tertiary_model if tertiary_model is not None else settings.gemini_tertiary_model
+        )
         self._enable_fallback = enable_fallback if enable_fallback is not None else settings.gemini_enable_fallback
         self.call_count: int = 0
 
@@ -237,6 +241,25 @@ class GeminiProvider(BaseAIProvider):
     def fallback_model(self) -> str:
         """Configured fallback model identifier."""
         return self._fallback_model
+
+    @property
+    def tertiary_model(self) -> str:
+        """Configured last-resort fallback model identifier."""
+        return self._tertiary_model
+
+    def _model_chain(self) -> list[str]:
+        """Models to try, in order: primary, fallback, then the tertiary last resort.
+
+        Duplicates and empty names are dropped, so a tertiary model equal to the fallback
+        never causes a second identical attempt with the same failing capacity.
+        """
+        if not self._enable_fallback or not self._fallback_model:
+            return [self._primary_model]
+        chain = [self._primary_model]
+        for candidate in (self._fallback_model, self._tertiary_model):
+            if candidate and candidate not in chain:
+                chain.append(candidate)
+        return chain
 
     @property
     def rotator(self) -> GeminiAPIRotator:
@@ -492,11 +515,13 @@ class GeminiProvider(BaseAIProvider):
             "temperature": 0.1,
         }
 
-        target_model = (
-            self._fallback_model
-            if self._primary_disabled and self._enable_fallback and self._fallback_model
-            else self._primary_model
-        )
+        # Ordered chain: primary, then the Lite fallback, then the last-resort tertiary
+        # model. A 503 (high demand) on both Lite models continues to the tertiary model
+        # instead of failing the article and tripping the pipeline's circuit breaker.
+        chain = self._model_chain()
+        if self._primary_disabled and len(chain) > 1:
+            chain = chain[1:]
+
         start_time = time.monotonic()
         raw_text: str | None = None
 
@@ -506,62 +531,23 @@ class GeminiProvider(BaseAIProvider):
         perspective_retries = min(max(int(settings.ai_perspectives_retries), 0), 1)
         attempts = 1 + (perspective_retries if purpose == "perspectives" else 0)
 
-        try:
-            response = await self._execute_model_with_timeout_retry(
-                target_model,
-                prompt,
-                system_instruction,
-                extra_config,
-                timeout=timeout,
-                attempts=attempts,
-                purpose=purpose,
-                article_id=article_id,
-                source_id=source_id,
-            )
-            raw_text = getattr(response, "text", "") or ""
-            self._last_used_model = target_model
-            self._model = target_model
-            latency = time.monotonic() - start_time
-
-            if purpose == "preflight":
-                GeminiProvider._preflight_calls += 1
-                logger.info(
-                    "Gemini PRE-FLIGHT check #%d completed: model=%s, latency=%.2fs",
-                    GeminiProvider._preflight_calls,
-                    target_model,
-                    latency,
-                )
-            else:
-                GeminiProvider._total_calls += 1
-                self.call_count += 1
-                logger.info(
-                    "Gemini API call #%d completed [%s]: model=%s, prompt_len=%d, latency=%.2fs",
-                    GeminiProvider._total_calls,
-                    purpose,
-                    target_model,
-                    len(prompt),
-                    latency,
-                )
-        except Exception as exc:
-            if target_model == self._primary_model:
-                self._record_primary_failure()
-            # Fallback logic if primary model encounters retryable/transient/quota error
-            if (
-                is_retryable_ai_error(exc)
-                and self._enable_fallback
-                and self._fallback_model
-                and target_model != self._fallback_model
-            ):
-                logger.warning(
-                    "Primary model %s encountered retryable error (%s). Attempting fallback to %s.",
-                    target_model,
-                    exc,
-                    self._fallback_model,
-                )
-                try:
-                    target_model = self._fallback_model
+        for index, candidate_model in enumerate(chain):
+            try:
+                if index == 0:
+                    response = await self._execute_model_with_timeout_retry(
+                        candidate_model,
+                        prompt,
+                        system_instruction,
+                        extra_config,
+                        timeout=timeout,
+                        attempts=attempts,
+                        purpose=purpose,
+                        article_id=article_id,
+                        source_id=source_id,
+                    )
+                else:
                     response = await self._execute_model(
-                        target_model,
+                        candidate_model,
                         prompt,
                         system_instruction,
                         extra_config,
@@ -570,38 +556,52 @@ class GeminiProvider(BaseAIProvider):
                         source_id=source_id,
                         operation=purpose,
                     )
-                    raw_text = getattr(response, "text", "") or ""
-                    self._last_used_model = target_model
-                    self._model = target_model
-                    latency = time.monotonic() - start_time
-
-                    if purpose == "preflight":
-                        GeminiProvider._preflight_calls += 1
-                        logger.info(
-                            "Fallback Gemini PRE-FLIGHT check #%d completed: model=%s, latency=%.2fs",
-                            GeminiProvider._preflight_calls,
-                            target_model,
-                            latency,
-                        )
-                    else:
-                        GeminiProvider._total_calls += 1
-                        self.call_count += 1
-                        logger.info(
-                            "Fallback Gemini API call #%d completed [%s]: model=%s, prompt_len=%d, latency=%.2fs",
-                            GeminiProvider._total_calls,
-                            purpose,
-                            target_model,
-                            len(prompt),
-                            latency,
-                        )
-                except Exception as fb_exc:
-                    self._last_used_model = self._primary_model
-                    self._model = self._primary_model
-                    _translate_and_raise(fb_exc)
-            else:
+            except Exception as exc:
+                if candidate_model == self._primary_model:
+                    self._record_primary_failure()
+                # Only a transient/quota error justifies spending quota on the next model;
+                # a malformed request or bad key would fail there identically.
+                if is_retryable_ai_error(exc) and index < len(chain) - 1:
+                    logger.warning(
+                        "Model %s encountered retryable error (%s). Attempting fallback to %s.",
+                        candidate_model,
+                        exc,
+                        chain[index + 1],
+                    )
+                    continue
                 self._last_used_model = self._primary_model
                 self._model = self._primary_model
                 _translate_and_raise(exc)
+
+            raw_text = getattr(response, "text", "") or ""
+            self._last_used_model = candidate_model
+            self._model = candidate_model
+            latency = time.monotonic() - start_time
+            # Kept in the log so an operator can tell a primary call from a fallback one.
+            fallback_prefix = "Fallback " if index > 0 else ""
+
+            if purpose == "preflight":
+                GeminiProvider._preflight_calls += 1
+                logger.info(
+                    "%sGemini PRE-FLIGHT check #%d completed: model=%s, latency=%.2fs",
+                    fallback_prefix,
+                    GeminiProvider._preflight_calls,
+                    candidate_model,
+                    latency,
+                )
+            else:
+                GeminiProvider._total_calls += 1
+                self.call_count += 1
+                logger.info(
+                    "%sGemini API call #%d completed [%s]: model=%s, prompt_len=%d, latency=%.2fs",
+                    fallback_prefix,
+                    GeminiProvider._total_calls,
+                    purpose,
+                    candidate_model,
+                    len(prompt),
+                    latency,
+                )
+            break
 
         if not raw_text:
             raw_text = "{}"
