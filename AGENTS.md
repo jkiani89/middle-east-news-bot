@@ -30,6 +30,14 @@ All rules R-01 through R-10 are binding and non-negotiable.
 
 - **R-10 — Stop and ask when in doubt.** Never guess and proceed.
 
+## Fixed architecture & performance invariants
+
+Established by `623afab` and `465755c`. They are permanent rules, not tunables: do not revert, "simplify" or re-tune them without an explicitly approved task that names the invariant it changes.
+
+- **Three-layer Gemini model chain (`623afab`).** Every AI request walks `gemini-3.5-flash-lite` (primary) -> `gemini-3.1-flash-lite` (fallback) -> `gemini-2.5-flash` (tertiary, `GEMINI_TERTIARY_MODEL`, default `gemini-2.5-flash`). Only a retryable error (`429`/`503`) advances to the next model, duplicate names are dropped from the chain, and `GEMINI_ENABLE_FALLBACK=false` keeps only the primary. The tertiary layer exists so a run survives the simultaneous unavailability of both Lite models instead of aborting the batch.
+- **Event-driven slot refill in `_ConcurrentAnalysis` (`465755c`).** A finished attempt dispatches the next one from its completion callback (`_on_attempt_done`); the old serial `next_attempt()` loop must not come back, because then one slow article idles every free slot (head-of-line blocking). Results are still delivered to the consumer in queue order - event matching depends on that order - so only fetching and analysis are parallel, never the final hand-off. The caps stay fixed: `ai_processing_concurrency=4` and the rotator's `max_concurrent=5` exist to protect the Aiven free-tier database; raising them is not an optimization.
+- **No scraping of Google News redirect URLs (`465755c`).** `news.google.com/rss/articles/...` and `/articles/...` are consent/interstitial stubs, not articles. `is_google_news_wrapper_url()` in `app/collectors/rss_collector.py` short-circuits both `fetch_article_full_text()` and the `fetch_feed` loop, so those items use the RSS `title`/`summary` only: no HTTP GET, no `trafilatura` call, no body stored.
+
 ## Evidence requirements
 
 | Work type | Required evidence |

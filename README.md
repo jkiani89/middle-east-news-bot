@@ -84,6 +84,21 @@ AI_MAX_CONSECUTIVE_FAILURES=5      # توقف بچ پس از این تعداد �
 MAX_ARTICLES_PER_BATCH=15          # مقدار پیشنهادی برای اجرای ابری
 ```
 
+## زنجیره مدل‌ها و سرعت پردازش دسته
+
+**۱) زنجیره سه‌لایه Gemini (`623afab`):**
+```env
+GEMINI_PRIMARY_MODEL=gemini-3.5-flash-lite     # Primary
+GEMINI_FALLBACK_MODEL=gemini-3.1-flash-lite    # Fallback
+GEMINI_TERTIARY_MODEL=gemini-2.5-flash         # Tertiary (last resort)
+GEMINI_ENABLE_FALLBACK=true
+```
+هر درخواست به ترتیب primary ← fallback ← tertiary می‌رود. فقط خطای قابل‌تلاش مجدد (`429` یا `503`) باعث رفتن به مدل بعدی می‌شود؛ نام تکراری از زنجیره حذف می‌شود و با `GEMINI_ENABLE_FALLBACK=false` فقط مدل primary امتحان می‌شود. لایهٔ سوم برای ساعات اوج است که هر دو مدل Lite هم‌زمان `503` می‌دهند؛ بدون آن یک اجرا با خطا متوقف می‌شد. این مقادیر همان پیش‌فرض‌های `.github/workflows/cron.yml` هستند و با متغیرهای مخزن قابل بازنویسی‌اند (جدول کامل: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
+
+**۲) پر شدن رویدادمحور اسلات‌ها (`465755c`):** در `_ConcurrentAnalysis` تلاش بعدی از callback پایان تلاش (`_on_attempt_done`) ارسال می‌شود، نه از یک حلقهٔ سریال؛ بنابراین یک مقالهٔ کند بقیهٔ اسلات‌ها را بیکار نمی‌گذارد. تحویل نتیجه به حلقهٔ مصرف‌کننده سریال و به ترتیب صف می‌ماند، چون تطبیق رویدادها به همین ترتیب وابسته است. سقف‌ها ثابت‌اند: `ai_processing_concurrency=4` و `max_concurrent=5` روتاتور برای محافظت از دیتابیس Aiven.
+
+**۳) بدون اسکرپ لینک‌های Google News (`465755c`):** نشانی‌های `news.google.com/rss/articles/...` و `/articles/...` صفحهٔ واسط/رضایت‌نامه‌اند؛ `is_google_news_wrapper_url()` جلوی `fetch_article_full_text()` و حلقهٔ `fetch_feed` را می‌گیرد و این خبرها فقط از `title` و `summary` فید RSS ساخته می‌شوند — بدون درخواست HTTP و بدون `trafilatura`.
+
 ## Deployment
 
 This project is designed to run on **zero-cost infrastructure with no credit card required** ($0/month):
