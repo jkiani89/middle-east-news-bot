@@ -14,6 +14,7 @@ from app.collectors.rss_collector import (
     extract_full_text_from_html,
     fetch_article_full_text,
     fetch_feed,
+    is_google_news_wrapper_url,
     is_retryable_http_error,
     make_hash,
 )
@@ -324,6 +325,57 @@ async def test_fetch_feed_with_full_text_extraction():
     # Full article text should have been extracted and replaced the short teaser
     assert "framework for future diplomatic cooperation" in items[0]["text"]
     assert items[0]["text_source"] == "full_body"
+
+
+def test_google_news_wrapper_urls_are_recognized():
+    """Google News article links are redirect stubs; other URLs (and its feeds) are not."""
+    assert is_google_news_wrapper_url("https://news.google.com/rss/articles/CBMiabc?oc=5")
+    assert is_google_news_wrapper_url("https://www.news.google.com/articles/CBMiabc")
+    assert not is_google_news_wrapper_url("https://www.reuters.com/world/middle-east/x")
+    assert not is_google_news_wrapper_url("https://news.google.com/rss/search?q=egypt")
+    assert not is_google_news_wrapper_url("")
+
+
+@pytest.mark.asyncio
+async def test_fetch_article_full_text_skips_google_news_wrapper():
+    """No HTTP request and no Trafilatura run for a Google News stub: it has no body."""
+    mock_client = AsyncMock()
+
+    text = await fetch_article_full_text(
+        "https://news.google.com/rss/articles/CBMiabc?oc=5", client=mock_client
+    )
+
+    assert text is None
+    mock_client.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_feed_keeps_the_rss_text_for_google_news_links():
+    """A Google News entry is stored with the feed's own text, with no page fetch."""
+    rss = """<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0">
+      <channel>
+        <title>Google News</title>
+        <item>
+          <title>Saudi Arabia says danger has passed in three southern cities</title>
+          <link>https://news.google.com/rss/articles/CBMiabc?oc=5</link>
+          <description>Google News teaser for the story.</description>
+          <pubDate>Tue, 10 Nov 2026 08:00:00 GMT</pubDate>
+        </item>
+      </channel>
+    </rss>
+    """
+    mock_client = AsyncMock()
+    req = httpx.Request("GET", "https://example.com/feed")
+    mock_client.get.return_value = httpx.Response(200, request=req, text=rss)
+
+    items = await fetch_feed("https://example.com/feed", extract_full_text=True, client=mock_client)
+
+    assert len(items) == 1
+    assert items[0]["text"] == "Google News teaser for the story."
+    assert items[0]["text_source"] == "rss_summary"
+    # Only the feed itself was requested; the stub was never fetched.
+    assert mock_client.get.await_count == 1
 
 
 def test_rss_summary_quality_threshold():

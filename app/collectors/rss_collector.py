@@ -143,12 +143,45 @@ def extract_full_text_from_html(html_content: str, url: str | None = None) -> st
     return None
 
 
+GOOGLE_NEWS_HOSTS = frozenset({"news.google.com", "www.news.google.com"})
+GOOGLE_NEWS_ARTICLE_PATHS = ("/rss/articles/", "/articles/")
+
+
+def is_google_news_wrapper_url(url: str) -> bool:
+    """Whether a URL is an obfuscated Google News redirect stub, not the article.
+
+    A Google News RSS entry links to ``https://news.google.com/rss/articles/CBMi...?oc=5``.
+    Fetching it returns a JavaScript redirect page with no article text, so the only
+    possible outcomes are an empty extraction and a ``discarding data`` warning. The
+    publisher's own title and summary from the feed are the usable text.
+    """
+    if not url:
+        return False
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    if parts.netloc.lower() not in GOOGLE_NEWS_HOSTS:
+        return False
+    path = parts.path.lower()
+    return any(path.startswith(prefix) for prefix in GOOGLE_NEWS_ARTICLE_PATHS)
+
+
 async def fetch_article_full_text(
     url: str,
     client: httpx.AsyncClient | None = None,
     timeout: httpx.Timeout | None = None,
 ) -> str | None:
-    """Fetch article web page and extract clean body text using Trafilatura."""
+    """Fetch article web page and extract clean body text using Trafilatura.
+
+    A Google News RSS link is a redirect stub, not the publisher's page: the request
+    only ever returns a JavaScript interstitial, so Trafilatura discards it and the
+    worker slot was spent for nothing. Those URLs return ``None`` without any HTTP
+    call, and the stored RSS title/summary is analyzed instead.
+    """
+    if is_google_news_wrapper_url(url):
+        logger.debug("Skipping Google News redirect stub; the RSS title/summary is used: %s", url)
+        return None
     req_timeout = timeout or DEFAULT_TIMEOUT
     try:
         response = await _http_get_with_retry(
@@ -253,7 +286,13 @@ async def fetch_feed(
 
         # Fallback to Trafilatura full-text extraction if requested or summary is too short (< threshold_len)
         target_url = canonical or raw_url
-        if should_extract_full or (len(summary) < threshold_len and bool(target_url)):
+        if is_google_news_wrapper_url(target_url):
+            # No request: Google News answers with a JS redirect stub that Trafilatura
+            # always discards. The feed's own title/summary is the usable text here.
+            logger.debug(
+                "Google News wrapper link kept as RSS text (no fetch): %s", target_url
+            )
+        elif should_extract_full or (len(summary) < threshold_len and bool(target_url)):
             full_text = await fetch_article_full_text(target_url, client=client, timeout=req_timeout)
             len_summary = len(summary)
             len_extracted = len(full_text) if full_text else 0

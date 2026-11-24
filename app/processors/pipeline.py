@@ -535,6 +535,15 @@ class _ConcurrentAnalysis:
     ``ai_max_consecutive_failures - transient_failures`` requests, so a batch that
     trips after N consecutive failures has spent exactly N model calls and the rest of
     the queue is never touched.
+
+    A finished slot is refilled immediately, from the task's own completion callback
+    rather than from the consumer. Awaiting the head of the queue used to be enough to
+    keep the pool full only while every article took the same time: one slow article
+    (a full-text fetch that hits its ceiling, or a model call that runs into its
+    timeout) left the other slots idle for its whole duration, which in production
+    produced 200-second stretches with no model call at all. Dispatch and consumption
+    are therefore decoupled: requests keep flowing while the serial half (event
+    matching, a perspective matrix, an immediate Telegram send) is busy.
     """
 
     def __init__(
@@ -550,8 +559,11 @@ class _ConcurrentAnalysis:
         self._failure_budget = max(1, settings.ai_max_consecutive_failures)
         self._semaphore = asyncio.Semaphore(self._concurrency)
         self._tasks: dict[int, asyncio.Task[_AnalysisAttempt]] = {}
+        self._running: set[asyncio.Task[_AnalysisAttempt]] = set()
+        self._transient_failures = 0
         self._next_index = 0
         self._consume_index = 0
+        self._accepting = True
 
     async def _attempt(self, article: Article) -> _AnalysisAttempt:
         attempt = _AnalysisAttempt(
@@ -579,19 +591,50 @@ class _ConcurrentAnalysis:
                 attempt.transient = is_retryable_ai_error(exc)
         return attempt
 
-    def _dispatch(self, transient_failures: int) -> None:
+    def _slot_budget(self) -> int:
+        """Requests that may be in flight right now, after the breaker's spending.
+
+        ``max(0, ...)`` matters: once the budget is spent, a negative headroom must mean
+        "dispatch nothing", never "dispatch while count < negative" (which would be
+        false and hide the trip).
+        """
+        return max(0, min(self._concurrency, self._failure_budget - self._transient_failures))
+
+    def _dispatch(self) -> None:
+        """Fill every free slot from the queue, within the breaker's budget."""
+        limit = self._slot_budget()
         while (
-            self._next_index < len(self._articles)
-            and len(self._tasks) + transient_failures < self._failure_budget
-            and len(self._tasks) < self._concurrency
+            self._accepting
+            and self._next_index < len(self._articles)
+            and len(self._running) < limit
         ):
             index = self._next_index
-            self._tasks[index] = asyncio.create_task(self._attempt(self._articles[index]))
+            task = asyncio.create_task(self._attempt(self._articles[index]))
+            self._tasks[index] = task
+            self._running.add(task)
+            task.add_done_callback(self._on_attempt_done)
             self._next_index += 1
 
-    async def next_attempt(self, transient_failures: int) -> _AnalysisAttempt | None:
-        """Await the next article's attempt, keeping the pool full within the breaker budget."""
-        self._dispatch(transient_failures)
+    def _on_attempt_done(self, task: asyncio.Task[_AnalysisAttempt]) -> None:
+        """Release the slot and immediately start the next article in the queue."""
+        self._running.discard(task)
+        if not task.cancelled():
+            try:
+                attempt = task.result()
+            except Exception:  # noqa: BLE001 - _attempt already contains its own errors
+                attempt = None
+            if attempt is not None:
+                if attempt.error is None:
+                    # One success clears the run of transient failures, exactly like the
+                    # serial half's ``consecutive_failures = 0``.
+                    self._transient_failures = 0
+                elif attempt.transient:
+                    self._transient_failures += 1
+        self._dispatch()
+
+    async def next_attempt(self) -> _AnalysisAttempt | None:
+        """Await the next queued article's attempt, in queue order."""
+        self._dispatch()
         task = self._tasks.pop(self._consume_index, None)
         if task is None:
             return None
@@ -600,7 +643,8 @@ class _ConcurrentAnalysis:
 
     async def aclose(self) -> None:
         """Cancel anything still in flight so an aborted batch leaves no orphaned request."""
-        pending = list(self._tasks.values())
+        self._accepting = False
+        pending = list(self._running)
         self._tasks.clear()
         for task in pending:
             task.cancel()
@@ -685,7 +729,7 @@ async def process_collected_articles(
     try:
         analysis = _ConcurrentAnalysis(articles_list, ai_provider, sources_map)
         for _ in range(len(articles_list)):
-            attempt = await analysis.next_attempt(consecutive_failures)
+            attempt = await analysis.next_attempt()
             if attempt is None:
                 break
 

@@ -156,6 +156,45 @@ class _ConcurrencyProbeProvider(BaseAIProvider):
             self.in_flight -= 1
 
 
+class _GateProvider(BaseAIProvider):
+    """The first article finishes only after eight other calls have started.
+
+    This is the deterministic shape of the production stall: one slow article at the
+    head of the queue. It must not hold the other slots hostage.
+    """
+
+    def __init__(self, payload: dict[str, Any], gate_threshold: int = 8) -> None:
+        self.payload = payload
+        self.gate_threshold = gate_threshold
+        self.gate = asyncio.Event()
+        self.started = 0
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    @property
+    def model_name(self) -> str:
+        return "gate-model"
+
+    async def generate_json(self, prompt: str, system_instruction: str | None = None, *, purpose: str = "analysis", article_id: int | None = None, source_id: int | None = None):
+        self.started += 1
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            if article_id == 1:
+                try:
+                    await asyncio.wait_for(self.gate.wait(), timeout=2.0)
+                except TimeoutError:
+                    # Old behaviour: only the initial slots ever ran, so the gate stays
+                    # clear and the assertion below reports the idle pool.
+                    pass
+            if self.started >= self.gate_threshold:
+                self.gate.set()
+            await asyncio.sleep(0)
+            return dict(self.payload)
+        finally:
+            self.in_flight -= 1
+
+
 class _OrderedCommitSession(FakeSession):
     """Records which articles were already finalized at every commit."""
 
@@ -254,6 +293,31 @@ async def test_analysis_is_parallel_but_database_writes_stay_serial_and_ordered(
     assert session.commit_count == 9
     assert session.snapshots == [[]] + [list(range(1, n + 1)) for n in range(1, 9)]
     assert all(a.status == "rejected" for a in articles)
+
+
+@pytest.mark.asyncio
+async def test_a_slow_article_does_not_idle_the_other_processing_slots(monkeypatch):
+    """A finished slot is refilled from the task itself, not by the serial consumer.
+
+    Regression for the multi-minute idle gaps in the hourly run: while the head article
+    was still in flight, the other finished slots waited for it, so no model call was
+    started for minutes. With dispatch on completion, the queue keeps flowing behind the
+    slow article and the whole batch finishes in one call's time.
+    """
+    monkeypatch.setattr(settings, "ai_processing_concurrency", 4)
+    monkeypatch.setattr(settings, "ai_max_consecutive_failures", 5)
+    articles = [_article(i) for i in range(1, 13)]
+    session = FakeSession(articles)
+    provider = _GateProvider(IRRELEVANT_PAYLOAD)
+
+    count = await asyncio.wait_for(
+        process_collected_articles(session, limit=20, provider=provider), timeout=5
+    )
+
+    assert count == 12
+    assert provider.max_in_flight == 4
+    assert provider.gate.is_set(), "the pool stalled behind the slow head article"
+    assert provider.started == 12
 
 
 @pytest.mark.asyncio

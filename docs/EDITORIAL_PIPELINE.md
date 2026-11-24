@@ -88,8 +88,11 @@ await asyncio.wait_for(fetch_article_full_text(url), timeout=15.0)   # article_b
 ```
 در `TimeoutError` مقاله با خلاصهٔ RSS خودش تحلیل می‌شود؛ یک ناشر کند یک اسلات بچ را قفل نمی‌کند. متن بلندتر از متن فعلی جایگزین می‌شود و `text_source="full_body"` ثبت می‌گردد.
 
+لینک‌های `news.google.com/rss/articles/...` (و `/articles/...`) **هیچ درخواست HTTP و هیچ اجرای Trafilatura** ندارند: گوگل یک صفحهٔ ریدایرکت جاوااسکریپتی برمی‌گرداند که Trafilatura آن را دور می‌ریزد. `is_google_news_wrapper_url()` در `app/collectors/rss_collector.py` این لینک‌ها را در `fetch_article_full_text` و در حلقهٔ `fetch_feed` کنار می‌گذارد و `title`/`summary` خود فید تحلیل می‌شود.
+
 ### Circuit Breaker — رفتار دقیق
-- بودجهٔ درخواست‌های در جریان: `len(tasks) + transient_failures < ai_max_consecutive_failures`؛ یعنی پس از ۵ خطای گذرای متوالی، **دقیقاً ۵ فراخوانی مدل** مصرف شده و بقیهٔ صف دست‌نخورده می‌ماند.
+- بودجهٔ اسلات‌ها: `max(0, min(ai_processing_concurrency, ai_max_consecutive_failures - transient_failures))`؛ یعنی پس از ۵ خطای گذرای متوالی، **دقیقاً ۵ فراخوانی مدل** مصرف شده و بقیهٔ صف دست‌نخورده می‌ماند.
+- **پرکردن اسلات از خود تسک، نه از حلقهٔ مصرف:** `_on_attempt_done` پس از هر پایان اسلات را آزاد می‌کند و بلافاصله مقالهٔ بعدی صف را dispatch می‌کند. حلقهٔ سریال (تطبیق رویداد، ماتریس روایت‌ها، ارسال فوری تلگرام) فقط نتایج را **به ترتیب صف** تحویل می‌گیرد و دیگر تعیین‌کنندهٔ زمان شروع درخواست بعدی نیست. پیش از این، یک مقالهٔ کند در ابتدای صف سه اسلات دیگر را برای تمام مدت آن بیکار می‌گذاشت و در لاگ واقعی شکاف‌های ۲۰۰ ثانیه‌ای بدون هیچ فراخوانی مدل دیده می‌شد.
 - خطای گذرا (`is_retryable_ai_error`: 429/503/timeout): `status="failed"`، `attempt_count += 1`، `commit` فوری، سپس در صورت رسیدن شمارنده به ۵: `_circuit_breaker_tripped = True` و `break`.
 - خطای غیرگذرا: `status="failed"` و ادامهٔ بچ (یک خبر خراب بچ را متوقف نمی‌کند).
 - مقاله‌ای که تسکش با `break` رها می‌شود، `attempt_count` مصرف نمی‌کند (شمارش در نیمهٔ سریال انجام می‌شود).
