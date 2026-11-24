@@ -212,6 +212,7 @@ async def publish_report(
     admin_chat_id: str | int | None = None,
     base_backoff: float = 1.0,
     persist: bool = True,
+    send_admin_summary: bool = True,
 ) -> list[dict[str, Any]]:
     """Publish formatted report to Telegram channel and admin chat.
 
@@ -221,8 +222,9 @@ async def publish_report(
     - No caller parameter can bypass this check in non-test environments.
 
     Dual Destination Delivery:
-    - Channel: Receives full report chunks formatted in HTML.
-    - Admin Chat: Receives operational summary and telemetry info.
+    - Channel: Receives the report text formatted in HTML.
+    - Admin Chat: Receives operational summary and telemetry info, unless the caller
+      sends its own fail-safe admin report and disables this summary.
     """
     if not dry_run and content_quality != "real":
         if settings.app_env != "test":
@@ -346,7 +348,7 @@ async def publish_report(
                     await session.commit()
 
         # Step 2: Send operational summary to admin chat
-        if target_admin:
+        if target_admin and send_admin_summary:
             channel_msg_ids = [s["message_id"] for s in sent if s["type"] == "channel"]
             admin_msg = (
                 "🔔 <b>گزارش وضعیت انتشار در کانال تلگرام</b>\n"
@@ -380,6 +382,62 @@ async def publish_report(
             db_report.telegram_message_ids = [s["message_id"] for s in sent]
             await session.commit()
         raise
+    finally:
+        if own_bot:
+            await bot.session.close()
+
+
+async def publish_admin_report(
+    report_text: str,
+    bot: Bot | None = None,
+    admin_chat_id: str | int | None = None,
+    base_backoff: float = 1.0,
+    dry_run: bool = False,
+) -> list[dict[str, Any]]:
+    """Send the full statistical/operational report to the admin's private chat.
+
+    The caller wraps this in ``try/except``: a failure here must never block the public
+    channel delivery. In the test environment an injected bot is used as-is; without an
+    injected bot nothing is sent, so the suite never touches the Telegram network.
+    """
+    target = str(admin_chat_id or settings.telegram_admin_chat_id or "")
+    if not target or target == "0":
+        logger.warning("Admin report skipped: TELEGRAM_ADMIN_CHAT_ID is not configured.")
+        return []
+
+    chunks = split_text(report_text, limit=3900)
+    if dry_run or (bot is None and settings.app_env == "test"):
+        logger.info(
+            "Admin report [%s] -> %s (%d chunk(s)).",
+            "DRY RUN" if dry_run else "TEST",
+            target,
+            len(chunks),
+        )
+        return [
+            {"chat_id": target, "message_id": 9000 + index, "type": "admin"}
+            for index in range(1, len(chunks) + 1)
+        ]
+
+    own_bot = False
+    if bot is None:
+        bot = Bot(
+            settings.telegram_bot_token,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
+        own_bot = True
+
+    sent: list[dict[str, Any]] = []
+    try:
+        for chunk in chunks:
+            msg = await send_telegram_message_resilient(
+                bot=bot,
+                chat_id=target,
+                text=chunk,
+                base_backoff=base_backoff,
+                disable_web_page_preview=True,
+            )
+            sent.append({"chat_id": target, "message_id": msg.message_id, "type": "admin"})
+        return sent
     finally:
         if own_bot:
             await bot.session.close()

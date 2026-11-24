@@ -6,7 +6,7 @@ from app.editorial.telegraph_topics import (
     _item_topic_keys,
     group_items_by_telegraph_topic,
 )
-from app.reports.telegraph_report import build_index_page, format_telegram_notification
+from app.reports.telegraph_report import build_index_page, format_admin_report
 
 
 def _item(event_id=None, topic_key="ir", topic_keys=None, headline="خبر"):
@@ -88,7 +88,7 @@ def test_multi_topic_item_published_in_all_and_counted_once_in_index():
     # unique count should be 1
     assert "تعداد اخبار این بازه: 1" in rendered
 
-    text = format_telegram_notification(
+    text = format_admin_report(
         date(2026, 11, 14), 8, "https://telegra.ph/report-1", sections,
         {"window_start": "2026-11-13T20:00:00+00:00", "window_end": "2026-11-14T08:00:00+00:00"},
     )

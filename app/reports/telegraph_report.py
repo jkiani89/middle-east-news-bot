@@ -454,7 +454,7 @@ def build_item_block(
 
     nodes.append(_paragraph("📡 منبع: ", source))
     nodes.append(_paragraph("🕒 زمان انتشار: ", published_at))
-    nodes.append(_paragraph("🛡 وضعیت راستی‌آزمایی: ", verification))
+    nodes.append(_paragraph("🔎 وضعیت راستی‌آزمایی: ", verification))
 
     link = _anchor(url, url)
     nodes.append(_paragraph("🔗 لینک اصلی خبر: ", link if link else "در دسترس نیست"))
@@ -618,12 +618,8 @@ def build_topic_part(
                 )
             )
         )
-    nodes.append(
-        _paragraph(
-            "🛡 این بخش خودکار و بر پایه اصول بی‌طرفی و انتساب دقیق منابع تدوین شده است. "
-            "خبرهای تک‌منبعی و تأییدنشده با برچسب شفاف منتشر شده‌اند."
-        )
-    )
+    # The public page ends with the editorial news and its identity line; technical
+    # system footers/warnings are not rendered on Telegraph.
     return title, nodes
 
 
@@ -697,10 +693,6 @@ def build_index_page(
     nodes: list[dict[str, Any]] = [
         _paragraph(f"بازه گزارش: از {start_text} تا {end_text} (به وقت {settings.timezone})"),
         _paragraph(f"تعداد اخبار این بازه: {total}"),
-        _paragraph(
-            "وضعیت راستی‌آزمایی هر خبر در صفحه موضوع همان خبر آمده است. "
-            "خبرهای تک‌منبعی، تأییدنشده و خبرهای بدون خلاصه نیز با برچسب شفاف منتشر شده‌اند."
-        ),
     ]
 
     if not sections:
@@ -732,47 +724,50 @@ def build_index_page(
                 )
             )
 
-    transparency: list[str] = []
-    if metadata.get("articles_unprocessed"):
-        transparency.append(
-            f"{fa_number(int(metadata['articles_unprocessed']))} خبر هنوز تحلیل نشده بود "
-            f"(در صف یا منقضی پیش از تحلیل) و در بخش «{UNPROCESSED_TOPIC_NAME}» با برچسب "
-            f"«{SUMMARY_MISSING_LABEL}» منتشر شد."
-        )
-    if metadata.get("articles_rejected"):
-        transparency.append(
-            f"{fa_number(int(metadata['articles_rejected']))} خبر بررسی و در گیت تحریریه رد شد؛ "
-            f"این موارد فقط به‌صورت شمارشی در همین یادداشت گزارش می‌شوند و جزو اخبار «تحلیل‌نشده» نیستند."
-        )
-    if metadata.get("articles_failed"):
-        transparency.append(
-            f"{fa_number(int(metadata['articles_failed']))} خبر در مرحله تحلیل با خطا مواجه شد؛ "
-            f"این موارد فقط به‌صورت شمارشی در همین یادداشت گزارش می‌شوند."
-        )
-    if metadata.get("articles_without_summary"):
-        transparency.append(
-            f"{fa_number(int(metadata['articles_without_summary']))} رویداد هنوز خلاصه تحریریه نداشت و "
-            f"با برچسب «{SUMMARY_MISSING_LABEL}» منتشر شد."
-        )
-    if metadata.get("unlinked_articles"):
-        transparency.append(
-            f"{fa_number(int(metadata['unlinked_articles']))} خبر هنوز به رویدادی متصل نشده بود و "
-            f"با اطلاعات اصلی خود منتشر شد."
-        )
-    if metadata.get("flagged_events_included"):
-        transparency.append(
-            f"{metadata['flagged_events_included']} رویداد برای بازبینی تحریریه علامت‌گذاری شده است."
-        )
-    for note in transparency:
-        nodes.append(_paragraph("یادداشت شفافیت: ", note))
-
-    nodes.append(
-        _paragraph("🛡 این گزارش خودکار و بر پایه اصول بی‌طرفی و انتساب دقیق منابع تدوین شده است.")
-    )
+    # The public index carries editorial news only: collected-but-unsummarised rows are
+    # counted in the admin report, never rendered here, and the technical footer/warning
+    # block is omitted from the public page.
     return title, nodes
 
 
-def format_telegram_notification(
+def format_public_channel_report(
+    report_date: date,
+    slot_hour: int,
+    index_url: str,
+    sections: list[tuple[str, str, list[dict[str, Any]]]],
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    """Minimal editorial message for the public Telegram channel.
+
+    No counts, no page counts, no "unprocessed" row and no technical footer: the public
+    post only names the active editorial topics and links to the full Telegraph report.
+    """
+    label = slot_label(slot_hour)
+    date_str = report_date.isoformat() if hasattr(report_date, "isoformat") else str(report_date)
+
+    topic_lines: list[str] = []
+    for key, name, _topic_items in sections:
+        icon = telegraph_topic(key).icon
+        topic_lines.append(f"• {icon} {name}".strip() if icon else f"• {name}")
+
+    lines = [
+        "📊 <b>جمع‌بندی ۱۲ ساعته تحولات</b>",
+        f"نوبت {label} ({label}) • {date_str}",
+        "",
+        "<b>مهم‌ترین محورهای این نوبت:</b>",
+        *topic_lines,
+        "",
+    ]
+    if _is_http_url(index_url):
+        lines.append(
+            f'📖 <a href="{index_url}">مطالعه گزارش کامل و مشروح در Telegraph</a>'
+        )
+    else:
+        lines.append("📖 لینک گزارش کامل در دسترس نیست.")
+    return "\n".join(lines)
+
+
+def format_admin_report(
     report_date: date,
     slot_hour: int,
     index_url: str,
@@ -780,12 +775,11 @@ def format_telegram_notification(
     metadata: dict[str, Any] | None = None,
     topic_pages: dict[str, dict[str, Any]] | None = None,
 ) -> str:
-    """HTML notification that points Telegram readers at the full Telegraph report.
+    """Full statistical/operational report sent only to the admin's private chat.
 
-    The index link leads to the whole 12-hour report and every topic is listed with a
-    direct link to its own page, so a reader reaches a subject in one tap instead of
-    going through the index first. A topic whose page URL is missing (dry run, partial
-    publication) is still listed by name with its item count, never dropped.
+    Includes the exact window, total news and topics, the per-topic count (and page
+    count when paginated), the ``اخبار پردازش‌نشده`` row, the Telegraph index link and
+    the technical footer. It is never sent to the public channel.
     """
     metadata = metadata or {}
     pages = topic_pages or {}
@@ -831,6 +825,11 @@ def format_telegram_notification(
             if links:
                 suffix += f" (بخش‌ها: {'، '.join(links)})"
         section_lines.append(f"• {label_html}{suffix}")
+
+    unprocessed = int(metadata.get("articles_unprocessed") or 0)
+    if unprocessed:
+        section_lines.append(f"• 🗂 {UNPROCESSED_TOPIC_NAME}: {fa_number(unprocessed)} خبر")
+
     link_html = (
         f'<a href="{index_url}">صفحه اصلی گزارش در Telegraph</a>'
         if _is_http_url(index_url)
@@ -847,6 +846,28 @@ def format_telegram_notification(
         "🛡 خبرهای تک‌منبعی و بدون خلاصه با برچسب شفاف در گزارش باقی مانده‌اند.",
     ]
     return "\n".join(lines)
+
+
+def format_telegram_notification(
+    report_date: date,
+    slot_hour: int,
+    index_url: str,
+    sections: list[tuple[str, str, list[dict[str, Any]]]],
+    metadata: dict[str, Any] | None = None,
+    topic_pages: dict[str, dict[str, Any]] | None = None,
+) -> str:
+    """Backward-compatible public-channel message (minimal editorial template)."""
+    return format_public_channel_report(
+        report_date, slot_hour, index_url, sections, metadata
+    )
+
+
+# Explicit aliases so callers can name the channel they are building for.
+format_public_report = format_public_channel_report
+format_minimal_channel_report = format_public_channel_report
+format_full_report = format_admin_report
+format_admin_telegram_report = format_admin_report
+format_full_telegram_notification = format_admin_report
 
 
 def _new_row(report_date: date, slot_hour: int) -> TelegraphReport:

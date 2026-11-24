@@ -52,12 +52,17 @@ from app.reports.telegraph_report import (
     TELEGRAPH_COMPLETED,
     TELEGRAPH_DISABLED,
     TELEGRAPH_FAILED,
+    format_admin_report,
     format_telegram_notification,
     notification_ready,
     publish_telegraph_report,
     record_telegram_status,
 )
-from app.telegram.publisher import MockPublishRefusedError, publish_report
+from app.telegram.publisher import (
+    MockPublishRefusedError,
+    publish_admin_report,
+    publish_report,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +326,7 @@ def _dump_dry_run_briefing(
     items: list[dict[str, Any]],
     metadata: dict[str, Any],
     notification: str | None = None,
+    admin_notification: str | None = None,
 ) -> None:
     """Write the dry-run bulletin text so a test run leaves inspectable evidence.
 
@@ -336,6 +342,8 @@ def _dump_dry_run_briefing(
         (out_dir / f"{stem}.txt").write_text(text, encoding="utf-8")
         if notification:
             (out_dir / f"{stem}.telegram.txt").write_text(notification, encoding="utf-8")
+        if admin_notification:
+            (out_dir / f"{stem}.admin.txt").write_text(admin_notification, encoding="utf-8")
         if metadata.get("telegraph_index_url"):
             (out_dir / f"{stem}.telegraph.txt").write_text(
                 str(metadata["telegraph_index_url"]), encoding="utf-8"
@@ -464,13 +472,16 @@ async def publish_slot_briefing(
     # 2) Telegram: a notification that links to the report index (the full text is the
     #    fallback when Telegraph is switched off by the operator).
     notification_sections = telegraph.get("sections") or sections
+    telegraph_url = str(telegraph.get("index_url") or telegraph.get("index_path") or "")
     if telegraph_status == TELEGRAPH_DISABLED:
         report_text = text
     else:
+        # Public channel: the minimal editorial template only (no counts, no pages, no
+        # unprocessed row, no technical footer).
         report_text = format_telegram_notification(
             rep_date,
             slot_hour,
-            str(telegraph.get("index_url") or telegraph.get("index_path") or ""),
+            telegraph_url,
             notification_sections,
             {
                 **metadata,
@@ -479,6 +490,23 @@ async def publish_slot_briefing(
             },
             topic_pages=telegraph.get("pages") or {},
         )
+
+    # Admin chat: the full statistical/operational report (exact window, totals, per-topic
+    # counts and page counts, the unprocessed row, the index link and the technical
+    # footer). It never goes to the public channel.
+    admin_text = format_admin_report(
+        rep_date,
+        slot_hour,
+        telegraph_url,
+        notification_sections,
+        {
+            **metadata,
+            **(telegraph.get("metadata") or {}),
+            "window_start": telegraph.get("window_start"),
+            "window_end": telegraph.get("window_end"),
+        },
+        topic_pages=telegraph.get("pages") or {},
+    )
 
     messages = 0
     message_ids: list[int] = []
@@ -502,6 +530,9 @@ async def publish_slot_briefing(
                 bot=bot,
                 dry_run=dry_run,
                 persist=False,
+                # The admin already receives the dedicated full report below; skip the
+                # generic operational summary so it is never sent twice.
+                send_admin_summary=False,
             )
             message_ids = [entry["message_id"] for entry in sent if entry.get("message_id")]
             messages = len(sent)
@@ -514,6 +545,21 @@ async def publish_slot_briefing(
             logger.exception("Telegram notification failed for %s of %s.", label, rep_date)
             telegram_status = TELEGRAM_FAILED
             error = str(exc)
+
+    # Fail-safe admin delivery: this runs after the public send and is fully isolated, so
+    # any admin error can never prevent or undo the public channel delivery.
+    admin_messages = 0
+    admin_error: str | None = None
+    try:
+        admin_sent = await publish_admin_report(admin_text, bot=bot, dry_run=dry_run)
+        admin_messages = len(admin_sent)
+    except Exception as exc:
+        admin_error = str(exc)
+        logger.exception(
+            "Admin report delivery failed for %s of %s; public delivery is unaffected.",
+            label,
+            rep_date,
+        )
 
     if dry_run:
         _dump_dry_run_briefing(
@@ -528,6 +574,7 @@ async def publish_slot_briefing(
                 "telegram_status": telegram_status,
             },
             notification=report_text,
+            admin_notification=admin_text,
         )
         return {
             "messages": messages,
@@ -536,6 +583,7 @@ async def publish_slot_briefing(
             "skipped": None,
             "error": error,
             "telegraph_index_url": telegraph.get("index_url"),
+            "admin_status": "dry_run",
         }
 
     await mark_slot_telegraph(
@@ -575,6 +623,8 @@ async def publish_slot_briefing(
         "skipped": None,
         "error": error,
         "telegraph_index_url": telegraph.get("index_url"),
+        "admin_messages": admin_messages,
+        "admin_error": admin_error,
     }
 
 

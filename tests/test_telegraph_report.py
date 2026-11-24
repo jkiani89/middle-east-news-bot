@@ -27,7 +27,8 @@ from app.reports.telegraph_report import (
     build_index_page,
     build_item_block,
     build_topic_page,
-    format_telegram_notification,
+    format_admin_report,
+    format_public_channel_report,
     normalize_topic_entry,
     notification_ready,
     publish_telegraph_report,
@@ -247,7 +248,8 @@ def test_a_topic_that_does_not_fit_is_planned_in_several_parts():
     assert sum(part.item_count for part in parts) == len(items)
 
 
-def test_index_page_reports_missing_summary_transparency():
+def test_index_page_omits_system_transparency_and_footer():
+    """The public index carries editorial news only; no footnote/warning block."""
     sections = group_items_by_telegraph_topic([_item(1)])
     start, end = _window()
     _title, nodes = build_index_page(
@@ -261,9 +263,66 @@ def test_index_page_reports_missing_summary_transparency():
     )
     rendered = _text(nodes)
 
-    assert "۲" in rendered or "2" in rendered
-    assert SUMMARY_MISSING_LABEL in rendered
-    assert "بازبینی تحریریه" in rendered
+    assert "یادداشت شفافیت" not in rendered
+    assert "🛡" not in rendered
+    assert "اخبار پردازش‌نشده" not in rendered
+
+
+def test_unprocessed_items_are_never_grouped_for_public_telegraph():
+    items = [
+        _item(1, "خبر تحریریه", topic_key="ir"),
+        dict(_item(2, "خبر خام"), topic_key="unprocessed", topic_keys=["unprocessed"], topic_fa="اخبار پردازش‌نشده"),
+    ]
+    sections = group_items_by_telegraph_topic(items)
+    keys = [key for key, _name, _items in sections]
+
+    assert "unprocessed" not in keys
+    rendered = _text([
+        node
+        for _key, _name, topic_items in sections
+        for node in build_topic_page(_name, date(2026, 11, 14), 8, topic_items, *_window())[1]
+    ])
+    assert "خبر خام" not in rendered
+    assert "خبر تحریریه" in rendered
+
+
+def test_public_channel_report_is_the_minimal_template():
+    sections = group_items_by_telegraph_topic([_item(1)])
+    text = format_public_channel_report(
+        date(2026, 11, 14), 8, "https://telegra.ph/report-1", sections, {}
+    )
+
+    assert text.startswith("📊 <b>جمع‌بندی ۱۲ ساعته تحولات</b>")
+    assert "نوبت 08:00 (08:00) • 2026-11-14" in text
+    assert "<b>مهم‌ترین محورهای این نوبت:</b>" in text
+    assert "• 🇮🇷/🇺🇸 ایران و آمریکا" in text
+    assert '<a href="https://telegra.ph/report-1">مطالعه گزارش کامل و مشروح در Telegraph</a>' in text
+    # No counts, page counts, unprocessed row or technical footer in the public post.
+    assert "خبر در" not in text
+    assert "صفحه" not in text
+    assert "اخبار پردازش‌نشده" not in text
+    assert "🛡" not in text
+
+
+def test_admin_report_keeps_counts_pages_and_the_unprocessed_row():
+    sections = group_items_by_telegraph_topic([_item(1), _item(2, "خبر دوم")])
+    text = format_admin_report(
+        date(2026, 11, 14),
+        8,
+        "https://telegra.ph/report-1",
+        sections,
+        {"articles_unprocessed": 3},
+        topic_pages={"ir": {"url": "https://telegra.ph/p1", "part_count": 2, "parts": [
+            {"part": 1, "url": "https://telegra.ph/p1"},
+            {"part": 2, "url": "https://telegra.ph/p2"},
+        ]}},
+    )
+
+    assert "📊 <b>گزارش ۱۲ ساعته تحولات — نوبت 08:00</b>" in text
+    assert ": 2 خبر در ۲ صفحه" in text
+    assert "• 🗂 اخبار پردازش‌نشده: ۳ خبر" in text
+    assert "صفحه اصلی گزارش در Telegraph" in text
+    assert "🛡" in text
 
 
 def test_oversized_page_content_raises_instead_of_dropping_news():
@@ -449,9 +508,9 @@ async def test_client_failure_marks_the_report_failed_and_keeps_no_index():
     assert notification_ready(result) is False
 
 
-def test_notification_links_the_index_and_names_every_topic():
+def test_minimal_channel_message_links_the_index_and_names_every_topic():
     sections = group_items_by_telegraph_topic([_item(1, "خبر نخست")])
-    text = format_telegram_notification(
+    text = format_public_channel_report(
         date(2026, 11, 14),
         8,
         "https://telegra.ph/report-1",
@@ -462,4 +521,6 @@ def test_notification_links_the_index_and_names_every_topic():
     assert "https://telegra.ph/report-1" in text
     assert "ایران و آمریکا" in text
     assert "08:00" in text
-    assert "تک‌منبعی" in text
+    # The public message has no verification/technical footer.
+    assert "تک‌منبعی" not in text
+    assert "🛡" not in text

@@ -45,9 +45,11 @@ class TelegraphTopic:
     icon: str = ""
 
 
+# The public Telegraph pages carry editorial, summarised news only. The
+# presentation-only "unprocessed" heading is deliberately not part of this list:
+# raw collected rows are counted for the admin report but never rendered publicly.
 DEFAULT_TOPICS: tuple[TelegraphTopic, ...] = (
     TelegraphTopic(key=OTHER_TOPIC_KEY, name_fa=OTHER_TOPIC_NAME, order=99, icon="📌"),
-    TelegraphTopic(key=UNPROCESSED_TOPIC_KEY, name_fa=UNPROCESSED_TOPIC_NAME, order=97, icon="🗂"),
     TelegraphTopic(key=UNPUBLISHED_TOPIC_KEY, name_fa=UNPUBLISHED_TOPIC_NAME, order=98, icon="📋"),
 )
 
@@ -70,10 +72,9 @@ def build_telegraph_topics(payload: dict[str, Any] | None) -> tuple[TelegraphTop
         )
     if OTHER_TOPIC_KEY not in seen:
         topics.append(TelegraphTopic(OTHER_TOPIC_KEY, OTHER_TOPIC_NAME, 99, icon="📌"))
-    # Presentation-only sections: always available so an item that carries no analysis
-    # never falls back into "سایر تحولات", and never disappears when it is empty.
-    if UNPROCESSED_TOPIC_KEY not in seen:
-        topics.append(TelegraphTopic(UNPROCESSED_TOPIC_KEY, UNPROCESSED_TOPIC_NAME, 97, icon="🗂"))
+    # The unprocessed heading is intentionally not registered: raw collected rows are
+    # not part of the public report. The unpublished heading is presentation-only so a
+    # rejection/error count never falls back into "سایر تحولات".
     if UNPUBLISHED_TOPIC_KEY not in seen:
         topics.append(TelegraphTopic(UNPUBLISHED_TOPIC_KEY, UNPUBLISHED_TOPIC_NAME, 98, icon="📋"))
     return tuple(sorted(topics, key=lambda topic: (topic.order, topic.key)))
@@ -145,6 +146,10 @@ def group_items_by_telegraph_topic(
     seen_in_section: dict[str, set[Any]] = {}
     for item in items:
         for key in _item_topic_keys(item):
+            # Raw collected rows never reach the public Telegraph pages: the unprocessed
+            # heading and its sub-pages are excluded from public rendering entirely.
+            if key == UNPROCESSED_TOPIC_KEY:
+                continue
             resolved = telegraph_topic(key).key
             bucket = grouped.setdefault(resolved, [])
             seen = seen_in_section.setdefault(resolved, set())

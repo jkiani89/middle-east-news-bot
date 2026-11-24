@@ -8,7 +8,7 @@ name with its item count, because the notification must never lose a subject.
 
 from datetime import date
 
-from app.reports.telegraph_report import format_telegram_notification
+from app.reports.telegraph_report import format_admin_report
 
 REPORT_DATE = date(2026, 11, 18)
 WINDOW = {
@@ -32,7 +32,7 @@ def _pages() -> dict[str, dict[str, object]]:
 
 
 def test_notification_links_the_index_and_every_topic_page() -> None:
-    text = format_telegram_notification(
+    text = format_admin_report(
         REPORT_DATE,
         8,
         "https://telegra.ph/report-index-11-18",
@@ -48,7 +48,7 @@ def test_notification_links_the_index_and_every_topic_page() -> None:
 
 
 def test_every_section_keeps_its_item_count_next_to_its_link() -> None:
-    text = format_telegram_notification(
+    text = format_admin_report(
         REPORT_DATE,
         8,
         "https://telegra.ph/report-index-11-18",
@@ -66,7 +66,7 @@ def test_topic_without_a_page_url_is_still_listed_by_name() -> None:
     pages = _pages()
     pages.pop("ye")
 
-    text = format_telegram_notification(
+    text = format_admin_report(
         REPORT_DATE,
         8,
         "https://telegra.ph/report-index-11-18",
@@ -81,7 +81,7 @@ def test_topic_without_a_page_url_is_still_listed_by_name() -> None:
 
 
 def test_no_topic_pages_degrades_to_names_only_and_keeps_the_index_link() -> None:
-    text = format_telegram_notification(
+    text = format_admin_report(
         REPORT_DATE,
         8,
         "https://telegra.ph/report-index-11-18",
@@ -109,7 +109,7 @@ def test_a_paginated_topic_lists_its_page_count_and_every_part_link() -> None:
         ],
     }
 
-    text = format_telegram_notification(
+    text = format_admin_report(
         REPORT_DATE,
         8,
         "https://telegra.ph/report-index-11-18",
@@ -124,7 +124,7 @@ def test_a_paginated_topic_lists_its_page_count_and_every_part_link() -> None:
 
 
 def test_a_legacy_flat_topic_entry_still_links_its_single_page() -> None:
-    text = format_telegram_notification(
+    text = format_admin_report(
         REPORT_DATE,
         8,
         "https://telegra.ph/report-index-11-18",
@@ -138,7 +138,7 @@ def test_a_legacy_flat_topic_entry_still_links_its_single_page() -> None:
 
 
 def test_missing_index_url_states_it_instead_of_emitting_a_broken_link() -> None:
-    text = format_telegram_notification(
+    text = format_admin_report(
         REPORT_DATE,
         8,
         "",
