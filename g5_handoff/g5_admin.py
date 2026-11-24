@@ -310,9 +310,9 @@ def _fmt_rows(records) -> str:
     cols = list(records[0].keys())
     rows = [[("" if r[c] is None else str(r[c])) for c in cols] for r in records]
     widths = [max(len(c), *(len(r[i]) for r in rows)) for i, c in enumerate(cols)]
-    out = ["  " + " | ".join(c.ljust(w) for c, w in zip(cols, widths)),
+    out = ["  " + " | ".join(c.ljust(w) for c, w in zip(cols, widths, strict=False)),
            "  " + "-+-".join("-" * w for w in widths)]
-    out += ["  " + " | ".join(v.ljust(w) for v, w in zip(r, widths)) for r in rows]
+    out += ["  " + " | ".join(v.ljust(w) for v, w in zip(r, widths, strict=False)) for r in rows]
     return "\n".join(out)
 
 

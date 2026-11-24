@@ -9,7 +9,7 @@ import os
 import re
 import ssl
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
@@ -533,7 +533,7 @@ async def main() -> int:
         return 5
 
     report: dict = {
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": datetime.now(UTC).isoformat(),
         "dsn_redacted": redact(dsn),
         "slot": f"{args.slot_date} {args.slot_hour:02d}:00",
         "sections": {},
