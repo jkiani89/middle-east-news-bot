@@ -35,6 +35,7 @@ from app.collectors.source_manager import sync_sources  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.database.connection import SessionLocal  # noqa: E402
 from app.database.models import DailyReport  # noqa: E402
+from app.notifications.alerts import maybe_send_admin_alert  # noqa: E402
 from app.processors.pipeline import collect_and_process  # noqa: E402
 from app.reports.daily_report import (  # noqa: E402
     current_due_slot,
@@ -187,70 +188,76 @@ async def run_batch_pipeline(
 
     Returns exit code (0 on success, non-zero on error).
     """
-    logger.info("=== Starting batch pipeline run ===")
-
-    # 1. Synchronize sources
-    logger.info("Step 1/4: Synchronizing news sources from editorial/sources.json...")
-    await sync_sources()
-
-    # Reconcile any interrupted jobs from previous runs
-    await reconcile_interrupted_jobs()
-
-    # 2. Collect and process new articles
-    logger.info("Step 2/4: Collecting and processing new articles...")
     try:
-        processed_count = await collect_and_process()
-        logger.info("Successfully processed %d articles in this cycle.", processed_count)
-    except Exception as exc:
-        logger.exception("Error during news collection and processing: %s", exc)
-        raise
+        logger.info("=== Starting batch pipeline run ===")
 
-    # 3. Check and publish the report of the due slot (and recover missed ones)
-    logger.info("Step 3/4: Checking scheduled briefing trigger...")
-    if scheduled_briefings:
-        logger.info("Publishing the due briefing and recovering missed slots...")
+        # 1. Synchronize sources
+        logger.info("Step 1/4: Synchronizing news sources from editorial/sources.json...")
+        await sync_sources()
+
+        # Reconcile any interrupted jobs from previous runs
+        await reconcile_interrupted_jobs()
+
+        # 2. Collect and process new articles
+        logger.info("Step 2/4: Collecting and processing new articles...")
         try:
-            job_logs = await run_scheduled_briefings(dry_run=dry_run_daily_report)
-            for job_log in job_logs:
-                logger.info(
-                    "Briefing job finished with status '%s' (%d messages).",
-                    job_log.status,
-                    job_log.processed_count or 0,
-                )
+            processed_count = await collect_and_process()
+            logger.info("Successfully processed %d articles in this cycle.", processed_count)
         except Exception as exc:
-            logger.exception("Error during scheduled briefing publishing: %s", exc)
+            logger.exception("Error during news collection and processing: %s", exc)
             raise
-    else:
-        should_publish, reason = await should_run_daily_report(
-            force=force_daily_report, target_hour=slot_hour, slot_hour=slot_hour
-        )
-        logger.info("Daily report decision: run=%s (%s)", should_publish, reason)
 
-        if should_publish:
-            logger.info("Generating and publishing the report...")
+        # 3. Check and publish the report of the due slot (and recover missed ones)
+        logger.info("Step 3/4: Checking scheduled briefing trigger...")
+        if scheduled_briefings:
+            logger.info("Publishing the due briefing and recovering missed slots...")
             try:
-                if slot_hour is None:
-                    job_log = await daily_report(dry_run=dry_run_daily_report)
-                else:
-                    job_log = await daily_report(
-                        dry_run=dry_run_daily_report, slot_hour=slot_hour
+                job_logs = await run_scheduled_briefings(dry_run=dry_run_daily_report)
+                for job_log in job_logs:
+                    logger.info(
+                        "Briefing job finished with status '%s' (%d messages).",
+                        job_log.status,
+                        job_log.processed_count or 0,
                     )
-                logger.info(
-                    "Daily report finished with status '%s' (%d items sent).",
-                    job_log.status,
-                    job_log.processed_count or 0,
-                )
             except Exception as exc:
-                logger.exception("Error during daily report publishing: %s", exc)
+                logger.exception("Error during scheduled briefing publishing: %s", exc)
                 raise
+        else:
+            should_publish, reason = await should_run_daily_report(
+                force=force_daily_report, target_hour=slot_hour, slot_hour=slot_hour
+            )
+            logger.info("Daily report decision: run=%s (%s)", should_publish, reason)
 
-    # 4. Clean up old logs
-    logger.info("Step 4/4: Running routine maintenance...")
-    await cleanup_gemini_request_log()
-    await cleanup_heavy_columns()
+            if should_publish:
+                logger.info("Generating and publishing the report...")
+                try:
+                    if slot_hour is None:
+                        job_log = await daily_report(dry_run=dry_run_daily_report)
+                    else:
+                        job_log = await daily_report(
+                            dry_run=dry_run_daily_report, slot_hour=slot_hour
+                        )
+                    logger.info(
+                        "Daily report finished with status '%s' (%d items sent).",
+                        job_log.status,
+                        job_log.processed_count or 0,
+                    )
+                except Exception as exc:
+                    logger.exception("Error during daily report publishing: %s", exc)
+                    raise
 
-    logger.info("=== Batch pipeline run finished successfully ===")
-    return 0
+        # 4. Clean up old logs
+        logger.info("Step 4/4: Running routine maintenance...")
+        await cleanup_gemini_request_log()
+        await cleanup_heavy_columns()
+
+        logger.info("=== Batch pipeline run finished successfully ===")
+        return 0
+    finally:
+        try:
+            await maybe_send_admin_alert()
+        except Exception:  # noqa: BLE001
+            logger.exception("Admin alert check failed; continuing.")
 
 
 def main() -> None:
