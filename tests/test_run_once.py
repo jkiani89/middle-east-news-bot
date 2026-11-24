@@ -327,6 +327,7 @@ async def test_run_batch_pipeline_flow():
         patch("scripts.run_once.should_run_daily_report", new_callable=AsyncMock) as mock_should,
         patch("scripts.run_once.daily_report", new_callable=AsyncMock) as mock_daily,
         patch("scripts.run_once.cleanup_gemini_request_log", new_callable=AsyncMock) as mock_clean,
+        patch("scripts.run_once.engine", new_callable=AsyncMock) as mock_engine,
     ):
         mock_collect.return_value = 5
         mock_should.return_value = (True, "Testing")
@@ -342,3 +343,4 @@ async def test_run_batch_pipeline_flow():
         mock_collect.assert_awaited_once()
         mock_daily.assert_awaited_once_with(dry_run=True)
         mock_clean.assert_awaited_once()
+        mock_engine.dispose.assert_awaited_once()

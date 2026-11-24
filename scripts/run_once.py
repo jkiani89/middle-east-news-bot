@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -33,7 +34,7 @@ if env_file.is_file():
 
 from app.collectors.source_manager import sync_sources  # noqa: E402
 from app.config import settings  # noqa: E402
-from app.database.connection import SessionLocal  # noqa: E402
+from app.database.connection import SessionLocal, engine  # noqa: E402
 from app.database.models import DailyReport  # noqa: E402
 from app.notifications.alerts import maybe_send_admin_alert  # noqa: E402
 from app.processors.pipeline import collect_and_process  # noqa: E402
@@ -258,6 +259,24 @@ async def run_batch_pipeline(
             await maybe_send_admin_alert()
         except Exception:  # noqa: BLE001
             logger.exception("Admin alert check failed; continuing.")
+        # Nothing may outlive this coroutine: asyncio.run() closes the loop right
+        # after it returns, so a connection still sitting in the pool would be torn
+        # down uncleanly while Aiven keeps counting it against the free-tier limit.
+        try:
+            await engine.dispose()
+            logger.info("Database engine disposed; pooled connections released.")
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to dispose the database engine; continuing.")
+
+
+def _lingering_non_daemon_threads() -> list[threading.Thread]:
+    """Non-daemon threads that would otherwise keep the interpreter alive."""
+    current = threading.current_thread()
+    return [
+        thread
+        for thread in threading.enumerate()
+        if thread is not current and thread.is_alive() and not thread.daemon
+    ]
 
 
 def main() -> None:
@@ -309,14 +328,36 @@ def main() -> None:
     # test run would post real messages to the Telegram channel.
     settings.immediate_publish_dry_run = args.dry_run_daily_report
 
-    exit_code = asyncio.run(
-        run_batch_pipeline(
-            force_daily_report=args.force_daily_report,
-            dry_run_daily_report=args.dry_run_daily_report,
-            slot_hour=slot_hour,
-            scheduled_briefings=scheduled_briefings,
+    exit_code = 0
+    try:
+        exit_code = asyncio.run(
+            run_batch_pipeline(
+                force_daily_report=args.force_daily_report,
+                dry_run_daily_report=args.dry_run_daily_report,
+                slot_hour=slot_hour,
+                scheduled_briefings=scheduled_briefings,
+            )
         )
-    )
+    finally:
+        # Handlers keep buffered records; flush them before any hard exit.
+        logging.shutdown()
+
+    # asyncio.run() closes the loop with executor.shutdown(wait=False), so a
+    # google-genai call still retrying on an executor thread survives it. Those
+    # workers are non-daemon, and interpreter exit joins them: the process then
+    # hangs after "Step 4/4" until the SDK's own retries finish. The batch is fully
+    # persisted at this point, so nothing is lost by leaving immediately.
+    lingering = _lingering_non_daemon_threads()
+    if lingering:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        print(
+            f"Exiting with {len(lingering)} background thread(s) still alive; "
+            "forcing process exit.",
+            file=sys.stderr,
+            flush=True,
+        )
+        os._exit(exit_code)
     sys.exit(exit_code)
 
 
