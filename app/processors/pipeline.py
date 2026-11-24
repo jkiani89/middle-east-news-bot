@@ -418,10 +418,10 @@ def build_processing_query(limit: int):
     By ordering with ``CASE WHEN status = 'failed' THEN 0 ELSE 1 END ASC``,
     any retryable failed articles are served first before fresh articles fill
     the remainder of the batch, guaranteeing slots for retries.
-    Within each group, articles drain oldest-first via ``reference ASC`` so that
-    the queue is FIFO: a story that has been waiting the longest is analysed (or
-    rejected) before a newer one, which is what keeps it from silently reaching
-    ``article_max_age_hours`` and being parked as ``expired`` without an AI call.
+    Within each group, articles drain newest-first via ``collected_at DESC, id DESC``
+    so that a backed-up queue always publishes the freshest stories first instead of
+    spending a whole cycle on an old tail. ``id DESC`` breaks ties deterministically
+    for articles collected in the same run.
     """
     reference = article_reference_at()
     return (
@@ -438,7 +438,8 @@ def build_processing_query(limit: int):
         )
         .order_by(
             case((Article.status == "failed", 0), else_=1).asc(),
-            reference.asc(),
+            Article.collected_at.desc(),
+            Article.id.desc(),
         )
         .limit(limit)
     )

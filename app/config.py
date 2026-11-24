@@ -107,7 +107,10 @@ class Settings(BaseSettings):
     # Phase Y-9: an article older than this (publication time, else collection time)
     # is not worth an AI call. It is stored as 'expired' so dedup never re-inserts it.
     article_max_age_hours: int = 24
-    max_articles_per_batch: int = 30
+    # Ceiling per run. Kept at 35 so one cycle (full-text fetch + one model call per
+    # article at ai_processing_concurrency) finishes well inside 15-20 minutes and can
+    # never overlap the next hourly run.
+    max_articles_per_batch: int = 35
     ai_max_attempts: int = 3  # attempts per article before a transient failure is final
     ai_max_consecutive_failures: int = 5  # stop a batch after this many transient AI errors in a row
     ai_request_timeout_seconds: int = 45  # hard ceiling for a single model call (SDK retries can hang for minutes)

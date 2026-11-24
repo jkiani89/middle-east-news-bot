@@ -30,6 +30,9 @@ on:
 
 concurrency:
   group: scheduled-batch-runner
+  # Never cancel a run that is still working: an interrupted batch leaves the queue
+  # half-processed and the hourly cycle would restart from scratch forever. A run that
+  # overruns simply makes the next one wait for the group instead of killing it.
   cancel-in-progress: false
 
 jobs:
@@ -79,7 +82,9 @@ jobs:
       NUMBER_CHECK_MODE: ${{ vars.NUMBER_CHECK_MODE || 'log' }}
       FLAG_ALERT_ENABLED: ${{ vars.FLAG_ALERT_ENABLED || 'true' }}
       FLAG_ALERT_MAX_PER_RUN: ${{ vars.FLAG_ALERT_MAX_PER_RUN || '5' }}
-      MAX_ARTICLES_PER_BATCH: ${{ vars.MAX_ARTICLES_PER_BATCH || '45' }}
+      # 35 articles keeps a full cycle comfortably under 15-20 minutes, so a run never
+      # spills into the next hourly trigger even when several model calls are slow.
+      MAX_ARTICLES_PER_BATCH: ${{ vars.MAX_ARTICLES_PER_BATCH || '35' }}
       TIMEZONE: 'Asia/Tehran'
       DAILY_REPORT_HOUR: '8'
       FORCE_DAILY_REPORT: ${{ inputs.force_daily_report || 'false' }}

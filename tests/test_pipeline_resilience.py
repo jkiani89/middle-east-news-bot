@@ -294,9 +294,10 @@ def test_processing_query_includes_retryable_failures(monkeypatch):
 
     assert "attempt_count <" in sql
     assert "articles.status =" in sql
-    # FIFO: the queue drains oldest-first, so waiting time cannot push a story past the
-    # age limit before it is ever analysed.
-    assert "coalesce(articles.published_at, articles.collected_at) ASC" in sql
+    # Newest-first: a backed-up queue publishes the freshest stories first instead of
+    # spending a whole cycle on an old tail.
+    assert "articles.collected_at DESC" in sql
+    assert "articles.id DESC" in sql
     assert "collected" in compiled.params.values()
     assert "failed" in compiled.params.values()
     assert 3 in compiled.params.values()

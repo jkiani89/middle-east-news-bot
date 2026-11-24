@@ -104,13 +104,13 @@ def test_boundary_exactly_at_the_limit_is_still_fresh(monkeypatch: pytest.Monkey
 # --- A3: selection ------------------------------------------------------------
 
 
-def test_processing_query_filters_by_age_and_selects_oldest_first(
+def test_processing_query_filters_by_age_and_selects_newest_first(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Y-12: failed/retry articles get priority (CASE status='failed' THEN 0 ELSE 1)
 
-    so that new articles never starve retries, followed by oldest-first (FIFO) ordering
-    so that a story waiting longest cannot reach the age limit unanalysed.
+    so that new articles never starve retries, followed by newest-first
+    (``collected_at DESC, id DESC``) so a backed-up queue publishes fresh stories first.
     """
     monkeypatch.setattr(settings, "article_max_age_hours", 24)
     compiled = build_processing_query(10).compile(dialect=postgresql.dialect())
@@ -119,8 +119,10 @@ def test_processing_query_filters_by_age_and_selects_oldest_first(
 
     assert f"{reference} >=" in sql
     assert "CASE WHEN (articles.status =" in sql
-    assert sql.index("CASE WHEN") < sql.index(f"{reference} ASC")
-    assert f"{reference} DESC" not in sql
+    assert "articles.collected_at DESC" in sql
+    assert "articles.id DESC" in sql
+    assert sql.index("CASE WHEN") < sql.index("articles.collected_at DESC")
+    assert f"{reference} ASC" not in sql
 
 
 def test_processing_query_keeps_only_retryable_failures(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -333,4 +335,5 @@ def test_retry_priority_guarantees_slots_when_new_exceeds_batch(
 
     # Failed articles receive priority 0 via CASE WHEN, so they sort ahead of collected (priority 1)
     assert "CASE WHEN (articles.status =" in sql
-    assert sql.index("CASE WHEN") < sql.index(f"{reference} ASC")
+    assert sql.index("CASE WHEN") < sql.index("articles.collected_at DESC")
+    assert reference in sql  # freshness filter still uses the coalesced reference

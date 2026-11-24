@@ -19,7 +19,7 @@ collect_new_articles ── dedup(canonical_url | content_hash) ── status=co
    ▼
 process_collected_articles
    ├─ expire_stale_collected()        ← صف کهنه را قبل از انتخاب پارک می‌کند
-   ├─ build_processing_query()        ← failed اول، سپس reference ASC (FIFO)
+   ├─ build_processing_query()        ← failed اول، سپس collected_at DESC, id DESC (جدیدترین اول)
    ├─ _ConcurrentAnalysis             ← I/O موازی: fetch متن کامل + فراخوانی مدل
    │     └─ prefilter_analysis()      ← log-only، بدون تصمیم
    ▼  (نتیجه‌ها به ترتیب صف، روی یک AsyncSession سریال)
@@ -56,7 +56,7 @@ telegraph_report: صفحهٔ هر موضوع (چندبخشی) → صفحهٔ ف�
 - **`expire_stale_collected`** — یک `UPDATE` تک‌ستونی روی `status` برای هر `collected` که `COALESCE(published_at, collected_at) < now() - 24h` است. برگشت‌پذیر، بدون حذف داده. `oldest_age_h` با `func.min` محاسبه می‌شود (نه `max`) تا «قدیمی‌ترین خبر در صف» را نشان دهد؛ باگ قبلی `oldest_age_h=0.1` در حالی بود که خبر ۳۶ ساعته در صف مانده بود. در حالت `dry_run` فقط اندازه‌گیری می‌کند.
 - **`build_processing_query`** — دو گروه: `status='collected'` و `status='failed' AND attempt_count < ai_max_attempts` (۳)، هر دو محدود به پنجرهٔ تازگی. ترتیب:
   1. `CASE WHEN status='failed' THEN 0 ELSE 1 END ASC` → ضدِ گرسنگیِ تلاش مجدد؛
-  2. `reference ASC` → FIFO، تا خبر قدیمی قبل از رسیدن به سقف عمر، تحلیل شود.
+  2. `collected_at DESC, id DESC` → جدیدترین اول؛ هنگام انباشت صف، خبرهای تازه اول تحلیل و منتشر می‌شوند.
 - **`article_age_hours`** — `COALESCE(published_at, collected_at)`؛ `published_at` آینده (ساعت خراب فید) سن ۰ می‌گیرد نه منفی.
 
 ---
@@ -353,7 +353,7 @@ GROUP BY 1 ORDER BY 1 DESC;
 | `ai_max_attempts` | ۳ | `app/config.py` |
 | `ai_request_timeout_seconds` | ۴۵ | `app/config.py` |
 | `article_max_age_hours` | ۲۴ | `app/config.py` |
-| `max_articles_per_batch` | ۳۰ پیش‌فرض (در CI با `vars.MAX_ARTICLES_PER_BATCH` روی ۴۵) | `app/config.py` / `cron.yml` |
+| `max_articles_per_batch` | ۳۵ (در CI `vars.MAX_ARTICLES_PER_BATCH` با پیش‌فرض ۳۵) | `app/config.py` / `cron.yml` |
 | `min_importance` (سراسری) | ۲ | `app/config.py` |
 | `immediate_publish_min_importance` | ۴ | `app/config.py` |
 | `liveblog_max_importance` | ۳ | `app/config.py` |
