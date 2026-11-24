@@ -506,7 +506,7 @@ def test_all_report_formats_render_insufficient_content() -> None:
     assert "اطلاعات ناکافی" in plain_output
     assert "(گزارش اولیه / نیازمند تکمیل جزئیات)" in plain_output
 
-    # 3. Immediate Analysis
+    # 3. Immediate Analysis (minimal template: no content-quality line)
     immediate = ImmediateAnalysis(
         event_title="حادثه شناور",
         headline_fa="حادثه برای شناور تجاری در خلیج عمان",
@@ -523,8 +523,10 @@ def test_all_report_formats_render_insufficient_content() -> None:
         is_insufficient=True,
     )
     imm_output = format_immediate_analysis(immediate)
-    assert "کیفیت محتوا:" in imm_output
-    assert "اطلاعات ناکافی" in imm_output
+    # Minimal template deliberately omits the content-quality line.
+    assert "کیفیت محتوا:" not in imm_output
+    assert "📌" in imm_output
+    assert "❓ تک‌منبعی (تأییدنشده)" in imm_output
 
 
 

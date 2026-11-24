@@ -97,8 +97,10 @@ def test_formatted_message_contains_headline_summary_and_escaped_source():
     assert ANALYSIS.headline_fa in text
     assert ANALYSIS.summary_fa in text
     assert "https://news.un.org/example?a=1&amp;b=2" in text
-    assert "تحلیل فوری" in text
-    assert "⭐" * 4 in text
+    assert "✅ تأییدشده" in text
+    assert "🔗 منبع:" in text
+    assert "تحلیل فوری" not in text
+    assert "⭐" not in text
 
 
 @pytest.mark.asyncio

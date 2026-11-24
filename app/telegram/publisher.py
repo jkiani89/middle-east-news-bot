@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database.connection import SessionLocal
 from app.database.models import DailyReport
-from app.reports.daily_report import CATEGORY_TITLES, VERIFICATION_LABELS, format_persian_daily_report
+from app.reports.daily_report import format_persian_daily_report
 
 logger = logging.getLogger(__name__)
 
@@ -423,31 +423,23 @@ class ImmediateAnalysis:
 
 def format_immediate_analysis(analysis: ImmediateAnalysis) -> str:
     """Render the Persian headline/summary block sent right after analysis."""
-    stars = "⭐" * max(1, min(5, analysis.importance))
-    category_fa = CATEGORY_TITLES.get(analysis.category or "", "سایر تحولات")
-    verification_fa = VERIFICATION_LABELS.get(analysis.verification_status, "نامشخص")
-    geography = "، ".join(analysis.countries) or "منطقه"
-    actors = "، ".join(analysis.actors)
+    if analysis.source_url:
+        source_rendered = f"<a href=\"{esc(analysis.source_url)}\">{esc(analysis.source_name)}</a>"
+    else:
+        source_rendered = esc(analysis.source_name)
+
+    if analysis.verification_status == "unconfirmed":
+        footer = f"❓ تک‌منبعی (تأییدنشده) | 🔗 منبع: {source_rendered}"
+    else:
+        footer = f"✅ تأییدشده | 🔗 منبع: {source_rendered}"
 
     lines: list[str] = [
-        "⚡️ <b>تحلیل فوری | پایش تحولات خاورمیانه</b>",
-        "",
         f"📌 <b>{esc(analysis.headline_fa)}</b>",
-        f"🗂 حوزه: <b>{esc(category_fa)}</b>"
-        + (f" [{esc(analysis.category)}]" if analysis.category else "")
-        + f" | اهمیت: {stars} ({max(1, min(5, analysis.importance))}/5)",
-        f"🌍 {esc(geography)}" + (f" | {esc(actors)}" if actors else ""),
         "",
         esc(analysis.summary_fa),
         "",
-        f"✅ راستی‌آزمایی: {esc(verification_fa)}",
+        footer,
     ]
-    if analysis.is_insufficient:
-        lines.append(f"⚠️ کیفیت محتوا: <b>{esc(analysis.content_quality_fa)}</b> (گزارش اولیه / نیازمند تکمیل جزئیات)")
-    if analysis.source_url:
-        lines.append(f"🔗 منبع: <a href=\"{esc(analysis.source_url)}\">{esc(analysis.source_name)}</a>")
-    else:
-        lines.append(f"🔗 منبع: {esc(analysis.source_name)}")
     return "\n".join(lines)
 
 
