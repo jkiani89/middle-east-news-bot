@@ -70,7 +70,7 @@ Set these as **Repository Variables** (Settings → Secrets and variables → Ac
 |---|---|---|
 | `GEMINI_PRIMARY_MODEL` | `gemini-3.5-flash-lite` | Primary analysis model |
 | `GEMINI_FALLBACK_MODEL` | `gemini-3.1-flash-lite` | Fallback model used on a retryable 429/503 |
-| `GEMINI_TERTIARY_MODEL` | `gemini-2.5-flash` | Last-resort model tried when both Lite models are unavailable |
+| `GEMINI_TERTIARY_MODEL` | `gemini-3.8-flash` | Last-resort model tried when both Lite models are unavailable |
 | `GEMINI_ENABLE_FALLBACK` | `true` | Enable the fallback model |
 | `MAX_ARTICLES_PER_BATCH` | `30` in `cron.yml` | Articles collected per feed and processed per run |
 | `AI_MAX_ATTEMPTS` | `3` | Retry budget per failed article before it is left alone |
@@ -96,12 +96,12 @@ A scheduled run walks a three-layer chain and stops at the first model that answ
 |---|---|---|---|
 | 1 | `GEMINI_PRIMARY_MODEL` | `gemini-3.5-flash-lite` | Normal analysis |
 | 2 | `GEMINI_FALLBACK_MODEL` | `gemini-3.1-flash-lite` | Second Lite model, used on a retryable `429`/`503` |
-| 3 | `GEMINI_TERTIARY_MODEL` | `gemini-2.5-flash` | Last resort: keeps the batch alive when both Lite models are unavailable |
+| 3 | `GEMINI_TERTIARY_MODEL` | `gemini-3.8-flash` | Last resort: keeps the batch alive when both Lite models are unavailable |
 
 - Only a retryable error advances the chain; a malformed prompt or a bad key fails identically on every model and is not retried.
 - `GEMINI_ENABLE_FALLBACK=false` disables layers 2 and 3 and keeps only the primary; leave it `true` on cloud runs.
 - Duplicate model names are dropped, so setting the tertiary equal to the fallback never causes a second identical attempt.
-- The workflow exposes the chain as `${{ vars.GEMINI_TERTIARY_MODEL || 'gemini-2.5-flash' }}` (and the same pattern for primary/fallback), so a repository variable overrides the default without editing `cron.yml` or `app/config.py`.
+- The workflow exposes the chain as `${{ vars.GEMINI_TERTIARY_MODEL || 'gemini-3.8-flash' }}` (and the same pattern for primary/fallback), so a repository variable overrides the default without editing `cron.yml` or `app/config.py`.
 - This is a fixed architectural rule: a `429`/`503` on both Lite models must never stop the pipeline or trip the batch circuit breaker on its own.
 
 ### Telegraph Report Pages (optional)

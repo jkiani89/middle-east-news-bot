@@ -90,7 +90,7 @@ MAX_ARTICLES_PER_BATCH=15          # مقدار پیشنهادی برای اجر
 ```env
 GEMINI_PRIMARY_MODEL=gemini-3.5-flash-lite     # Primary
 GEMINI_FALLBACK_MODEL=gemini-3.1-flash-lite    # Fallback
-GEMINI_TERTIARY_MODEL=gemini-2.5-flash         # Tertiary (last resort)
+GEMINI_TERTIARY_MODEL=gemini-3.8-flash         # Tertiary (last resort)
 GEMINI_ENABLE_FALLBACK=true
 ```
 هر درخواست به ترتیب primary ← fallback ← tertiary می‌رود. فقط خطای قابل‌تلاش مجدد (`429` یا `503`) باعث رفتن به مدل بعدی می‌شود؛ نام تکراری از زنجیره حذف می‌شود و با `GEMINI_ENABLE_FALLBACK=false` فقط مدل primary امتحان می‌شود. لایهٔ سوم برای ساعات اوج است که هر دو مدل Lite هم‌زمان `503` می‌دهند؛ بدون آن یک اجرا با خطا متوقف می‌شد. این مقادیر همان پیش‌فرض‌های `.github/workflows/cron.yml` هستند و با متغیرهای مخزن قابل بازنویسی‌اند (جدول کامل: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).

@@ -17,6 +17,12 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# google-genai >= 3.0 defaults the Gemini Developer API to v1, and v1 rejects
+# system_instruction ("Developer instruction is not enabled for api version v1").
+# gemini_rotator builds genai.Client without http_options, so the version is pinned
+# per request through GenerateContentConfig.http_options for every model in the chain.
+GEMINI_API_VERSION = "v1beta"
+
 
 class AIProviderError(Exception):
     """Base exception for AI provider operations.
@@ -513,6 +519,7 @@ class GeminiProvider(BaseAIProvider):
         extra_config: dict[str, Any] = {
             "response_mime_type": "application/json",
             "temperature": 0.1,
+            "http_options": {"api_version": GEMINI_API_VERSION},
         }
 
         # Ordered chain: primary, then the Lite fallback, then the last-resort tertiary

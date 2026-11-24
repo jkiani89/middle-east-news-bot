@@ -440,7 +440,7 @@ async def test_fallback_triggers_on_503_via_code_attribute():
 
 @pytest.mark.asyncio
 async def test_tertiary_fallback_used_when_both_lite_models_hit_503():
-    """503 high-demand on primary and fallback must continue to gemini-2.5-flash."""
+    """503 high-demand on primary and fallback must continue to gemini-3.8-flash."""
     mock_rotator = MagicMock()
     high_demand = "503 UNAVAILABLE: This model is currently experiencing high demand"
     success = MagicMock()
@@ -453,18 +453,18 @@ async def test_tertiary_fallback_used_when_both_lite_models_hit_503():
         rotator=mock_rotator,
         primary_model="gemini-3.5-flash-lite",
         fallback_model="gemini-3.1-flash-lite",
-        tertiary_model="gemini-2.5-flash",
+        tertiary_model="gemini-3.8-flash",
         enable_fallback=True,
     )
 
     result = await provider.generate_json("test prompt")
 
     assert result == {"status": "ok_via_tertiary_after_503"}
-    assert provider.model_name == "gemini-2.5-flash"
+    assert provider.model_name == "gemini-3.8-flash"
     assert [c.kwargs["model"] for c in mock_rotator.execute.call_args_list] == [
         "gemini-3.5-flash-lite",
         "gemini-3.1-flash-lite",
-        "gemini-2.5-flash",
+        "gemini-3.8-flash",
     ]
 
 
@@ -481,12 +481,12 @@ async def test_tertiary_fallback_used_when_both_lite_models_hit_429():
         rotator=mock_rotator,
         primary_model="gemini-3.5-flash-lite",
         fallback_model="gemini-3.1-flash-lite",
-        tertiary_model="gemini-2.5-flash",
+        tertiary_model="gemini-3.8-flash",
         enable_fallback=True,
     )
 
     assert await provider.generate_json("test prompt") == {"status": "ok_via_tertiary_after_429"}
-    assert provider.model_name == "gemini-2.5-flash"
+    assert provider.model_name == "gemini-3.8-flash"
     assert mock_rotator.execute.call_count == 3
 
 
@@ -500,7 +500,7 @@ async def test_tertiary_not_attempted_for_non_retryable_error():
         rotator=mock_rotator,
         primary_model="gemini-3.5-flash-lite",
         fallback_model="gemini-3.1-flash-lite",
-        tertiary_model="gemini-2.5-flash",
+        tertiary_model="gemini-3.8-flash",
         enable_fallback=True,
     )
 
@@ -530,16 +530,34 @@ async def test_empty_tertiary_model_keeps_two_model_chain():
     assert mock_rotator.execute.call_count == 2
 
 
-def test_tertiary_model_defaults_to_gemini_2_5_flash():
+@pytest.mark.asyncio
+async def test_generate_json_pins_v1beta_api_version():
+    """google-genai 3.x defaults to v1, which rejects system_instruction for every model."""
+    from app.ai.provider import GEMINI_API_VERSION
+
+    mock_rotator = MagicMock()
+    success = MagicMock()
+    success.text = '{"status": "ok"}'
+    mock_rotator.execute = AsyncMock(return_value=success)
+
+    provider = GeminiProvider(rotator=mock_rotator, primary_model="gemini-3.8-flash")
+    assert await provider.generate_json("prompt", "system instruction") == {"status": "ok"}
+    extra_config = mock_rotator.execute.call_args.kwargs["extra_config"]
+    assert extra_config["http_options"] == {"api_version": "v1beta"}
+    assert GEMINI_API_VERSION == "v1beta"
+
+
+def test_tertiary_model_defaults_to_gemini_3_8_flash():
     """The last-resort model is configured in settings and in the cron workflow."""
-    assert settings.gemini_tertiary_model == "gemini-2.5-flash"
+    assert settings.gemini_tertiary_model == "gemini-3.8-flash"
     provider = GeminiProvider(api_key="AIzaSyTest123")
     try:
-        assert provider.tertiary_model == "gemini-2.5-flash"
+        assert provider.tertiary_model == "gemini-3.8-flash"
+        # The local default primary is also gemini-3.8-flash, so the duplicate is
+        # dropped; cron.yml keeps the primary on a Lite model and the chain stays three long.
         assert provider._model_chain() == [
             settings.gemini_primary_model,
             settings.gemini_fallback_model,
-            "gemini-2.5-flash",
         ]
     finally:
         provider.close()
