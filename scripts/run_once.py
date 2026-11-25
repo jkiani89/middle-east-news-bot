@@ -65,6 +65,11 @@ logger = logging.getLogger("run_once")
 # Ceiling for the audit rows still queued on the provider's daemon writer thread.
 AUDIT_FLUSH_TIMEOUT_SECONDS = 5.0
 
+# Interval at which the asyncio watchdog names every still-pending coroutine and its
+# last await point. A pure-async stall (loop in select, all threads idle) leaves no
+# other trace, so this is the only way to learn which coroutine is parked on an await.
+ASYNCIO_WATCHDOG_INTERVAL_SECONDS = 120.0
+
 
 def local_now(tz: ZoneInfo | None = None) -> datetime:
     """Current time in the configured timezone (patchable in tests)."""
@@ -180,6 +185,40 @@ async def should_run_daily_report(
     )
 
 
+async def _asyncio_task_watchdog() -> None:
+    """Log every pending task and its last three stack frames every 120 seconds.
+
+    Runs as a background task for the whole batch. It is cancelled (and awaited)
+    in ``run_batch_pipeline``'s ``finally`` block, so it never outlives the run.
+    """
+    try:
+        while True:
+            await asyncio.sleep(ASYNCIO_WATCHDOG_INTERVAL_SECONDS)
+            pending = [task for task in asyncio.all_tasks() if not task.done()]
+            if not pending:
+                continue
+            logger.warning(
+                "Asyncio watchdog: %d pending task(s) after %.0fs without progress.",
+                len(pending),
+                ASYNCIO_WATCHDOG_INTERVAL_SECONDS,
+            )
+            for task in pending:
+                logger.warning("  pending task: %s", task.get_name())
+                try:
+                    frames = task.get_stack(limit=3)
+                except Exception:  # noqa: BLE001 - a finished task has no stack
+                    frames = []
+                for frame in frames:
+                    logger.warning(
+                        "    %s:%d in %s",
+                        frame.f_code.co_filename,
+                        frame.f_lineno,
+                        frame.f_code.co_name,
+                    )
+    except asyncio.CancelledError:
+        raise
+
+
 async def run_batch_pipeline(
     force_daily_report: bool = False,
     dry_run_daily_report: bool = False,
@@ -195,8 +234,12 @@ async def run_batch_pipeline(
 
     Returns exit code (0 on success, non-zero on error).
     """
+    watchdog: asyncio.Task[None] | None = None
     try:
         logger.info("=== Starting batch pipeline run ===")
+        watchdog = asyncio.create_task(
+            _asyncio_task_watchdog(), name="asyncio-task-watchdog"
+        )
 
         # 1. Synchronize sources
         logger.info("Step 1/4: Synchronizing news sources from editorial/sources.json...")
@@ -261,6 +304,12 @@ async def run_batch_pipeline(
         logger.info("=== Batch pipeline run finished successfully ===")
         return 0
     finally:
+        if watchdog is not None and not watchdog.done():
+            watchdog.cancel()
+            try:
+                await watchdog
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         try:
             await maybe_send_admin_alert()
         except Exception:  # noqa: BLE001
