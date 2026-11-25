@@ -10,6 +10,8 @@ import pytest
 
 from app.config import settings
 from app.editorial.telegraph_topics import (
+    UNPROCESSED_TOPIC_KEY,
+    UNPROCESSED_TOPIC_NAME,
     group_items_by_telegraph_topic,
     load_telegraph_topics,
 )
@@ -30,6 +32,7 @@ from app.reports.telegraph_report import (
     build_topic_page,
     format_admin_report,
     format_public_channel_report,
+    format_telegram_notification,
     normalize_topic_entry,
     notification_ready,
     publish_telegraph_report,
@@ -331,6 +334,56 @@ def test_admin_report_keeps_counts_pages_and_the_unprocessed_row():
     assert "• 🗂 اخبار پردازش‌نشده: ۳ خبر" in text
     assert "صفحه اصلی گزارش در Telegraph" in text
     assert "🛡" in text
+
+
+def test_public_channel_report_links_single_and_multipage_topics_and_omits_unprocessed():
+    sections = [
+        ("ir", "ایران و آمریکا", [_item(1)]),
+        ("gulf", "کشورهای عربی خلیج فارس", [_item(2, "خبر دوم")]),
+        ("regional", "تحولات منطقه & امنیتی", [_item(3, "خبر سوم")]),
+        (UNPROCESSED_TOPIC_KEY, UNPROCESSED_TOPIC_NAME, [_item(4, "خبر پردازش‌نشده")]),
+    ]
+    topic_pages = {
+        "ir": {
+            "url": "https://telegra.ph/ir-1",
+            "part_count": 1,
+            "parts": [{"part": 1, "url": "https://telegra.ph/ir-1"}],
+        },
+        "gulf": {
+            "url": "https://telegra.ph/gulf-1",
+            "part_count": 2,
+            "parts": [
+                {"part": 1, "url": "https://telegra.ph/gulf-1"},
+                {"part": 2, "url": "https://telegra.ph/gulf-2"},
+            ],
+        },
+        "regional": {
+            "url": "",
+            "part_count": 1,
+            "parts": [],
+        },
+    }
+    text = format_telegram_notification(
+        date(2026, 11, 14),
+        20,
+        "https://telegra.ph/report-index",
+        sections,
+        {"articles_unprocessed": 3},
+        topic_pages=topic_pages,
+    )
+
+    assert '<a href="https://telegra.ph/ir-1">ایران و آمریکا</a>' in text
+    assert (
+        '<a href="https://telegra.ph/gulf-1">کشورهای عربی خلیج فارس</a> '
+        '(بخش‌ها: <a href="https://telegra.ph/gulf-1">۱</a>، '
+        '<a href="https://telegra.ph/gulf-2">۲</a>)'
+    ) in text
+    # Topic without URL renders as plain text with safe HTML escaping.
+    assert "تحولات منطقه &amp; امنیتی" in text
+    assert '<a href="">تحولات منطقه' not in text
+    # Unprocessed row must be excluded from public channel message.
+    assert UNPROCESSED_TOPIC_NAME not in text
+    assert '<a href="https://telegra.ph/report-index">مطالعه گزارش کامل و مشروح در Telegraph</a>' in text
 
 
 def test_oversized_page_content_raises_instead_of_dropping_news():

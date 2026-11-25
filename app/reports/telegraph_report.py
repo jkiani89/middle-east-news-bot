@@ -22,6 +22,7 @@ A failed notification therefore only retries the notification; completed pages a
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 from datetime import date, datetime
@@ -738,19 +739,54 @@ def format_public_channel_report(
     index_url: str,
     sections: list[tuple[str, str, list[dict[str, Any]]]],
     metadata: dict[str, Any] | None = None,
+    topic_pages: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     """Minimal editorial message for the public Telegram channel.
 
     No counts, no page counts, no "unprocessed" row and no technical footer: the public
-    post only names the active editorial topics and links to the full Telegraph report.
+    post only names the active editorial topics (linked to their Telegraph pages when
+    available) and links to the full Telegraph report.
     """
     label = slot_label(slot_hour)
     date_str = format_jalali_long(report_date) if isinstance(report_date, date) else str(report_date)
+    pages = topic_pages or {}
 
     topic_lines: list[str] = []
     for key, name, _topic_items in sections:
+        if key == UNPROCESSED_TOPIC_KEY or name == UNPROCESSED_TOPIC_NAME:
+            continue
+        entry = normalize_topic_entry(pages.get(key))
+        ordered_parts = sorted(
+            entry.get("parts") or [], key=lambda part: int(part.get("part") or 0)
+        )
+        valid_parts = [
+            part
+            for part in ordered_parts
+            if not part.get("retired") and _is_http_url(str(part.get("url") or ""))
+        ]
+        page_url = str(entry.get("url") or "")
+        if not _is_http_url(page_url) and valid_parts:
+            page_url = str(valid_parts[0].get("url") or "")
+
+        escaped_name = html.escape(name)
+        if _is_http_url(page_url):
+            title_html = f'<a href="{html.escape(page_url, quote=True)}">{escaped_name}</a>'
+        else:
+            title_html = escaped_name
+
         icon = telegraph_topic(key).icon
-        topic_lines.append(f"• {icon} {name}".strip() if icon else f"• {name}")
+        line = f"• {icon} {title_html}".strip() if icon else f"• {title_html}"
+
+        part_count = int(entry.get("part_count") or 1)
+        if part_count > 1 and valid_parts:
+            links = [
+                f'<a href="{html.escape(str(part.get("url") or ""), quote=True)}">{fa_number(int(part.get("part") or 0))}</a>'
+                for part in valid_parts
+            ]
+            if links:
+                line += f" (بخش‌ها: {'، '.join(links)})"
+
+        topic_lines.append(line)
 
     lines = [
         "📊 <b>جمع‌بندی ۱۲ ساعته تحولات</b>",
@@ -762,7 +798,7 @@ def format_public_channel_report(
     ]
     if _is_http_url(index_url):
         lines.append(
-            f'📖 <a href="{index_url}">مطالعه گزارش کامل و مشروح در Telegraph</a>'
+            f'📖 <a href="{html.escape(index_url, quote=True)}">مطالعه گزارش کامل و مشروح در Telegraph</a>'
         )
     else:
         lines.append("📖 لینک گزارش کامل در دسترس نیست.")
@@ -861,7 +897,7 @@ def format_telegram_notification(
 ) -> str:
     """Backward-compatible public-channel message (minimal editorial template)."""
     return format_public_channel_report(
-        report_date, slot_hour, index_url, sections, metadata
+        report_date, slot_hour, index_url, sections, metadata, topic_pages=topic_pages
     )
 
 
