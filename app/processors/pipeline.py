@@ -51,6 +51,11 @@ _circuit_breaker_tripped = False
 # Monotonic timestamp of the last immediate Telegram message, used to pace sends.
 _last_immediate_publish_at = 0.0
 
+# A commit slower than this is logged. A normal commit is milliseconds, so anything
+# above the threshold is a lock wait or a stalled connection that would otherwise be
+# invisible (run #247: 265 seconds of silence between two log lines).
+SLOW_COMMIT_WARNING_SECONDS = 5.0
+
 
 async def _count_event_sources(session: AsyncSession, event_id: int) -> int:
     """Count the distinct sources backing an event (two independent sources = confirmed)."""
@@ -1104,7 +1109,15 @@ async def process_collected_articles(
                     immediate_admin_only = False
 
             processed_count += 1
+            commit_started = time.monotonic()
             await session.commit()
+            commit_elapsed = time.monotonic() - commit_started
+            if commit_elapsed > SLOW_COMMIT_WARNING_SECONDS:
+                logger.warning(
+                    "Slow session.commit() for article ID %d: %.1fs.",
+                    article.id,
+                    commit_elapsed,
+                )
 
             if immediate_analysis is not None:
                 if immediate_published < settings.immediate_publish_max_per_run:

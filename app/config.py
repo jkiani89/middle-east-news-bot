@@ -9,6 +9,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ASYNC_PG_SSL_MODES = frozenset({"require", "verify-ca", "verify-full"})
 
+# Ceilings for the application engine (SQLAlchemy + asyncpg). Without them a query
+# that waits on a lock or on a half-open connection blocks the event loop silently;
+# app/ai/postgres_adapter.py sets the same pair for the rotator's psycopg adapter.
+ASYNCPG_COMMAND_TIMEOUT_SECONDS = 30
+ASYNCPG_STATEMENT_TIMEOUT_MS = 30_000
+ASYNCPG_LOCK_TIMEOUT_MS = 10_000
+
 
 def _query_param(url: str, name: str) -> str | None:
     """Return the lowercase value of a query parameter, or None."""
@@ -216,11 +223,29 @@ class Settings(BaseSettings):
 
     @property
     def asyncpg_connect_args(self) -> dict[str, object]:
-        """Translate libpq ``sslmode``/``sslrootcert`` into asyncpg options."""
+        """asyncpg connect options: TLS plus the query ceilings of the app engine.
+
+        ``connect_timeout`` only covers establishing the connection. A COMMIT that
+        waits on a row lock, or a read on a half-open TCP connection to Aiven, used
+        to wait forever with no log line at all: run #247 showed 265 seconds between
+        two logs while the loop sat in ``selectors.select`` with every thread idle.
+        ``command_timeout`` is asyncpg's client-side ceiling per statement, and the
+        server-side ``statement_timeout``/``lock_timeout`` make PostgreSQL abort the
+        statement itself (the same pair the rotator adapter sets for psycopg).
+        """
         sslmode = _query_param(self.database_url, "sslmode")
         cafile = self.postgres_sslrootcert or _query_param(self.database_url, "sslrootcert")
         context = build_asyncpg_ssl_context(sslmode, cafile)
-        return {"ssl": context} if context is not None else {}
+        args: dict[str, object] = {
+            "command_timeout": ASYNCPG_COMMAND_TIMEOUT_SECONDS,
+            "server_settings": {
+                "statement_timeout": str(ASYNCPG_STATEMENT_TIMEOUT_MS),
+                "lock_timeout": str(ASYNCPG_LOCK_TIMEOUT_MS),
+            },
+        }
+        if context is not None:
+            args["ssl"] = context
+        return args
 
     def get_gemini_keys(self) -> list[str]:
         """Extract all configured Gemini API keys from environment and settings."""

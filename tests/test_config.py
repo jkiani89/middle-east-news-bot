@@ -127,10 +127,36 @@ def test_asyncpg_root_cert_upgrades_require_to_real_validation():
     assert context.get_ca_certs()
 
 
-def test_asyncpg_connect_args_ignores_absent_or_disabled_ssl():
-    """No TLS requirement means no connect args are passed."""
-    assert Settings(database_url="postgresql+asyncpg://u:p@h:5432/db").asyncpg_connect_args == {}
-    assert (
-        Settings(database_url="postgresql+asyncpg://u:p@h:5432/db?sslmode=disable").asyncpg_connect_args
-        == {}
-    )
+def test_asyncpg_connect_args_bounds_every_query():
+    """The app engine must never wait forever on a lock or a half-open connection.
+
+    connect_timeout only covers establishing the connection, so a COMMIT waiting on a
+    row lock (or on a stalled TCP read) used to be silent: run #247 sat 265 seconds
+    between two log lines with every thread idle. The client ceiling aborts the
+    await and the server-side ceilings abort the statement itself.
+    """
+    args = Settings(database_url="postgresql+asyncpg://u:p@h:5432/db").asyncpg_connect_args
+
+    assert args["command_timeout"] == 30
+    assert args["server_settings"] == {
+        "statement_timeout": "30000",
+        "lock_timeout": "10000",
+    }
+
+
+def test_asyncpg_connect_args_keep_ceilings_with_or_without_ssl():
+    """TLS stays optional; the query ceilings must be present either way."""
+    for url in (
+        "postgresql+asyncpg://u:p@h:5432/db",
+        "postgresql+asyncpg://u:p@h:5432/db?sslmode=disable",
+    ):
+        args = Settings(database_url=url).asyncpg_connect_args
+        assert "ssl" not in args
+        assert args["command_timeout"] == 30
+        assert args["server_settings"]["lock_timeout"] == "10000"
+
+    verified = Settings(
+        database_url="postgresql+asyncpg://u:p@h:5432/db?sslmode=require"
+    ).asyncpg_connect_args
+    assert isinstance(verified["ssl"], ssl.SSLContext)
+    assert verified["command_timeout"] == 30
