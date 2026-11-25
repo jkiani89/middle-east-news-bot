@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import faulthandler
+import io
 import logging
 import os
 import sys
@@ -205,16 +206,16 @@ async def _asyncio_task_watchdog() -> None:
             for task in pending:
                 logger.warning("  pending task: %s", task.get_name())
                 try:
-                    frames = task.get_stack(limit=3)
+                    buf = io.StringIO()
+                    task.print_stack(file=buf)
+                    stack_text = buf.getvalue().rstrip()
                 except Exception:  # noqa: BLE001 - a finished task has no stack
-                    frames = []
-                for frame in frames:
-                    logger.warning(
-                        "    %s:%d in %s",
-                        frame.f_code.co_filename,
-                        frame.f_lineno,
-                        frame.f_code.co_name,
-                    )
+                    stack_text = ""
+                if stack_text:
+                    for line in stack_text.splitlines():
+                        logger.warning("    %s", line)
+                else:
+                    logger.warning("    (no stack available)")
     except asyncio.CancelledError:
         raise
 
