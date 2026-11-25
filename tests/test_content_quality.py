@@ -526,7 +526,11 @@ def test_all_report_formats_render_insufficient_content() -> None:
     # Minimal template deliberately omits the content-quality line.
     assert "کیفیت محتوا:" not in imm_output
     assert "📌" in imm_output
-    assert "❓ تک‌منبعی (تأییدنشده)" in imm_output
+    assert "🇮🇷 — گزارش اولیه بدون جزئیات" in imm_output
+    # The immediate footer now carries only the source, never the verification label.
+    assert '🔗 منبع: <a href="https://example.com/saba-101">Saba News</a>' in imm_output
+    assert "تک‌منبعی" not in imm_output
+    assert "تأییدنشده" not in imm_output
 
 
 

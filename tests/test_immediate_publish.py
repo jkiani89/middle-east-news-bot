@@ -11,7 +11,12 @@ import pytest
 from app.config import settings
 from app.database.models import Article
 from app.processors import pipeline
-from app.telegram.publisher import ImmediateAnalysis, format_immediate_analysis, publish_immediate_analysis
+from app.telegram.publisher import (
+    COUNTRY_FLAGS,
+    ImmediateAnalysis,
+    format_immediate_analysis,
+    publish_immediate_analysis,
+)
 
 ANALYSIS = ImmediateAnalysis(
     event_title="Regional meeting",
@@ -97,10 +102,59 @@ def test_formatted_message_contains_headline_summary_and_escaped_source():
     assert ANALYSIS.headline_fa in text
     assert ANALYSIS.summary_fa in text
     assert "https://news.un.org/example?a=1&amp;b=2" in text
-    assert "✅ تأییدشده" in text
     assert "🔗 منبع:" in text
+
+    # Verification wording is no longer published; only the source remains in the footer.
+    assert "✅ تأییدشده" not in text
+    assert "تک‌منبعی" not in text
+    assert "تأییدنشده" not in text
+
+    # The flags of the story's countries open the summary paragraph, right after the headline.
+    assert f"🇮🇷 — {ANALYSIS.summary_fa}" in text
     assert "تحلیل فوری" not in text
     assert "⭐" not in text
+
+
+def _analysis_with_countries(countries: list[str]) -> ImmediateAnalysis:
+    return ImmediateAnalysis(
+        event_title="Event",
+        headline_fa="تیتر آزمایشی",
+        summary_fa="متن خلاصه خبر.",
+        source_name="Reuters",
+        source_url="https://example.com/news",
+        countries=countries,
+    )
+
+
+def test_flags_come_from_the_mapping_in_order_and_stop_at_three():
+    text = format_immediate_analysis(_analysis_with_countries(["Iran", "United States", "Israel", "Russia"]))
+
+    assert "🇮🇷🇺🇸🇮🇱 — متن خلاصه خبر." in text
+    # A fourth country must not push the prefix past the three-flag ceiling.
+    prefix = text.splitlines()[2].split(" — ")[0]
+    assert prefix == "🇮🇷🇺🇸🇮🇱"
+
+
+def test_flags_accept_persian_names_and_deduplicate():
+    text = format_immediate_analysis(_analysis_with_countries(["ایران", "Iran", "اسرائیل"]))
+
+    assert "🇮🇷🇮🇱 — " in text
+    assert text.count("🇮🇷") == 1
+
+
+def test_no_flag_prefix_when_no_country_is_recognized():
+    text = format_immediate_analysis(_analysis_with_countries(["Atlantis", ""]))
+
+    summary_line = text.splitlines()[2]
+    assert summary_line == "متن خلاصه خبر."
+    assert not summary_line.startswith(tuple(COUNTRY_FLAGS.values()))
+
+
+def test_empty_country_list_leaves_summary_untouched():
+    text = format_immediate_analysis(_analysis_with_countries([]))
+
+    assert "— متن خلاصه خبر." not in text
+    assert text.splitlines()[2] == "متن خلاصه خبر."
 
 
 @pytest.mark.asyncio

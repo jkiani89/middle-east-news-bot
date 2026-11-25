@@ -443,6 +443,100 @@ async def publish_admin_report(
             await bot.session.close()
 
 
+# Country → flag mapping for the immediate Telegram block. Keys are matched after
+# casefolding and Persian letter unification, so both the English names the analyzer
+# returns and their Persian equivalents resolve to the same flag. Unknown names are
+# simply skipped, so an unmapped story starts with no flag prefix at all.
+COUNTRY_FLAGS: dict[str, str] = {
+    "ایران": "🇮🇷",
+    "iran": "🇮🇷",
+    "اسرائیل": "🇮🇱",
+    "israel": "🇮🇱",
+    "آمریکا": "🇺🇸",
+    "ایالات متحده": "🇺🇸",
+    "ایالات متحده آمریکا": "🇺🇸",
+    "america": "🇺🇸",
+    "united states": "🇺🇸",
+    "united states of america": "🇺🇸",
+    "usa": "🇺🇸",
+    "روسیه": "🇷🇺",
+    "russia": "🇷🇺",
+    "اوکراین": "🇺🇦",
+    "ukraine": "🇺🇦",
+    "چین": "🇨🇳",
+    "china": "🇨🇳",
+    "عربستان": "🇸🇦",
+    "عربستان سعودی": "🇸🇦",
+    "saudi arabia": "🇸🇦",
+    "امارات": "🇦🇪",
+    "امارات متحده عربی": "🇦🇪",
+    "uae": "🇦🇪",
+    "united arab emirates": "🇦🇪",
+    "قطر": "🇶🇦",
+    "qatar": "🇶🇦",
+    "یمن": "🇾🇪",
+    "yemen": "🇾🇪",
+    "لبنان": "🇱🇧",
+    "lebanon": "🇱🇧",
+    "سوریه": "🇸🇾",
+    "syria": "🇸🇾",
+    "عراق": "🇮🇶",
+    "iraq": "🇮🇶",
+    "ترکیه": "🇹🇷",
+    "turkey": "🇹🇷",
+    "turkiye": "🇹🇷",
+    "türkiye": "🇹🇷",
+    "مصر": "🇪🇬",
+    "egypt": "🇪🇬",
+    "اردن": "🇯🇴",
+    "jordan": "🇯🇴",
+    "کویت": "🇰🇼",
+    "kuwait": "🇰🇼",
+    "عمان": "🇴🇲",
+    "oman": "🇴🇲",
+    "بحرین": "🇧🇭",
+    "bahrain": "🇧🇭",
+    "فلسطین": "🇵🇸",
+    "سرزمین‌های فلسطینی": "🇵🇸",
+    "palestine": "🇵🇸",
+    "palestinian territories": "🇵🇸",
+    "بریتانیا": "🇬🇧",
+    "انگلستان": "🇬🇧",
+    "britain": "🇬🇧",
+    "united kingdom": "🇬🇧",
+    "uk": "🇬🇧",
+    "فرانسه": "🇫🇷",
+    "france": "🇫🇷",
+    "آلمان": "🇩🇪",
+    "germany": "🇩🇪",
+    "هند": "🇮🇳",
+    "india": "🇮🇳",
+    "پاکستان": "🇵🇰",
+    "pakistan": "🇵🇰",
+}
+MAX_COUNTRY_FLAGS = 3
+
+_PERSIAN_LETTER_MAP = str.maketrans({"ي": "ی", "ك": "ک", "ۀ": "ه", "ة": "ه"})
+
+
+def _normalize_country_name(name: Any) -> str:
+    """Casefold a country name and unify Persian letter variants for lookup."""
+    normalized = str(name or "").strip().casefold().translate(_PERSIAN_LETTER_MAP)
+    return " ".join(normalized.split())
+
+
+def country_flags(countries: list[str] | None, limit: int = MAX_COUNTRY_FLAGS) -> list[str]:
+    """Return unique flag emojis for the recognized countries, in order of appearance."""
+    flags: list[str] = []
+    for name in countries or []:
+        flag = COUNTRY_FLAGS.get(_normalize_country_name(name))
+        if flag and flag not in flags:
+            flags.append(flag)
+        if len(flags) >= limit:
+            break
+    return flags
+
+
 @dataclass(slots=True)
 class ImmediateAnalysis:
     """A single freshly analyzed article, ready for immediate Telegram delivery."""
@@ -486,15 +580,17 @@ def format_immediate_analysis(analysis: ImmediateAnalysis) -> str:
     else:
         source_rendered = esc(analysis.source_name)
 
-    if analysis.verification_status == "unconfirmed":
-        footer = f"❓ تک‌منبعی (تأییدنشده) | 🔗 منبع: {source_rendered}"
-    else:
-        footer = f"✅ تأییدشده | 🔗 منبع: {source_rendered}"
+    footer = f"🔗 منبع: {source_rendered}"
+
+    summary = esc(analysis.summary_fa)
+    flags = country_flags(analysis.countries)
+    if flags:
+        summary = f"{''.join(flags)} — {summary}"
 
     lines: list[str] = [
         f"📌 <b>{esc(analysis.headline_fa)}</b>",
         "",
-        esc(analysis.summary_fa),
+        summary,
         "",
         footer,
     ]
