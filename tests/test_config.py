@@ -7,8 +7,10 @@ import certifi
 from app.config import Settings
 
 
-def test_settings_default_values():
+def test_settings_default_values(monkeypatch):
+    monkeypatch.delenv("MAX_ARTICLES_PER_BATCH", raising=False)
     settings = Settings(
+        _env_file=None,
         database_url="postgresql+asyncpg://test:test@localhost:5432/test",
         gemini_api_key="test_key",
         telegram_bot_token="test_token",
@@ -137,6 +139,7 @@ def test_asyncpg_connect_args_bounds_every_query():
     """
     args = Settings(database_url="postgresql+asyncpg://u:p@h:5432/db").asyncpg_connect_args
 
+    assert args["timeout"] == 15
     assert args["command_timeout"] == 30
     assert args["server_settings"] == {
         "statement_timeout": "30000",
@@ -152,6 +155,7 @@ def test_asyncpg_connect_args_keep_ceilings_with_or_without_ssl():
     ):
         args = Settings(database_url=url).asyncpg_connect_args
         assert "ssl" not in args
+        assert args["timeout"] == 15
         assert args["command_timeout"] == 30
         assert args["server_settings"]["lock_timeout"] == "10000"
 
@@ -159,4 +163,5 @@ def test_asyncpg_connect_args_keep_ceilings_with_or_without_ssl():
         database_url="postgresql+asyncpg://u:p@h:5432/db?sslmode=require"
     ).asyncpg_connect_args
     assert isinstance(verified["ssl"], ssl.SSLContext)
+    assert verified["timeout"] == 15
     assert verified["command_timeout"] == 30

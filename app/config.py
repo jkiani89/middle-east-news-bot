@@ -17,6 +17,7 @@ IMMEDIATE_PUBLISH_DELAY_CAP_SECONDS = 5.0
 # Ceilings for the application engine (SQLAlchemy + asyncpg). Without them a query
 # that waits on a lock or on a half-open connection blocks the event loop silently;
 # app/ai/postgres_adapter.py sets the same pair for the rotator's psycopg adapter.
+ASYNCPG_CONNECT_TIMEOUT_SECONDS = 15
 ASYNCPG_COMMAND_TIMEOUT_SECONDS = 30
 ASYNCPG_STATEMENT_TIMEOUT_MS = 30_000
 ASYNCPG_LOCK_TIMEOUT_MS = 10_000
@@ -256,6 +257,7 @@ class Settings(BaseSettings):
         cafile = self.postgres_sslrootcert or _query_param(self.database_url, "sslrootcert")
         context = build_asyncpg_ssl_context(sslmode, cafile)
         args: dict[str, object] = {
+            "timeout": ASYNCPG_CONNECT_TIMEOUT_SECONDS,
             "command_timeout": ASYNCPG_COMMAND_TIMEOUT_SECONDS,
             "server_settings": {
                 "statement_timeout": str(ASYNCPG_STATEMENT_TIMEOUT_MS),

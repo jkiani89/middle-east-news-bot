@@ -216,6 +216,22 @@ async def _asyncio_task_watchdog() -> None:
                         logger.warning("    %s", line)
                 else:
                     logger.warning("    (no stack available)")
+
+                try:
+                    cr = task.get_coro()
+                    while cr is not None:
+                        frame = getattr(cr, "cr_frame", None)
+                        if frame is not None:
+                            code = frame.f_code
+                            logger.warning(
+                                "    coro frame: %s:%d in %s",
+                                code.co_filename,
+                                frame.f_lineno,
+                                code.co_name,
+                            )
+                        cr = getattr(cr, "cr_await", None)
+                except Exception:  # noqa: BLE001
+                    pass
     except asyncio.CancelledError:
         raise
 
@@ -300,7 +316,10 @@ async def run_batch_pipeline(
         # 4. Clean up old logs
         logger.info("Step 4/4: Running routine maintenance...")
         await cleanup_gemini_request_log()
-        await cleanup_heavy_columns()
+        try:
+            await asyncio.wait_for(cleanup_heavy_columns(), timeout=60)
+        except TimeoutError:
+            logger.warning("cleanup_heavy_columns timed out after 60s; continuing")
 
         logger.info("=== Batch pipeline run finished successfully ===")
         return 0

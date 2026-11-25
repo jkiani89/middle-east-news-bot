@@ -389,3 +389,57 @@ def test_main_hard_exits_instead_of_joining_lingering_workers(monkeypatch):
     # A repeating watchdog: three minutes of silence always leaves a stack trace.
     assert stack_dumps == [(180, True)]
     assert excinfo.value.code == 0
+
+
+@pytest.mark.asyncio
+async def test_run_batch_pipeline_cleanup_heavy_columns_timeout(caplog):
+    """If cleanup_heavy_columns times out after 60s, run_batch_pipeline logs warning and exits 0."""
+    with (
+        patch("scripts.run_once.sync_sources", new_callable=AsyncMock),
+        patch("scripts.run_once.reconcile_interrupted_jobs", new_callable=AsyncMock),
+        patch("scripts.run_once.collect_and_process", new_callable=AsyncMock, return_value=0),
+        patch("scripts.run_once.should_run_daily_report", new_callable=AsyncMock, return_value=(False, "Skip")),
+        patch("scripts.run_once.cleanup_gemini_request_log", new_callable=AsyncMock),
+        patch("scripts.run_once.cleanup_heavy_columns", side_effect=TimeoutError("timed out")),
+        patch("scripts.run_once.engine", new_callable=AsyncMock),
+    ):
+        exit_code = await run_batch_pipeline()
+        assert exit_code == 0
+        assert "cleanup_heavy_columns timed out after 60s; continuing" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_asyncio_task_watchdog_logs_coroutine_chain(caplog):
+    """Watchdog walks the cr_await chain and logs inner coroutine frames."""
+    import asyncio
+
+    import scripts.run_once as run_once_module
+
+    stop_event = asyncio.Event()
+
+    async def _inner():
+        await stop_event.wait()
+
+    async def _outer():
+        await _inner()
+
+    task = asyncio.create_task(_outer(), name="test-nested-coro")
+    await asyncio.sleep(0)
+
+    with patch.object(run_once_module, "ASYNCIO_WATCHDOG_INTERVAL_SECONDS", 0.01):
+        watchdog_task = asyncio.create_task(run_once_module._asyncio_task_watchdog())
+        await asyncio.sleep(0.05)
+        watchdog_task.cancel()
+        try:
+            await watchdog_task
+        except asyncio.CancelledError:
+            pass
+
+    stop_event.set()
+    await task
+
+    assert "pending task: test-nested-coro" in caplog.text
+    assert "coro frame:" in caplog.text
+    assert "_inner" in caplog.text
+    assert "_outer" in caplog.text
+
