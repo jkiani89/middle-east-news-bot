@@ -7,7 +7,12 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ASYNC_PG_SSL_MODES = frozenset({"require", "verify-ca", "verify-full"})
+# Cap for the inter-message pause in immediate Telegram publishing. A misconfigured
+# (or stale) value used to stall the batch for minutes: the pause is clamped to this
+# ceiling in both app/processors/pipeline.py and app/telegram/publisher.py, so a bad
+# env override can never turn into a multi-minute asyncio.sleep again.
+IMMEDIATE_PUBLISH_DELAY_CAP_SECONDS = 5.0
+
 
 # Ceilings for the application engine (SQLAlchemy + asyncpg). Without them a query
 # that waits on a lock or on a half-open connection blocks the event loop silently;
@@ -15,6 +20,8 @@ ASYNC_PG_SSL_MODES = frozenset({"require", "verify-ca", "verify-full"})
 ASYNCPG_COMMAND_TIMEOUT_SECONDS = 30
 ASYNCPG_STATEMENT_TIMEOUT_MS = 30_000
 ASYNCPG_LOCK_TIMEOUT_MS = 10_000
+
+ASYNC_PG_SSL_MODES = frozenset({"require", "verify-ca", "verify-full"})
 
 
 def _query_param(url: str, name: str) -> str | None:
@@ -148,7 +155,7 @@ class Settings(BaseSettings):
     # Phase Z: at most one admin alert per run about the articles parked for review.
     flag_alert_enabled: bool = True
     flag_alert_max_per_run: int = 5
-    immediate_publish_delay_seconds: float = 2.0
+    immediate_publish_delay_seconds: float = 5.0
     immediate_publish_dry_run: bool = False
     min_importance: int = 2
     max_daily_report_items: int = 15  # hard cap on distinct events in one daily bulletin (Phase R-3)
@@ -187,6 +194,18 @@ class Settings(BaseSettings):
         the next slot and publish the wrong bulletin.
         """
         return min(max(int(value), 1), 11)
+
+    @field_validator("immediate_publish_delay_seconds")
+    @classmethod
+    def _clamp_immediate_publish_delay_seconds(cls, value: float) -> float:
+        """Cap the inter-message pause so a bad env override cannot stall the batch.
+
+        The pause paces Telegram sends to avoid FloodWait, but a multi-minute value
+        (misconfigured IMMEDIATE_PUBLISH_DELAY_SECONDS) turned into a silent
+        multi-minute asyncio.sleep before every immediate post. Clamp to the ceiling;
+        a negative value means "no pause".
+        """
+        return min(max(float(value), 0.0), IMMEDIATE_PUBLISH_DELAY_CAP_SECONDS)
 
     @field_validator("ai_perspectives_retries")
     @classmethod

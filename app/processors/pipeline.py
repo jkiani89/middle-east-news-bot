@@ -21,7 +21,7 @@ from app.ai.summarizer import (
 )
 from app.collectors.rss_collector import fetch_article_full_text, fetch_feed
 from app.collectors.telegram_collector import collect_telegram_posts
-from app.config import settings
+from app.config import IMMEDIATE_PUBLISH_DELAY_CAP_SECONDS, settings
 from app.database.connection import SessionLocal
 from app.database.models import Article, ArticleEvent, Event, JobLog, Source, Summary
 from app.editorial.content_quality import classify_content_quality
@@ -311,7 +311,10 @@ async def _publish_immediate_safely(analysis: ImmediateAnalysis, admin_only: boo
     if not settings.immediate_publish_enabled or settings.app_env == "test":
         return False
 
-    pause = max(0.0, settings.immediate_publish_delay_seconds)
+    pause = min(
+        max(0.0, settings.immediate_publish_delay_seconds),
+        IMMEDIATE_PUBLISH_DELAY_CAP_SECONDS,
+    )
     elapsed = time.monotonic() - _last_immediate_publish_at
     if 0 < elapsed < pause:
         await asyncio.sleep(pause - elapsed)

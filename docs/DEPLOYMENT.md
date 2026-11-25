@@ -78,7 +78,7 @@ Set these as **Repository Variables** (Settings → Secrets and variables → Ac
 | `IMMEDIATE_PUBLISH_ENABLED` | `true` | Publish each analyzed article to the channel right after it is stored |
 | `IMMEDIATE_PUBLISH_ONLY_NEW_EVENTS` | `true` | Skip merged/duplicate events to avoid channel spam |
 | `IMMEDIATE_PUBLISH_MAX_PER_RUN` | `10` | Cap on instant messages per batch; the rest wait for the daily report |
-| `IMMEDIATE_PUBLISH_DELAY_SECONDS` | `2` | Pause between instant messages to avoid Telegram FloodWait |
+| `IMMEDIATE_PUBLISH_DELAY_SECONDS` | `5` | Pause between instant messages to avoid Telegram FloodWait (clamped to 5s) |
 | `POSTGRES_SSLROOTCERT` | empty | Path to a CA bundle (e.g. Aiven `ca.pem`); upgrades `sslmode=require` to real certificate validation |
 | `NUMBER_CHECK_MODE` (repo variable `vars.NUMBER_CHECK_MODE`) | `log` | Numeric grounding of `headline_fa`/`summary_fa`: `off`, `log` (record in `ai_payload.number_check` only) or `flag` (park the article for review instead of publishing it) |
 | `FLAG_ALERT_ENABLED` (repo variable `vars.FLAG_ALERT_ENABLED`) | `true` | Send one admin summary per run for the articles parked for review |

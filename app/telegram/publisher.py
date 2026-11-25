@@ -27,7 +27,7 @@ from aiogram.types import LinkPreviewOptions
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.config import IMMEDIATE_PUBLISH_DELAY_CAP_SECONDS, settings
 from app.database.connection import SessionLocal
 from app.database.models import DailyReport
 from app.reports.daily_report import format_persian_daily_report
@@ -629,6 +629,7 @@ async def publish_immediate_analysis(
     delivery_type = "admin" if admin_only else "immediate"
     chunks = split_text(text, limit=3900)
     pause = settings.immediate_publish_delay_seconds if delay_seconds is None else delay_seconds
+    pause = min(max(0.0, float(pause)), IMMEDIATE_PUBLISH_DELAY_CAP_SECONDS)
 
     if effective_dry_run:
         # Structured logging (not print) keeps the dry-run preview readable in CI logs
