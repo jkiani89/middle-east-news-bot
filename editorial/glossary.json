@@ -110,7 +110,7 @@
     {
       "id": "gastat-sa",
       "kind": "organization",
-      "canonical_fa": "سازمان کل آمار عربستان سعودی",
+      "canonical_fa": "سازمان کل آمار",
       "source_forms": ["الهيئة العامة للإحصاء", "الهيئة العامه للإحصاء"],
       "variants_fa": [],
       "review_required": false

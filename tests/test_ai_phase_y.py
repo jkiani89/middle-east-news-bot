@@ -35,7 +35,7 @@ VALID = {
 def test_prompt_meta_is_private_and_prompt_version_is_stable() -> None:
     """prompt_meta must not reach the JSON schema or the model-facing dump."""
     # Bumped deliberately after Kurdistan geography & Arabic-to-Persian translation rules.
-    assert PROMPT_VERSION == "v2-26ba4431"
+    assert PROMPT_VERSION == "v2-5bbe2aec"
     assert "prompt_meta" not in NewsAnalysis.model_json_schema()["properties"]
 
     analysis = NewsAnalysis(

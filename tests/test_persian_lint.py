@@ -141,7 +141,8 @@ def test_prompt_carries_arabic_context_entity_consistency_and_actor_separation_r
     """Rule 12 covers contextual Arabicisms, headline/summary source fidelity, and actor separation."""
     assert "متناسب با بافت جمله" in EDITORIAL_SYSTEM_PROMPT
     assert "یدک‌کش دریایی" in EDITORIAL_SYSTEM_PROMPT
-    assert "سازمان کل آمار عربستان سعودی" in EDITORIAL_SYSTEM_PROMPT
+    assert "«الهيئة العامة للإحصاء» ← «سازمان کل آمار»" in EDITORIAL_SYSTEM_PROMPT
+    assert "سازمان کل آمار عربستان سعودی" not in EDITORIAL_SYSTEM_PROMPT
     assert "مجلس سنای تگزاس" in EDITORIAL_SYSTEM_PROMPT
     assert "headline_fa و summary_fa باید دقیقاً مطابق متن اصلی خبر باشند" in EDITORIAL_SYSTEM_PROMPT
     assert "چندشخصیتی" in EDITORIAL_SYSTEM_PROMPT
@@ -156,7 +157,8 @@ def test_build_analysis_prompt_injects_arabic_editorial_glossary_terms() -> None
         "الجزيرة",
     )
     assert "یدک‌کش دریایی" in prompt
-    assert "سازمان کل آمار عربستان سعودی" in prompt
+    assert "- سازمان کل آمار ←" in prompt
+    assert "سازمان کل آمار عربستان سعودی" not in prompt
     assert "انبار" in prompt
     assert "جشنواره" in prompt
     assert "شگفتی‌ها" in prompt

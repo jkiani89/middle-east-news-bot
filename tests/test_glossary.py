@@ -313,7 +313,7 @@ def test_arabic_editorial_audit_glossary_entries_match_with_clitics_and_plurals(
     assert [e.id for e in match_entries(glossary, "افتتاح مهرجان الثقافة والمهرجانات السنوية")] == ["festival"]
     gastat = match_entries(glossary, "أعلنت الهيئة العامة للإحصاء عن تراجع التضخم")
     assert [e.id for e in gastat] == ["gastat-sa"]
-    assert gastat[0].canonical_fa == "سازمان کل آمار عربستان سعودی"
+    assert gastat[0].canonical_fa == "سازمان کل آمار"
 
 
 def test_arabic_editorial_audit_glossary_entries_do_not_false_match() -> None:
