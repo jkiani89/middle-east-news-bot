@@ -7,8 +7,10 @@ Strictly adheres to docs/PHASE_5_DESIGN.md.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -296,6 +298,30 @@ def _is_live_digest_event(candidate: Event, cand_summary_or_details: Any) -> boo
     return False
 
 
+async def _fetch_candidate_summaries(
+    session: AsyncSession,
+    events: Sequence[Event],
+) -> dict[int, Any]:
+    """Batch-fetch Summary.details_fa for candidate events in one query."""
+    event_ids = list(dict.fromkeys(e.id for e in events if getattr(e, "id", None) is not None))
+    if not event_ids:
+        return {}
+    try:
+        stmt = select(Summary.event_id, Summary.details_fa).where(Summary.event_id.in_(event_ids))
+        res = await session.execute(stmt)
+        rows = res.all() if hasattr(res, "all") else list(res)
+        if asyncio.iscoroutine(rows):
+            rows = await rows
+        summaries: dict[int, Any] = {}
+        for event_id, details_fa in rows:
+            if event_id not in summaries:
+                summaries[event_id] = details_fa
+        return summaries
+    except Exception as exc:
+        logger.warning("Failed to batch-fetch candidate summaries: %s", exc)
+        return {}
+
+
 @dataclass
 class EventMatchResult:
     event_id: int
@@ -356,15 +382,11 @@ class EventMatcher:
         best_active_event: Event | None = None
         best_active_score = 0.0
         best_active_sim = None
+        active_summaries = await _fetch_candidate_summaries(session, active_events)
 
         for candidate in active_events:
             # Phase Y-13: An event that is a live digest must NEVER accept other articles
-            cand_obj = None
-            try:
-                stmt_cand_summary = select(Summary.details_fa).where(Summary.event_id == candidate.id)
-                cand_obj = await session.scalar(stmt_cand_summary)
-            except Exception:
-                pass
+            cand_obj = active_summaries.get(candidate.id)
             if _is_live_digest_event(candidate, cand_obj):
                 continue
 
@@ -444,14 +466,10 @@ class EventMatcher:
         best_hist_event: Event | None = None
         best_hist_score = 0.0
         best_hist_sim = None
+        hist_summaries = await _fetch_candidate_summaries(session, hist_events)
 
         for candidate in hist_events:
-            cand_obj = None
-            try:
-                stmt_cand_summary = select(Summary.details_fa).where(Summary.event_id == candidate.id)
-                cand_obj = await session.scalar(stmt_cand_summary)
-            except Exception:
-                pass
+            cand_obj = hist_summaries.get(candidate.id)
             if _is_live_digest_event(candidate, cand_obj):
                 continue
 

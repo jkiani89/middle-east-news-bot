@@ -17,6 +17,7 @@ import pytest
 from app.database.models import Article, Event, Summary
 from app.processors.event_matcher import (
     EventMatcher,
+    _fetch_candidate_summaries,
     calculate_event_similarity,
     jaccard_similarity,
     normalize_text,
@@ -628,3 +629,142 @@ async def test_positive_multisource_merge_westbank():
     r = await _run_false_merge_case(ev, inc, 2004)
     assert r.is_new_event is False
     assert r.match_type == "auto"
+
+
+@pytest.mark.asyncio
+async def test_match_or_create_event_batches_summary_queries_no_n_plus_1():
+    """Multiple active and historical candidates must batch Summary lookups instead of N+1 queries."""
+    now = datetime.now(UTC)
+
+    # Candidate 101 matches on everything, but its batched Summary says is_live_digest=True -> must skip!
+    active_digest = Event(
+        id=101,
+        title="Doha Ceasefire Talks Reconvene",
+        event_type="DIP",
+        countries=["Qatar", "Egypt"],
+        actors=["Qatari Prime Minister", "CIA Director"],
+        location="Doha",
+        first_seen_at=now - timedelta(hours=3),
+        last_updated_at=now - timedelta(hours=3),
+        importance=4,
+        status="active",
+    )
+    active_other = [
+        Event(
+            id=102 + i,
+            title=f"Unrelated Maritime Notice {i}",
+            event_type="MAR",
+            countries=["Oman"],
+            actors=["Coast Guard"],
+            location="Muscat",
+            first_seen_at=now - timedelta(hours=4 + i),
+            status="active",
+        )
+        for i in range(4)
+    ]
+    active_events = [active_digest, *active_other]
+
+    # Historical candidate 201 also matches strongly, but Summary says article_kind='live_digest' -> skip;
+    # candidate 202 is a standard historical event -> follow-up!
+    hist_digest = Event(
+        id=201,
+        title="Doha Ceasefire Talks Initial Updates",
+        event_type="DIP",
+        countries=["Qatar", "Egypt"],
+        actors=["Qatari Prime Minister", "CIA Director"],
+        location="Doha",
+        first_seen_at=now - timedelta(hours=72),
+        last_updated_at=now - timedelta(hours=72),
+        importance=4,
+        status="active",
+    )
+    hist_match = Event(
+        id=202,
+        title="Ceasefire Negotiations Open in Doha",
+        event_type="DIP",
+        countries=["Qatar", "Egypt"],
+        actors=["Qatari Prime Minister", "CIA Director"],
+        location="Doha",
+        first_seen_at=now - timedelta(hours=96),
+        last_updated_at=now - timedelta(hours=96),
+        importance=4,
+        status="active",
+    )
+    hist_other = [
+        Event(
+            id=203 + i,
+            title=f"Unrelated Port Summit {i}",
+            event_type="ECO",
+            countries=["Bahrain"],
+            actors=["Trade Ministry"],
+            location="Manama",
+            first_seen_at=now - timedelta(hours=100 + i),
+            status="active",
+        )
+        for i in range(3)
+    ]
+    hist_events = [hist_digest, hist_match, *hist_other]
+
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    scalars_active = MagicMock()
+    scalars_active.all.return_value = active_events
+    scalars_hist = MagicMock()
+    scalars_hist.all.return_value = hist_events
+    session.scalars.side_effect = [scalars_active, scalars_hist]
+
+    exec_active = MagicMock()
+    exec_active.all.return_value = [
+        (101, {"is_live_digest": True}),
+        (102, {"sources": []}),
+    ]
+    exec_hist = MagicMock()
+    exec_hist.all.return_value = [
+        (201, {"article_kind": "live_digest"}),
+        (202, {"sources": []}),
+    ]
+    session.execute.side_effect = [exec_active, exec_hist]
+
+    incoming_article = Article(
+        id=9001,
+        title="Ceasefire Negotiations Reconvene in Doha",
+        original_url="https://example.com/doha-talks",
+        collected_at=now,
+    )
+    incoming_ai = {
+        "event_title": "Ceasefire Negotiations Reconvene in Doha",
+        "categories": ["DIP"],
+        "countries": ["Qatar", "Egypt"],
+        "actors": ["Qatari Prime Minister", "CIA Director"],
+        "location": "Doha",
+        "importance": 4,
+    }
+
+    result = await EventMatcher().match_or_create_event(
+        session, incoming_article, incoming_ai, source_name="Al Jazeera"
+    )
+
+    assert session.scalar.await_count == 0
+    assert session.execute.await_count == 2
+    assert result.is_new_event is True
+    assert result.match_type == "follow_up"
+    assert result.event.parent_event_id == 202
+
+
+@pytest.mark.asyncio
+async def test_fetch_candidate_summaries_empty_and_db_error_logs_warning(caplog):
+    """Empty candidate list skips DB query; DB error logs a warning and degrades cleanly."""
+    session = AsyncMock()
+    assert await _fetch_candidate_summaries(session, []) == {}
+    assert await _fetch_candidate_summaries(session, [Event(id=None, title="No ID")]) == {}
+    assert session.execute.await_count == 0
+
+    session.execute.side_effect = RuntimeError("db timeout")
+    with caplog.at_level("WARNING"):
+        res = await _fetch_candidate_summaries(session, [Event(id=42, title="Candidate")])
+
+    assert res == {}
+    assert session.execute.await_count == 1
+    assert "Failed to batch-fetch candidate summaries" in caplog.text
+
