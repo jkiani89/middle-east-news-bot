@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 # (rotator bookkeeping, cleanup_gemini_request_log), an unbounded connect froze the whole
 # batch - run #237 sat on "Step 4/4" with no further log line.
 CONNECT_TIMEOUT_SECONDS = 10
+CONNECT_MAX_ATTEMPTS = 3
+CONNECT_RETRY_BACKOFFS = (2.0, 4.0)
 
 # connect_timeout only covers establishing the connection. A query that waits on a
 # row lock (cleanup_heavy_columns) or a long scan can still hang forever, with no
@@ -46,14 +48,30 @@ class PostgresAdapter(DBAdapter):
         self._connect()
 
     def _connect(self) -> None:
-        if self._conn is None or self._conn.closed:
-            self._conn = psycopg.connect(
-                self._dsn,
-                autocommit=True,
-                row_factory=dict_row,
-                connect_timeout=CONNECT_TIMEOUT_SECONDS,
-                options=CONNECTION_OPTIONS,
-            )
+        if self._conn is not None and not self._conn.closed:
+            return
+        for attempt in range(1, CONNECT_MAX_ATTEMPTS + 1):
+            try:
+                self._conn = psycopg.connect(
+                    self._dsn,
+                    autocommit=True,
+                    row_factory=dict_row,
+                    connect_timeout=CONNECT_TIMEOUT_SECONDS,
+                    options=CONNECTION_OPTIONS,
+                )
+                return
+            except psycopg.OperationalError as exc:
+                if attempt >= CONNECT_MAX_ATTEMPTS:
+                    raise
+                delay = CONNECT_RETRY_BACKOFFS[min(attempt - 1, len(CONNECT_RETRY_BACKOFFS) - 1)]
+                logger.warning(
+                    "PostgresAdapter connection attempt %d/%d failed (%s); retrying in %.1fs.",
+                    attempt,
+                    CONNECT_MAX_ATTEMPTS,
+                    exc,
+                    delay,
+                )
+                time.sleep(delay)
 
     def _ensure(self) -> psycopg.Connection[dict[str, Any]]:
         if self._conn is None or self._conn.closed:

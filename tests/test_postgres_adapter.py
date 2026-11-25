@@ -229,3 +229,65 @@ def test_connect_uses_a_bounded_connect_timeout(monkeypatch) -> None:
         assert adapter._ensure() is not None
     finally:
         adapter._conn = None
+
+
+def test_connect_retries_on_transient_operational_error_and_succeeds(monkeypatch, caplog) -> None:
+    """Transient ConnectionTimeout / OperationalError failures retry up to 3 times and recover."""
+    import psycopg
+
+    from app.ai import postgres_adapter as adapter_module
+
+    class _FakeConnection:
+        closed = False
+
+    attempts = 0
+    sleep_calls: list[float] = []
+
+    def _flaky_connect(dsn, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise psycopg.errors.ConnectionTimeout(f"timeout #{attempts}")
+        return _FakeConnection()
+
+    monkeypatch.setattr(adapter_module.psycopg, "connect", _flaky_connect)
+    monkeypatch.setattr(adapter_module.time, "sleep", sleep_calls.append)
+
+    with caplog.at_level("WARNING"):
+        adapter = PostgresAdapter("postgresql://user:pass@localhost:5432/newsbot")
+
+    try:
+        assert attempts == 3
+        assert sleep_calls == [2.0, 4.0]
+        assert adapter._conn is not None
+        assert "attempt 1/3 failed" in caplog.text
+        assert "attempt 2/3 failed" in caplog.text
+    finally:
+        adapter._conn = None
+
+
+def test_connect_raises_after_exhausting_retries(monkeypatch, caplog) -> None:
+    """Persistent OperationalError raises after 3 attempts with bounded backoff."""
+    import psycopg
+
+    from app.ai import postgres_adapter as adapter_module
+
+    attempts = 0
+    sleep_calls: list[float] = []
+
+    def _failing_connect(dsn, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise psycopg.OperationalError(f"down #{attempts}")
+
+    monkeypatch.setattr(adapter_module.psycopg, "connect", _failing_connect)
+    monkeypatch.setattr(adapter_module.time, "sleep", sleep_calls.append)
+
+    with caplog.at_level("WARNING"), pytest.raises(psycopg.OperationalError, match="down #3"):
+        PostgresAdapter("postgresql://user:pass@localhost:5432/newsbot")
+
+    assert attempts == 3
+    assert sleep_calls == [2.0, 4.0]
+    assert "attempt 1/3 failed" in caplog.text
+    assert "attempt 2/3 failed" in caplog.text
+

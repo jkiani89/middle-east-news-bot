@@ -749,6 +749,10 @@ async def process_collected_articles(
             article.last_attempt_at = datetime.now(UTC)
             immediate_analysis: ImmediateAnalysis | None = None
             immediate_admin_only = False
+            perspective_event_id: int | None = None
+            perspective_event_title = ""
+            perspective_topic_key: str | None = None
+            perspective_topic_fa: str | None = None
 
             if attempt.error is not None:
                 exc = attempt.error
@@ -1052,14 +1056,10 @@ async def process_collected_articles(
                 payload_dict["verification_status_resolved"] = verification_status
 
                 if source_count >= 2:
-                    await _refresh_event_perspectives(
-                        session=session,
-                        event_id=match_res.event_id,
-                        event_title=result.event_title or article.title,
-                        provider=ai_provider,
-                        topic_key=topic.key if topic else None,
-                        topic_fa=topic.name_fa if topic else None,
-                    )
+                    perspective_event_id = match_res.event_id
+                    perspective_event_title = result.event_title or article.title
+                    perspective_topic_key = topic.key if topic else None
+                    perspective_topic_fa = topic.name_fa if topic else None
 
                 if match_res.is_new_event:
                     session.add(
@@ -1121,6 +1121,19 @@ async def process_collected_articles(
                     article.id,
                     commit_elapsed,
                 )
+
+            if perspective_event_id is not None:
+                await _refresh_event_perspectives(
+                    session=session,
+                    event_id=perspective_event_id,
+                    event_title=perspective_event_title,
+                    provider=ai_provider,
+                    topic_key=perspective_topic_key,
+                    topic_fa=perspective_topic_fa,
+                )
+                # Persist any rebuilt perspective matrix and close the transaction before
+                # immediate publishing or the next article's model wait.
+                await session.commit()
 
             if immediate_analysis is not None:
                 if immediate_published < settings.immediate_publish_max_per_run:

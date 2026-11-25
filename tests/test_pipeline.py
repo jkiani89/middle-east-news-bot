@@ -266,3 +266,100 @@ async def test_pipeline_idempotency_after_merge():
     count = await process_collected_articles(session, limit=100, provider=mock_provider)
     assert count == 0
     assert mock_provider.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_refresh_event_perspectives_runs_after_article_commit(monkeypatch):
+    """When source_count >= 2, pending article writes are committed before _refresh_event_perspectives."""
+    from types import SimpleNamespace
+
+    from app.ai.provider import MockAIProvider
+    from app.database.models import Article
+    from app.processors import pipeline as pipeline_module
+
+    article = Article(
+        id=104,
+        source_id=1,
+        title="Diplomatic summit in Riyadh continues",
+        original_url="https://example.com/riyadh-2",
+        canonical_url="https://example.com/riyadh-2",
+        original_text="Foreign ministers continued talks in Riyadh on regional security.",
+        status="collected",
+    )
+
+    events_order: list[str] = []
+
+    class _TrackingSession:
+        def __init__(self) -> None:
+            self.added: list[object] = []
+
+        def add(self, obj: object) -> None:
+            self.added.append(obj)
+
+        async def flush(self) -> None:
+            events_order.append("flush")
+
+        async def commit(self) -> None:
+            events_order.append(f"commit:{article.status}")
+
+        async def scalars(self, _stmt: object) -> MagicMock:
+            m = MagicMock()
+            m.all.return_value = [article] if "articles" in str(_stmt) else []
+            m.first.return_value = None
+            return m
+
+        async def execute(self, _stmt: object) -> MagicMock:
+            m = MagicMock()
+            m.all.return_value = [(1, "Test Source")]
+            return m
+
+        async def scalar(self, _stmt: object) -> object | None:
+            return None
+
+    async def _fake_expire(session, dry_run=False):
+        return (0, None)
+
+    async def _fake_count(session, event_id):
+        return 2
+
+    async def _fake_match(self, session, article, analysis_data, source_name=""):
+        return SimpleNamespace(event_id=77, match_type="auto", confidence=0.9, is_new_event=False)
+
+    async def _fake_refresh(**kwargs):
+        events_order.append(f"refresh:{article.status}")
+        return True
+
+    monkeypatch.setattr(pipeline_module, "expire_stale_collected", _fake_expire)
+    monkeypatch.setattr(pipeline_module, "_count_event_sources", _fake_count)
+    monkeypatch.setattr(pipeline_module.EventMatcher, "match_or_create_event", _fake_match)
+    monkeypatch.setattr(pipeline_module, "_refresh_event_perspectives", _fake_refresh)
+
+    valid_canned = {
+        "is_relevant": True,
+        "is_injection_attempt": False,
+        "categories": ["DIP", "SEC"],
+        "event_title": "Riyadh Diplomatic Summit",
+        "headline_fa": "ادامه نشست دیپلماتیک در ریاض",
+        "summary_fa": "وزرای امور خارجه مذاکرات امنیتی در ریاض را ادامه دادند.",
+        "countries": ["عربستان سعودی"],
+        "actors": ["وزرای امور خارجه"],
+        "location": "Riyadh",
+        "importance": 4,
+        "verification_status": "confirmed",
+    }
+
+    session = _TrackingSession()
+    count = await process_collected_articles(
+        session, limit=10, provider=MockAIProvider(canned_response=valid_canned)
+    )
+
+    assert count == 1
+    assert article.status == "summarized"
+    assert events_order == [
+        "commit:collected",
+        "flush",
+        "commit:summarized",
+        "refresh:summarized",
+        "commit:summarized",
+    ]
+
