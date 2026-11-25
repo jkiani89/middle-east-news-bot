@@ -203,7 +203,7 @@ def test_convert_dsn_from_asyncpg_format() -> None:
 def test_connect_uses_a_bounded_connect_timeout(monkeypatch) -> None:
     """A pooler that accepts the socket and never answers must not freeze the event loop."""
     from app.ai import postgres_adapter as adapter_module
-    from app.ai.postgres_adapter import CONNECT_TIMEOUT_SECONDS
+    from app.ai.postgres_adapter import CONNECT_TIMEOUT_SECONDS, CONNECTION_OPTIONS
 
     captured: dict = {}
 
@@ -221,6 +221,11 @@ def test_connect_uses_a_bounded_connect_timeout(monkeypatch) -> None:
     try:
         assert captured["connect_timeout"] == CONNECT_TIMEOUT_SECONDS
         assert captured["autocommit"] is True
+        # connect_timeout cannot bound a query; the libpq options must carry both
+        # server-side ceilings so a lock wait becomes an error, not a silent hang.
+        assert captured["options"] == CONNECTION_OPTIONS
+        assert "statement_timeout=30000" in captured["options"]
+        assert "lock_timeout=10000" in captured["options"]
         assert adapter._ensure() is not None
     finally:
         adapter._conn = None

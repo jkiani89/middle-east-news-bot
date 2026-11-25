@@ -581,10 +581,14 @@ async def test_http_options_timeout_mirrors_the_request_ceiling():
     await provider.generate_json("prompt", "system instruction")
     analysis = mock_rotator.execute.call_args.kwargs["extra_config"]["http_options"]
     assert analysis["timeout"] == settings.ai_request_timeout_seconds * 1000
+    # The SDK retries on its own by default (attempts=5), and each attempt gets the
+    # full ceiling; that stack is what produced the 264-second silent gaps.
+    assert analysis["retry_options"] == {"attempts": 1}
 
     await provider.generate_json("prompt", "system instruction", purpose="perspectives")
     perspectives = mock_rotator.execute.call_args.kwargs["extra_config"]["http_options"]
     assert perspectives["timeout"] == settings.ai_perspectives_timeout_seconds * 1000
+    assert perspectives["retry_options"] == {"attempts": 1}
 
 
 @pytest.mark.asyncio

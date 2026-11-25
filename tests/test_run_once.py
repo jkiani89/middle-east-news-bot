@@ -371,10 +371,21 @@ def test_main_hard_exits_instead_of_joining_lingering_workers(monkeypatch):
     monkeypatch.setattr(run_once_module.logging, "shutdown", lambda: None)
     monkeypatch.setattr(run_once_module.os, "_exit", _fake_os_exit)
     monkeypatch.setattr(run_once_module.sys, "argv", ["run_once.py"])
+
+    stack_dumps: list[tuple[int, bool]] = []
+
+    def _fake_dump_traceback_later(timeout, repeat=False):
+        stack_dumps.append((timeout, repeat))
+
+    monkeypatch.setattr(
+        run_once_module.faulthandler, "dump_traceback_later", _fake_dump_traceback_later
+    )
     monkeypatch.setattr(settings, "immediate_publish_dry_run", settings.immediate_publish_dry_run)
 
     with pytest.raises(SystemExit) as excinfo:
         run_once_module.main()
 
     assert exited == [0]
+    # A repeating watchdog: three minutes of silence always leaves a stack trace.
+    assert stack_dumps == [(180, True)]
     assert excinfo.value.code == 0

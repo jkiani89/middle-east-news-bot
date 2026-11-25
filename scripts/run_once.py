@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import faulthandler
 import logging
 import os
 import sys
@@ -285,6 +286,12 @@ def _lingering_non_daemon_threads() -> list[threading.Thread]:
 
 
 def main() -> None:
+    # A stall inside a step leaves no log line at all (run #244 sat after
+    # "Cleaned 0 rows from gemini_request_log" for ~8 minutes). Dump every
+    # thread's stack after three minutes of silence, repeatedly, so the next hang
+    # names its own blocking call in the workflow log.
+    faulthandler.dump_traceback_later(180, repeat=True)
+
     parser = argparse.ArgumentParser(
         description="Middle East News Bot - Single-Run Batch Execution"
     )

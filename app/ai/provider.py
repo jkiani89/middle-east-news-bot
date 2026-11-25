@@ -605,6 +605,11 @@ class GeminiProvider(BaseAIProvider):
             "http_options": {
                 "api_version": GEMINI_API_VERSION,
                 "timeout": int(timeout * 1000),
+                # google-genai retries retryable status codes five times by default
+                # and applies HttpOptions.timeout to every attempt, so one call
+                # could stack ~5 x 45s plus backoff (the silent 264-second gaps in
+                # run #244). One attempt, then the model chain takes over.
+                "retry_options": {"attempts": 1},
             },
         }
 

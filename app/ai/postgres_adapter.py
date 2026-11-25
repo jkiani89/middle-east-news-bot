@@ -19,6 +19,16 @@ logger = logging.getLogger(__name__)
 # batch - run #237 sat on "Step 4/4" with no further log line.
 CONNECT_TIMEOUT_SECONDS = 10
 
+# connect_timeout only covers establishing the connection. A query that waits on a
+# row lock (cleanup_heavy_columns) or a long scan can still hang forever, with no
+# log line at all, because this adapter runs on the event loop. These ceilings turn
+# such a stall into a visible psycopg error instead of a minutes-long silence.
+STATEMENT_TIMEOUT_MS = 30_000
+LOCK_TIMEOUT_MS = 10_000
+CONNECTION_OPTIONS = (
+    f"-c statement_timeout={STATEMENT_TIMEOUT_MS} -c lock_timeout={LOCK_TIMEOUT_MS}"
+)
+
 
 class PostgresAdapter(DBAdapter):
     """Synchronous DBAdapter backed by PostgreSQL via psycopg3.
@@ -42,6 +52,7 @@ class PostgresAdapter(DBAdapter):
                 autocommit=True,
                 row_factory=dict_row,
                 connect_timeout=CONNECT_TIMEOUT_SECONDS,
+                options=CONNECTION_OPTIONS,
             )
 
     def _ensure(self) -> psycopg.Connection[dict[str, Any]]:
