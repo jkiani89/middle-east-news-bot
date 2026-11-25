@@ -13,6 +13,7 @@ from app.editorial.telegraph_topics import (
     group_items_by_telegraph_topic,
     load_telegraph_topics,
 )
+from app.reports.persian_dates import format_dual_persian_date
 from app.reports.telegraph_client import (
     TelegraphContentTooLargeError,
     TelegraphError,
@@ -183,9 +184,13 @@ def test_topic_page_holds_all_items_of_that_topic():
     rendered = _text(nodes)
 
     assert "ایران و آمریکا" in title
+    assert format_dual_persian_date(date(2026, 11, 14)) in title
     assert "خبر نخست ایران" in rendered
     assert "خبر دوم ایران" in rendered
-    assert rendered.count("لینک اصلی خبر") == 2
+    assert "راستی‌آزمایی" not in rendered
+    assert "لینک اصلی خبر" not in rendered
+    assert rendered.count('"href": "https://irna.ir/news/1"') == 2
+    assert '"children": ["IRNA"]' in rendered
     assert "2" in rendered
 
 
@@ -288,12 +293,13 @@ def test_unprocessed_items_are_never_grouped_for_public_telegraph():
 
 def test_public_channel_report_is_the_minimal_template():
     sections = group_items_by_telegraph_topic([_item(1)])
+    rep_date = date(2026, 11, 14)
     text = format_public_channel_report(
-        date(2026, 11, 14), 8, "https://telegra.ph/report-1", sections, {}
+        rep_date, 8, "https://telegra.ph/report-1", sections, {}
     )
 
     assert text.startswith("📊 <b>جمع‌بندی ۱۲ ساعته تحولات</b>")
-    assert "نوبت 08:00 (08:00) • 2026-11-14" in text
+    assert f"نوبت 08:00 • {format_dual_persian_date(rep_date)}" in text
     assert "<b>مهم‌ترین محورهای این نوبت:</b>" in text
     assert "• 🇮🇷/🇺🇸 ایران و آمریکا" in text
     assert '<a href="https://telegra.ph/report-1">مطالعه گزارش کامل و مشروح در Telegraph</a>' in text
@@ -387,10 +393,12 @@ async def test_a_complete_report_is_not_rebuilt():
 async def test_retry_updates_the_topic_page_instead_of_duplicating_it():
     """A partial report edits the topic page it already published; it never adds a copy."""
     session = _Session()
+    rep_date = date(2026, 11, 14)
+    yemen_title = f"عربستان و یمن — گزارش 08:00 {format_dual_persian_date(rep_date)}"
     first_items = [_item(1, "خبر نخست", topic_key="ir"), _item(2, "خبر دوم", topic_key="ye")]
-    failing = _Client(fail_titles={"عربستان و یمن — گزارش 08:00 2026-11-14"})
+    failing = _Client(fail_titles={yemen_title})
     await publish_telegraph_report(
-        session, report_date=date(2026, 11, 14), slot_hour=8, client=failing, items=first_items
+        session, report_date=rep_date, slot_hour=8, client=failing, items=first_items
     )
     topic_path = session.row.topic_pages["ir"]["path"]
     index_path = session.row.index_path
@@ -399,11 +407,11 @@ async def test_retry_updates_the_topic_page_instead_of_duplicating_it():
     retry_items = first_items + [_item(3, "خبر تازه", topic_key="ir")]
     retry = _Client()
     result = await publish_telegraph_report(
-        session, report_date=date(2026, 11, 14), slot_hour=8, client=retry, items=retry_items
+        session, report_date=rep_date, slot_hour=8, client=retry, items=retry_items
     )
 
     assert result["created"] == 1  # only the missing topic page
-    assert retry.created == [("p1", "عربستان و یمن — گزارش 08:00 2026-11-14")]
+    assert retry.created == [("p1", yemen_title)]
     assert [path for path, _title in retry.edited] == [topic_path, index_path]
     assert session.row.topic_pages["ir"]["path"] == topic_path
     assert session.row.topic_pages["ir"]["item_count"] == 2
@@ -418,10 +426,12 @@ async def test_a_story_from_the_previous_report_does_not_remove_this_windows_sto
         session, report_date=date(2026, 11, 13), slot_hour=20, client=_Client(), items=items
     )
 
+    rep_date = date(2026, 11, 14)
+    dual_date = format_dual_persian_date(rep_date)
     later = _Client()
     result = await publish_telegraph_report(
         _Session(),
-        report_date=date(2026, 11, 14),
+        report_date=rep_date,
         slot_hour=8,
         client=later,
         items=items,
@@ -429,8 +439,8 @@ async def test_a_story_from_the_previous_report_does_not_remove_this_windows_sto
     )
 
     assert [title for _path, title in later.created] == [
-        "ایران و آمریکا — گزارش 08:00 2026-11-14",
-        "گزارش 08:00 — 2026-11-14",
+        f"ایران و آمریکا — گزارش 08:00 {dual_date}",
+        f"گزارش 08:00 — {dual_date}",
     ]
     assert result["item_count"] == 1
 
@@ -438,11 +448,13 @@ async def test_a_story_from_the_previous_report_does_not_remove_this_windows_sto
 @pytest.mark.asyncio
 async def test_partial_run_creates_only_the_missing_topic_on_retry():
     session = _Session()
+    rep_date = date(2026, 11, 14)
+    yemen_title = f"عربستان و یمن — گزارش 08:00 {format_dual_persian_date(rep_date)}"
     items = [_item(1, "خبر نخست", topic_key="ir"), _item(2, "خبر دوم", topic_key="ye")]
-    failing = _Client(fail_titles={"عربستان و یمن — گزارش 08:00 2026-11-14"})
+    failing = _Client(fail_titles={yemen_title})
 
     first = await publish_telegraph_report(
-        session, report_date=date(2026, 11, 14), slot_hour=8, client=failing, items=items
+        session, report_date=rep_date, slot_hour=8, client=failing, items=items
     )
 
     assert first["status"] == TELEGRAPH_PARTIAL
@@ -454,13 +466,11 @@ async def test_partial_run_creates_only_the_missing_topic_on_retry():
 
     retry = _Client()
     second = await publish_telegraph_report(
-        session, report_date=date(2026, 11, 14), slot_hour=8, client=retry, items=items
+        session, report_date=rep_date, slot_hour=8, client=retry, items=items
     )
 
     assert second["status"] == TELEGRAPH_COMPLETED
-    assert [title for _path, title in retry.created] == [
-        "عربستان و یمن — گزارش 08:00 2026-11-14"
-    ]
+    assert [title for _path, title in retry.created] == [yemen_title]
     assert retry.edited and retry.edited[0][0] == index_path
     assert set(session.row.topic_pages) == {"ir", "ye"}
 
@@ -524,3 +534,73 @@ def test_minimal_channel_message_links_the_index_and_names_every_topic():
     # The public message has no verification/technical footer.
     assert "تک‌منبعی" not in text
     assert "🛡" not in text
+
+
+def test_build_item_block_renders_flags_hyperlinked_source_and_omits_verification():
+    item = _item(
+        10,
+        "توافق میان تهران و واشنگتن",
+        source="Associated Press",
+        url="https://apnews.com/story/10",
+        verification="✅ تأییدشده (چندمنبعی)",
+        summary="مذاکرات در سطح وزیران خارجه پیگیری شد.",
+    )
+    item["countries"] = ["Iran", "United States"]
+    item["actors"] = ["ایران", "ایالات متحده آمریکا"]
+
+    nodes = build_item_block(item)
+    rendered = _text(nodes)
+
+    assert "🇮🇷🇺🇸 — مذاکرات در سطح وزیران خارجه پیگیری شد." in rendered
+    assert "راستی‌آزمایی" not in rendered
+    assert "تأییدشده" not in rendered
+    assert "لینک اصلی خبر" not in rendered
+    assert {
+        "tag": "p",
+        "children": [
+            "📡 منبع: ",
+            {"tag": "a", "attrs": {"href": "https://apnews.com/story/10"}, "children": ["Associated Press"]},
+        ],
+    } in nodes
+    assert "🕒 زمان انتشار: " in rendered
+    assert "۱۴۰۵/۰۸/۲۳" in rendered
+
+
+def test_telegraph_item_block_never_adds_turkey_flag_for_kurdistan_region():
+    item = _item(
+        11,
+        "نشست بغداد و اربیل درباره بودجه اقلیم کردستان",
+        source="Al Jazeera",
+        url="https://aljazeera.net/news/11",
+        summary="هیئت دولت عراق و نمایندگان اقلیم کردستان در اربیل درباره سهم بودجه گفت‌وگو کردند.",
+    )
+    item["countries"] = ["اقلیم کردستان", "Kurdistan Region (KRG)", "کردستان عراق", "عراق", "ترکیه"]
+    item["actors"] = ["دولت عراق", "حکومت اقلیم کردستان", "اربیل", "بغداد"]
+
+    nodes = build_item_block(item)
+    rendered = _text(nodes)
+
+    assert "🇮🇶 — هیئت دولت عراق" in rendered
+    assert "🇹🇷" not in rendered
+
+
+def test_topic_and_index_pages_display_solar_and_lunar_hijri_dates():
+    rep_date = date(2026, 11, 14)
+    start, end = _window(rep_date, slot_hour=20)
+    items = [_item(1, "خبر نمونه", topic_key="ir")]
+
+    topic_title, topic_nodes = build_topic_page("ایران و آمریکا", rep_date, 20, items, start, end)
+    topic_rendered = _text(topic_nodes)
+    assert "شنبه ۲۳ آبان ۱۴۰۵ | ۳ جمادی‌الثانی ۱۴۴۸" in topic_title
+    assert "📅 تاریخ: شنبه ۲۳ آبان ۱۴۰۵ | ۳ جمادی‌الثانی ۱۴۴۸" in topic_rendered
+    assert "۱۴۰۵/۰۸/۲۳" in topic_rendered
+
+    sections = group_items_by_telegraph_topic(items)
+    idx_title, idx_nodes = build_index_page(
+        rep_date, 20, sections, {"ir": {"url": "https://telegra.ph/p1"}}, start, end, {}
+    )
+    idx_rendered = _text(idx_nodes)
+    assert "شنبه ۲۳ آبان ۱۴۰۵ | ۳ جمادی‌الثانی ۱۴۴۸" in idx_title
+    assert "📅 تاریخ: شنبه ۲۳ آبان ۱۴۰۵ | ۳ جمادی‌الثانی ۱۴۴۸" in idx_rendered
+    assert "۱۴۰۵/۰۸/۲۳" in idx_rendered
+

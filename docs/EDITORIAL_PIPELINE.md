@@ -109,7 +109,7 @@ await asyncio.wait_for(fetch_article_full_text(url), timeout=15.0)   # article_b
 ترتیب اهمیت دارد: هر مرحله ارزان‌تر و قاطع‌تر است و مرحلهٔ بعد فقط وقتی اجرا می‌شود که قبلی خبر را نگه داشته باشد. همهٔ تصمیم‌ها در `article.ai_payload` ثبت می‌شوند تا گزارش و پایش بتوانند بازسازی شوند.
 
 ### ۵.۱. تحلیل هوش مصنوعی و پرامپت
-- `PROMPT_VERSION` **محاسبه‌ای** است، نه ثابت دستی: `f"v2-{sha256(system_prompt + json_schema)[:8]}"`. مقدار امروز: **`v2-ba0dca01`** (با اجرای واقعی تأیید شد). هر تغییر در پرامپت یا Schema، نسخه را خودکار عوض می‌کند؛ آزمون‌های پین‌شده باید آگاهانه به‌روزرسانی شوند.
+- `PROMPT_VERSION` **محاسبه‌ای** است، نه ثابت دستی: `f"v2-{sha256(system_prompt + json_schema)[:8]}"`. مقدار امروز: **`v2-bb03b4e5`** (با اجرای واقعی تأیید شد). هر تغییر در پرامپت یا Schema، نسخه را خودکار عوض می‌کند؛ آزمون‌های پین‌شده باید آگاهانه به‌روزرسانی شوند.
 - ورودی مدل: `EDITORIAL_SYSTEM_PROMPT` (قواعد) + پرامپت کاربر با `<<<UNTRUSTED_ARTICLE_CONTENT>>>` و بدنهٔ حداکثر `MODEL_BODY_CHAR_LIMIT`.
 - کدهای مجاز دسته‌بندی: `POL, MIL, DIP, SEC, TER, ECO, ENE, MAR, INT, HUM` — **هیچ کد ورزشی/گردشگری/حادثه‌ای وجود ندارد**؛ همین محدودیت، دلیل وجود گیت واژگانی ۵.۲ است.
 - تزریق تاریخ جاری: `_build_analysis_prompt` خط `تاریخ امروز (UTC): YYYY-MM-DD` را از `datetime.now(UTC).date().isoformat()` می‌سازد (اصل ۱۱ پرامپت). بدون این خط، مدل از دانش آرشیوی خود عنوان مقام‌ها را می‌نوشت («رئیس‌جمهور پیشین» برای ترامپ).
@@ -360,7 +360,7 @@ GROUP BY 1 ORDER BY 1 DESC;
 | `min_importance` (سراسری) | ۲ | `app/config.py` |
 | `immediate_publish_min_importance` | ۴ | `app/config.py` |
 | `liveblog_max_importance` | ۳ | `app/config.py` |
-| `PROMPT_VERSION` | `v2-ba0dca01` (محاسبه‌ای) | `app/ai/summarizer.py` |
+| `PROMPT_VERSION` | `v2-bb03b4e5` (محاسبه‌ای) | `app/ai/summarizer.py` |
 | `MIDDLE_EAST_OFFICIALS` | ۱۴ ورودی | `app/editorial/regions.py` |
 | `COUNT_ONLY_STATUSES` | `{rejected, failed}` | `app/reports/telegraph_report.py` |
 | `MAX_CONTENT_BYTES` | ۶۴KB | `app/reports/telegraph_client.py` |

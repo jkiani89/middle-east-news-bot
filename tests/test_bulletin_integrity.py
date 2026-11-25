@@ -592,6 +592,6 @@ def test_live_digest_badge_in_report():
 
 
 def test_prompt_version_and_editorial_prompt_untouched():
-    # Bumped deliberately in Phases C and D after the approved prompt rules.
-    assert PROMPT_VERSION == "v2-ba0dca01"
+    # Bumped deliberately after Kurdistan geography & Arabic-to-Persian translation rules.
+    assert PROMPT_VERSION == "v2-bb03b4e5"
     assert "نقش تو دستیار تحلیل‌گر ارشد و بی‌طرف اخبار خاورمیانه" in EDITORIAL_SYSTEM_PROMPT

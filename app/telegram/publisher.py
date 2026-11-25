@@ -482,6 +482,18 @@ COUNTRY_FLAGS: dict[str, str] = {
     "syria": "🇸🇾",
     "عراق": "🇮🇶",
     "iraq": "🇮🇶",
+    "اقلیم کردستان": "🇮🇶",
+    "اقلیم کردستان عراق": "🇮🇶",
+    "کردستان عراق": "🇮🇶",
+    "حکومت اقلیم کردستان": "🇮🇶",
+    "اربیل": "🇮🇶",
+    "kurdistan region": "🇮🇶",
+    "kurdistan region (krg)": "🇮🇶",
+    "kurdistan region of iraq": "🇮🇶",
+    "kurdistan regional government": "🇮🇶",
+    "iraqi kurdistan": "🇮🇶",
+    "krg": "🇮🇶",
+    "erbil": "🇮🇶",
     "ترکیه": "🇹🇷",
     "turkey": "🇹🇷",
     "turkiye": "🇹🇷",
@@ -518,6 +530,39 @@ MAX_COUNTRY_FLAGS = 3
 
 _PERSIAN_LETTER_MAP = str.maketrans({"ي": "ی", "ك": "ک", "ۀ": "ه", "ة": "ه"})
 
+_KRG_REGION_NAMES: frozenset[str] = frozenset(
+    {
+        "اقلیم کردستان",
+        "اقلیم کردستان عراق",
+        "کردستان عراق",
+        "حکومت اقلیم کردستان",
+        "اربیل",
+        "kurdistan region",
+        "kurdistan region (krg)",
+        "kurdistan region of iraq",
+        "kurdistan regional government",
+        "iraqi kurdistan",
+        "krg",
+        "erbil",
+    }
+)
+
+_TURKEY_ACTOR_MARKERS_FA: tuple[str, ...] = (
+    "ترکیه",
+    "آنکارا",
+    "اردوغان",
+    "هاکان فیدان",
+)
+_TURKEY_ACTOR_MARKERS_EN: tuple[str, ...] = (
+    "turkey",
+    "turkiye",
+    "türkiye",
+    "turkish",
+    "ankara",
+    "erdogan",
+    "erdoğan",
+)
+
 
 def _normalize_country_name(name: Any) -> str:
     """Casefold a country name and unify Persian letter variants for lookup."""
@@ -525,11 +570,46 @@ def _normalize_country_name(name: Any) -> str:
     return " ".join(normalized.split())
 
 
-def country_flags(countries: list[str] | None, limit: int = MAX_COUNTRY_FLAGS) -> list[str]:
-    """Return unique flag emojis for the recognized countries, in order of appearance."""
+def _is_krg_country(normalized_name: str) -> bool:
+    plain = normalized_name.replace("\u200c", " ")
+    return normalized_name in _KRG_REGION_NAMES or plain in _KRG_REGION_NAMES
+
+
+def _has_turkey_actor(actors: list[str] | None) -> bool:
+    """True when an explicit Turkish state/military/official entity appears in ``actors``."""
+    for actor in actors or []:
+        normalized = _normalize_country_name(actor).replace("\u200c", " ")
+        if not normalized:
+            continue
+        if any(marker in normalized for marker in _TURKEY_ACTOR_MARKERS_FA):
+            return True
+        if re.search(r"(?:^|\s)ترک(?:\s|$)", normalized):
+            return True
+        if any(re.search(rf"\b{re.escape(marker)}\b", normalized) for marker in _TURKEY_ACTOR_MARKERS_EN):
+            return True
+    return False
+
+
+def country_flags(
+    countries: list[str] | None,
+    limit: int = MAX_COUNTRY_FLAGS,
+    *,
+    actors: list[str] | None = None,
+) -> list[str]:
+    """Return unique flag emojis for the recognized countries, in order of appearance.
+
+    Kurdistan Region of Iraq references resolve exclusively to ``🇮🇶``; ``🇹🇷`` is
+    suppressed for Kurdistan-related stories unless Turkey is explicitly in ``actors``.
+    """
+    normalized_countries = [_normalize_country_name(name) for name in (countries or [])]
+    has_krg = any(_is_krg_country(norm) for norm in normalized_countries)
+    suppress_turkey = has_krg and actors is not None and not _has_turkey_actor(actors)
+
     flags: list[str] = []
-    for name in countries or []:
-        flag = COUNTRY_FLAGS.get(_normalize_country_name(name))
+    for norm in normalized_countries:
+        flag = COUNTRY_FLAGS.get(norm) or COUNTRY_FLAGS.get(norm.replace("\u200c", " "))
+        if flag == "🇹🇷" and suppress_turkey:
+            continue
         if flag and flag not in flags:
             flags.append(flag)
         if len(flags) >= limit:
@@ -583,7 +663,7 @@ def format_immediate_analysis(analysis: ImmediateAnalysis) -> str:
     footer = f"🔗 منبع: {source_rendered}"
 
     summary = esc(analysis.summary_fa)
-    flags = country_flags(analysis.countries)
+    flags = country_flags(analysis.countries, actors=analysis.actors)
     if flags:
         summary = f"{''.join(flags)} — {summary}"
 

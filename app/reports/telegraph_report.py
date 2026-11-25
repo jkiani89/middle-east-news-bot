@@ -26,7 +26,6 @@ import json
 import logging
 from datetime import date, datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,6 +49,11 @@ from app.reports.daily_report import (
     slot_label,
     slot_report_date,
 )
+from app.reports.persian_dates import (
+    format_dual_persian_date,
+    format_jalali_datetime,
+    to_persian_digits,
+)
 from app.reports.telegraph_client import (
     TelegraphClient,
     TelegraphContentTooLargeError,
@@ -64,6 +68,7 @@ from app.reports.telegraph_pagination import (
     part_layout_hash,
     plan_topic_parts,
 )
+from app.telegram.publisher import country_flags
 
 logger = logging.getLogger(__name__)
 
@@ -90,12 +95,11 @@ TELEGRAM_FAILED = "failed"
 
 _TELEGRAPH_FINAL_STATES = {TELEGRAPH_COMPLETED, TELEGRAPH_PARTIAL}
 SUMMARY_MISSING_LABEL = "خلاصه در دسترس نیست"
-_FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 
 
 def fa_number(value: int) -> str:
     """Render a number with Persian digits, as the rest of the report does."""
-    return str(int(value)).translate(_FA_DIGITS)
+    return to_persian_digits(int(value))
 
 
 def stable_title_prefix(topic_name: str, report_date: date, slot_hour: int, part: int) -> str:
@@ -106,7 +110,8 @@ def stable_title_prefix(topic_name: str, report_date: date, slot_hour: int, part
     This prefix stops at the part number and is what recovery matches against.
     """
     label = slot_label(slot_hour)
-    return f"{topic_name} — گزارش {label} {report_date.isoformat()} — بخش {fa_number(part)}"
+    date_display = format_dual_persian_date(report_date)
+    return f"{topic_name} — گزارش {label} {date_display} — بخش {fa_number(part)}"
 
 
 def page_identity_stamp(report_date: date, slot_hour: int) -> str:
@@ -135,17 +140,19 @@ def title_matches_part(title: str, topic_name: str, report_date: date, slot_hour
 
     A single-part page is published without the ``— بخش …`` suffix, so it is recognised
     as part 1 by its bare title as well as by the prefixed form. The part number needs a
-    boundary: ``بخش ۱`` must not match ``بخش ۱۰``.
+    boundary: ``بخش ۱`` must not match ``بخش ۱۰``. Accepts both the Persian Solar/Lunar
+    date format and legacy ISO dates so older orphan pages still recover safely.
     """
     candidate = str(title or "")
     label = slot_label(slot_hour)
-    base = f"{topic_name} — گزارش {label} {report_date.isoformat()}"
-    if part == 1 and candidate == base:
-        return True
-    prefix = stable_title_prefix(topic_name, report_date, slot_hour, part)
-    if candidate == prefix:
-        return True
-    return candidate.startswith(f"{prefix} از ")
+    for date_token in (format_dual_persian_date(report_date), report_date.isoformat()):
+        base = f"{topic_name} — گزارش {label} {date_token}"
+        if part == 1 and candidate == base:
+            return True
+        prefix = f"{base} — بخش {fa_number(part)}"
+        if candidate == prefix or candidate.startswith(f"{prefix} از "):
+            return True
+    return False
 
 
 def _is_http_url(url: str) -> bool:
@@ -153,7 +160,7 @@ def _is_http_url(url: str) -> bool:
 
 
 def _format_local_time(value: Any) -> str:
-    """Render a stored ISO timestamp in the project timezone."""
+    """Render a stored ISO timestamp in the project timezone using Iranian Solar Hijri."""
     if not value:
         return "نامشخص"
     if isinstance(value, datetime):
@@ -163,10 +170,7 @@ def _format_local_time(value: Any) -> str:
             moment = datetime.fromisoformat(str(value))
         except ValueError:
             return str(value)
-    tz = ZoneInfo(settings.timezone)
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=ZoneInfo("UTC"))
-    return moment.astimezone(tz).strftime("%Y-%m-%d %H:%M")
+    return format_jalali_datetime(moment, settings.timezone)
 
 
 def _anchor(label: str, url: str) -> dict[str, Any] | None:
@@ -414,16 +418,10 @@ def build_item_block(
     """Nodes for one news item inside a topic page.
 
     Only the system summary is published - never the source article body - and the title,
-    source, original link, time and verification label are always present. A headline that
-    carries no information (a bare outlet name such as ``- رادیو فردا``) is replaced through
-    :func:`app.editorial.headlines.sanitize_headline`, and the substitution is counted in
-    ``stats`` so the run reports it instead of hiding it.
+    country flags, hyperlinked source name, and local Solar Hijri timestamp are rendered.
     """
     source = str(item.get("primary_source") or "منبع نامشخص").strip()
     url = str(item.get("primary_url") or "").strip()
-    verification = str(
-        item.get("verification_status_fa") or item.get("verification_status") or "نامشخص"
-    ).strip()
     published_at = _format_local_time(item.get("first_seen_at") or item.get("collected_at"))
 
     resolved = sanitize_headline(
@@ -441,23 +439,23 @@ def build_item_block(
             int(stats["headline_reasons"].get(resolved.reason) or 0) + 1
         )
 
+    flags = country_flags(item.get("countries"), actors=item.get("actors"))
+    flag_prefix = f"{''.join(flags)} — " if flags else ""
+
     nodes: list[dict[str, Any]] = [{"tag": "h4", "children": [headline]}]
     summary = str(item.get("summary_fa") or "").strip()
     if summary:
-        nodes.append(_paragraph(summary))
+        nodes.append(_paragraph(f"{flag_prefix}{summary}"))
     else:
         nodes.append(
             _paragraph(
-                f"⚠️ {SUMMARY_MISSING_LABEL}. عنوان، منبع و لینک اصلی خبر در ادامه آمده است."
+                f"{flag_prefix}⚠️ {SUMMARY_MISSING_LABEL}. عنوان و منبع خبر در ادامه آمده است."
             )
         )
 
-    nodes.append(_paragraph("📡 منبع: ", source))
+    source_link = _anchor(source, url)
+    nodes.append(_paragraph("📡 منبع: ", source_link if source_link else source))
     nodes.append(_paragraph("🕒 زمان انتشار: ", published_at))
-    nodes.append(_paragraph("🔎 وضعیت راستی‌آزمایی: ", verification))
-
-    link = _anchor(url, url)
-    nodes.append(_paragraph("🔗 لینک اصلی خبر: ", link if link else "در دسترس نیست"))
     if item.get("has_media"):
         nodes.append(_paragraph("🖼 دارای تصویر/ویدئو"))
 
@@ -584,14 +582,16 @@ def build_topic_part(
     topic always reproduce the original sequence when read in order.
     """
     label = slot_label(slot_hour)
-    title = f"{topic_name} — گزارش {label} {report_date.isoformat()}"
+    date_display = format_dual_persian_date(report_date)
+    title = f"{topic_name} — گزارش {label} {date_display}"
     if total_parts > 1:
         title = f"{title} — بخش {fa_number(part)} از {fa_number(total_parts)}"
-    start_text = window_start.astimezone(ZoneInfo(settings.timezone)).strftime("%Y-%m-%d %H:%M")
-    end_text = window_end.astimezone(ZoneInfo(settings.timezone)).strftime("%Y-%m-%d %H:%M")
+    start_text = format_jalali_datetime(window_start, settings.timezone)
+    end_text = format_jalali_datetime(window_end, settings.timezone)
 
     total_items = len(items) if topic_item_count is None else topic_item_count
     nodes: list[dict[str, Any]] = [
+        _paragraph(f"📅 تاریخ: {date_display}"),
         _paragraph(f"بازه گزارش: از {start_text} تا {end_text} (به وقت {settings.timezone})"),
         _paragraph(f"تعداد اخبار این موضوع: {total_items}"),
     ]
@@ -685,12 +685,14 @@ def build_index_page(
                 uid = id(item)
             unique_ids.add(uid)
     total = len(unique_ids)
-    title = f"گزارش {label} — {report_date.isoformat()}"
+    date_display = format_dual_persian_date(report_date)
+    title = f"گزارش {label} — {date_display}"
 
-    start_text = window_start.astimezone(ZoneInfo(settings.timezone)).strftime("%Y-%m-%d %H:%M")
-    end_text = window_end.astimezone(ZoneInfo(settings.timezone)).strftime("%Y-%m-%d %H:%M")
+    start_text = format_jalali_datetime(window_start, settings.timezone)
+    end_text = format_jalali_datetime(window_end, settings.timezone)
 
     nodes: list[dict[str, Any]] = [
+        _paragraph(f"📅 تاریخ: {date_display}"),
         _paragraph(f"بازه گزارش: از {start_text} تا {end_text} (به وقت {settings.timezone})"),
         _paragraph(f"تعداد اخبار این بازه: {total}"),
     ]
@@ -743,7 +745,7 @@ def format_public_channel_report(
     post only names the active editorial topics and links to the full Telegraph report.
     """
     label = slot_label(slot_hour)
-    date_str = report_date.isoformat() if hasattr(report_date, "isoformat") else str(report_date)
+    date_str = format_dual_persian_date(report_date) if isinstance(report_date, date) else str(report_date)
 
     topic_lines: list[str] = []
     for key, name, _topic_items in sections:
@@ -752,7 +754,7 @@ def format_public_channel_report(
 
     lines = [
         "📊 <b>جمع‌بندی ۱۲ ساعته تحولات</b>",
-        f"نوبت {label} ({label}) • {date_str}",
+        f"نوبت {label} • {date_str}",
         "",
         "<b>مهم‌ترین محورهای این نوبت:</b>",
         *topic_lines,
@@ -836,9 +838,10 @@ def format_admin_report(
         else "لینک گزارش در دسترس نیست."
     )
 
+    date_str = format_dual_persian_date(report_date) if isinstance(report_date, date) else str(report_date)
     lines = [
         f"📊 <b>گزارش ۱۲ ساعته تحولات — نوبت {label}</b>",
-        f"📅 تاریخ: {report_date.isoformat()}{window_text}",
+        f"📅 تاریخ: {date_str}{window_text}",
         f"📰 {total} خبر در {len(sections)} موضوع",
         *section_lines,
         "",

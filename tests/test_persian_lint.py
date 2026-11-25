@@ -128,3 +128,11 @@ def test_location_detection_headline_quote_narrative() -> None:
     rep4 = lint_persian_output("سیاست تهجیر در منطقه", "او تأکید کرد: «تهجیر خط قرمز ماست».")
     f4 = next(item for item in rep4["findings"] if item["word"] == "تهجیر")
     assert sorted(f4["locations"]) == ["headline", "quote"]
+
+
+def test_prompt_carries_kurdistan_geography_and_arabic_translation_rules() -> None:
+    assert "اقلیم کردستان" in EDITORIAL_SYSTEM_PROMPT
+    assert "کردستان عراق" in EDITORIAL_SYSTEM_PROMPT
+    assert "فارسی معیار رسانه‌ای" in EDITORIAL_SYSTEM_PROMPT
+    assert "تحت‌اللفظی" in EDITORIAL_SYSTEM_PROMPT
+

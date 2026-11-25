@@ -14,6 +14,7 @@ from app.processors import pipeline
 from app.telegram.publisher import (
     COUNTRY_FLAGS,
     ImmediateAnalysis,
+    country_flags,
     format_immediate_analysis,
     publish_immediate_analysis,
 )
@@ -155,6 +156,41 @@ def test_empty_country_list_leaves_summary_untouched():
 
     assert "— متن خلاصه خبر." not in text
     assert text.splitlines()[2] == "متن خلاصه خبر."
+
+
+def test_kurdistan_region_uses_iraq_flag_only_when_turkey_not_an_actor():
+    """Kurdistan Region (KRG) / Erbil / Baghdad news emits 🇮🇶 only, never 🇹🇷 unless Turkey acts."""
+    assert country_flags(["اقلیم کردستان"]) == ["🇮🇶"]
+    assert country_flags(["Kurdistan Region (KRG)", "کردستان عراق", "Iraq"]) == ["🇮🇶"]
+
+    # Even if an analyzer wrongly puts ترکیه/Turkey alongside اقلیم کردستان while Turkey is not an actor:
+    # 'نیروهای مشترک' contains 'ترک' as a substring and must NOT count as Turkey!
+    erbil_baghdad = ImmediateAnalysis(
+        event_title="Baghdad Erbil oil talks",
+        headline_fa="توافق بغداد و اربیل بر سر صادرات نفت اقلیم کردستان",
+        summary_fa="دولت فدرال عراق و حکومت اقلیم کردستان در اربیل درباره سازوکار صادرات نفت به توافق رسیدند.",
+        source_name="Al Jazeera Arabic",
+        source_url="https://aljazeera.net/example",
+        countries=["اقلیم کردستان", "عراق", "ترکیه"],
+        actors=["دولت عراق", "حکومت اقلیم کردستان", "نیروهای مشترک بغداد و اربیل"],
+    )
+    rendered = format_immediate_analysis(erbil_baghdad)
+    assert "🇮🇶 — دولت فدرال عراق" in rendered
+    assert "🇹🇷" not in rendered
+
+    # When Turkey IS explicitly an actor in the event, 🇹🇷 is included.
+    turkey_involved = ImmediateAnalysis(
+        event_title="Turkish strike near Erbil",
+        headline_fa="حمله هوایی ترکیه در حومه اربیل",
+        summary_fa="ارتش ترکیه مواضعی را در اقلیم کردستان عراق هدف قرار داد.",
+        source_name="Reuters",
+        source_url="https://reuters.com/example",
+        countries=["عراق", "اقلیم کردستان", "ترکیه"],
+        actors=["ارتش ترکیه", "حکومت اقلیم کردستان"],
+    )
+    rendered_with_tr = format_immediate_analysis(turkey_involved)
+    assert "🇮🇶🇹🇷 — ارتش ترکیه" in rendered_with_tr
+
 
 
 @pytest.mark.asyncio
