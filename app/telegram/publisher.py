@@ -31,6 +31,7 @@ from app.config import IMMEDIATE_PUBLISH_DELAY_CAP_SECONDS, settings
 from app.database.connection import SessionLocal
 from app.database.models import DailyReport
 from app.reports.daily_report import format_persian_daily_report
+from app.reports.persian_dates import format_jalali_long
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +265,18 @@ async def publish_report(
             # Fallback format for items list
             final_text = format_persian_daily_report(report_date, items, as_html=True)
         else:
-            final_text = f"📰 <b>گزارش تحولات خاورمیانه</b>\n📅 {report_date}\n\nگزارش خالی است."
+            parsed_date: date | None = None
+            if isinstance(report_date, datetime):
+                parsed_date = report_date.date()
+            elif isinstance(report_date, date):
+                parsed_date = report_date
+            elif isinstance(report_date, str):
+                try:
+                    parsed_date = date.fromisoformat(report_date)
+                except ValueError:
+                    parsed_date = None
+            date_display = format_jalali_long(parsed_date) if parsed_date else str(report_date)
+            final_text = f"📰 <b>گزارش تحولات خاورمیانه</b>\n📅 {esc(date_display)}\n\nگزارش خالی است."
 
     chunks = split_text(final_text, limit=3900)
 

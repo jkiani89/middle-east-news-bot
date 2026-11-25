@@ -50,8 +50,8 @@ from app.reports.daily_report import (
     slot_report_date,
 )
 from app.reports.persian_dates import (
-    format_dual_persian_date,
     format_jalali_datetime,
+    format_jalali_long,
     to_persian_digits,
 )
 from app.reports.telegraph_client import (
@@ -110,7 +110,7 @@ def stable_title_prefix(topic_name: str, report_date: date, slot_hour: int, part
     This prefix stops at the part number and is what recovery matches against.
     """
     label = slot_label(slot_hour)
-    date_display = format_dual_persian_date(report_date)
+    date_display = format_jalali_long(report_date)
     return f"{topic_name} — گزارش {label} {date_display} — بخش {fa_number(part)}"
 
 
@@ -140,12 +140,12 @@ def title_matches_part(title: str, topic_name: str, report_date: date, slot_hour
 
     A single-part page is published without the ``— بخش …`` suffix, so it is recognised
     as part 1 by its bare title as well as by the prefixed form. The part number needs a
-    boundary: ``بخش ۱`` must not match ``بخش ۱۰``. Accepts both the Persian Solar/Lunar
+    boundary: ``بخش ۱`` must not match ``بخش ۱۰``. Accepts both the Solar Hijri
     date format and legacy ISO dates so older orphan pages still recover safely.
     """
     candidate = str(title or "")
     label = slot_label(slot_hour)
-    for date_token in (format_dual_persian_date(report_date), report_date.isoformat()):
+    for date_token in (format_jalali_long(report_date), report_date.isoformat()):
         base = f"{topic_name} — گزارش {label} {date_token}"
         if part == 1 and candidate == base:
             return True
@@ -582,7 +582,7 @@ def build_topic_part(
     topic always reproduce the original sequence when read in order.
     """
     label = slot_label(slot_hour)
-    date_display = format_dual_persian_date(report_date)
+    date_display = format_jalali_long(report_date)
     title = f"{topic_name} — گزارش {label} {date_display}"
     if total_parts > 1:
         title = f"{title} — بخش {fa_number(part)} از {fa_number(total_parts)}"
@@ -685,7 +685,7 @@ def build_index_page(
                 uid = id(item)
             unique_ids.add(uid)
     total = len(unique_ids)
-    date_display = format_dual_persian_date(report_date)
+    date_display = format_jalali_long(report_date)
     title = f"گزارش {label} — {date_display}"
 
     start_text = format_jalali_datetime(window_start, settings.timezone)
@@ -745,7 +745,7 @@ def format_public_channel_report(
     post only names the active editorial topics and links to the full Telegraph report.
     """
     label = slot_label(slot_hour)
-    date_str = format_dual_persian_date(report_date) if isinstance(report_date, date) else str(report_date)
+    date_str = format_jalali_long(report_date) if isinstance(report_date, date) else str(report_date)
 
     topic_lines: list[str] = []
     for key, name, _topic_items in sections:
@@ -838,7 +838,7 @@ def format_admin_report(
         else "لینک گزارش در دسترس نیست."
     )
 
-    date_str = format_dual_persian_date(report_date) if isinstance(report_date, date) else str(report_date)
+    date_str = format_jalali_long(report_date) if isinstance(report_date, date) else str(report_date)
     lines = [
         f"📊 <b>گزارش ۱۲ ساعته تحولات — نوبت {label}</b>",
         f"📅 تاریخ: {date_str}{window_text}",

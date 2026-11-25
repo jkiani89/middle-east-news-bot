@@ -537,6 +537,10 @@ async def test_publish_report_empty_report_text():
             channel_id="@channel",
         )
         assert len(sent) > 0
+        channel_text = mock_bot.send_message.call_args_list[0].kwargs["text"]
+        assert "سه‌شنبه ۱۹ آبان ۱۴۰۵" in channel_text
+        assert "2026-11-10" not in channel_text
+        assert "جمادی" not in channel_text
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,7 @@ from app.editorial.glossary import canonicalize_approved_names
 from app.editorial.perspectives import group_perspectives, orientation_for
 from app.editorial.regions import is_middle_east_country, mentions_middle_east_place
 from app.editorial.topics import load_topics, topic_for_event, topics_for_event
+from app.reports.persian_dates import format_jalali_date, format_jalali_long
 
 logger = logging.getLogger(__name__)
 
@@ -743,11 +744,12 @@ def format_persian_daily_report(
     else:
         quality_badge = "✅ کیفیت محتوا: تحلیل رسمی هوش مصنوعی (آماده انتشار)"
 
+    date_display = format_jalali_date(report_date) if isinstance(report_date, date) else str(report_date)
     lines: list[str] = []
     if include_header and as_html:
         lines = [
             "<b>📊 بولتن هوش و پایش تحولات خاورمیانه و جهان اسلام</b>",
-            f"📅 تاریخ گزارش: <code>{report_date.strftime('%Y/%m/%d') if hasattr(report_date, 'strftime') else str(report_date)}</code> (بازه پایش ۲۴ ساعته)",
+            f"📅 تاریخ گزارش: <code>{esc(date_display)}</code> (بازه پایش ۲۴ ساعته)",
             f"📈 آمار رویدادها: <b>{total_events}</b> رخداد واجد شرایط (حداقل اهمیت: {min_imp}) | "
             f"اهمیت ۴ و ۵: <b>{strategic_count}</b> | سایر: <b>{regional_count}</b>",
             quality_badge,
@@ -757,7 +759,7 @@ def format_persian_daily_report(
     elif include_header:
         lines = [
             "📊 بولتن هوش و پایش تحولات خاورمیانه و جهان اسلام",
-            f"📅 تاریخ گزارش: {report_date.strftime('%Y/%m/%d') if hasattr(report_date, 'strftime') else str(report_date)} (بازه پایش ۲۴ ساعته)",
+            f"📅 تاریخ گزارش: {date_display} (بازه پایش ۲۴ ساعته)",
             f"📈 آمار رویدادها: {total_events} رخداد واجد شرایط (حداقل اهمیت: {min_imp}) | "
             f"اهمیت ۴ و ۵: {strategic_count} | سایر: {regional_count}",
             quality_badge,
@@ -1060,7 +1062,7 @@ def format_slot_bulletin(
     else:
         badge = "✅ کیفیت محتوا: تحلیل رسمی هوش مصنوعی (آماده انتشار)"
 
-    date_text = report_date.strftime("%Y/%m/%d") if hasattr(report_date, "strftime") else str(report_date)
+    date_text = format_jalali_long(report_date) if isinstance(report_date, date) else str(report_date)
     title = "📊 بولتن زمان‌بندی‌شده تحولات منطقه و جهان"
     subtitle = f"📅 تاریخ: {date_text} | نوبت: {slot_label(slot_hour)}"
     stats = f"📈 {total} رویداد در {len(sections)} بخش (اهمیت ≥ {min_imp})"

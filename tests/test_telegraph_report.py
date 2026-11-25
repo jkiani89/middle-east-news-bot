@@ -13,7 +13,7 @@ from app.editorial.telegraph_topics import (
     group_items_by_telegraph_topic,
     load_telegraph_topics,
 )
-from app.reports.persian_dates import format_dual_persian_date
+from app.reports.persian_dates import format_jalali_long
 from app.reports.telegraph_client import (
     TelegraphContentTooLargeError,
     TelegraphError,
@@ -184,7 +184,7 @@ def test_topic_page_holds_all_items_of_that_topic():
     rendered = _text(nodes)
 
     assert "ایران و آمریکا" in title
-    assert format_dual_persian_date(date(2026, 11, 14)) in title
+    assert format_jalali_long(date(2026, 11, 14)) in title
     assert "خبر نخست ایران" in rendered
     assert "خبر دوم ایران" in rendered
     assert "راستی‌آزمایی" not in rendered
@@ -299,7 +299,9 @@ def test_public_channel_report_is_the_minimal_template():
     )
 
     assert text.startswith("📊 <b>جمع‌بندی ۱۲ ساعته تحولات</b>")
-    assert f"نوبت 08:00 • {format_dual_persian_date(rep_date)}" in text
+    assert f"نوبت 08:00 • {format_jalali_long(rep_date)}" in text
+    assert "2026-11-14" not in text
+    assert "جمادی" not in text
     assert "<b>مهم‌ترین محورهای این نوبت:</b>" in text
     assert "• 🇮🇷/🇺🇸 ایران و آمریکا" in text
     assert '<a href="https://telegra.ph/report-1">مطالعه گزارش کامل و مشروح در Telegraph</a>' in text
@@ -394,7 +396,7 @@ async def test_retry_updates_the_topic_page_instead_of_duplicating_it():
     """A partial report edits the topic page it already published; it never adds a copy."""
     session = _Session()
     rep_date = date(2026, 11, 14)
-    yemen_title = f"عربستان و یمن — گزارش 08:00 {format_dual_persian_date(rep_date)}"
+    yemen_title = f"عربستان و یمن — گزارش 08:00 {format_jalali_long(rep_date)}"
     first_items = [_item(1, "خبر نخست", topic_key="ir"), _item(2, "خبر دوم", topic_key="ye")]
     failing = _Client(fail_titles={yemen_title})
     await publish_telegraph_report(
@@ -427,7 +429,7 @@ async def test_a_story_from_the_previous_report_does_not_remove_this_windows_sto
     )
 
     rep_date = date(2026, 11, 14)
-    dual_date = format_dual_persian_date(rep_date)
+    jalali_date = format_jalali_long(rep_date)
     later = _Client()
     result = await publish_telegraph_report(
         _Session(),
@@ -439,8 +441,8 @@ async def test_a_story_from_the_previous_report_does_not_remove_this_windows_sto
     )
 
     assert [title for _path, title in later.created] == [
-        f"ایران و آمریکا — گزارش 08:00 {dual_date}",
-        f"گزارش 08:00 — {dual_date}",
+        f"ایران و آمریکا — گزارش 08:00 {jalali_date}",
+        f"گزارش 08:00 — {jalali_date}",
     ]
     assert result["item_count"] == 1
 
@@ -449,7 +451,7 @@ async def test_a_story_from_the_previous_report_does_not_remove_this_windows_sto
 async def test_partial_run_creates_only_the_missing_topic_on_retry():
     session = _Session()
     rep_date = date(2026, 11, 14)
-    yemen_title = f"عربستان و یمن — گزارش 08:00 {format_dual_persian_date(rep_date)}"
+    yemen_title = f"عربستان و یمن — گزارش 08:00 {format_jalali_long(rep_date)}"
     items = [_item(1, "خبر نخست", topic_key="ir"), _item(2, "خبر دوم", topic_key="ye")]
     failing = _Client(fail_titles={yemen_title})
 
@@ -584,23 +586,29 @@ def test_telegraph_item_block_never_adds_turkey_flag_for_kurdistan_region():
     assert "🇹🇷" not in rendered
 
 
-def test_topic_and_index_pages_display_solar_and_lunar_hijri_dates():
+def test_topic_and_index_pages_display_solar_hijri_dates_only():
     rep_date = date(2026, 11, 14)
     start, end = _window(rep_date, slot_hour=20)
     items = [_item(1, "خبر نمونه", topic_key="ir")]
 
     topic_title, topic_nodes = build_topic_page("ایران و آمریکا", rep_date, 20, items, start, end)
     topic_rendered = _text(topic_nodes)
-    assert "شنبه ۲۳ آبان ۱۴۰۵ | ۳ جمادی‌الثانی ۱۴۴۸" in topic_title
-    assert "📅 تاریخ: شنبه ۲۳ آبان ۱۴۰۵ | ۳ جمادی‌الثانی ۱۴۴۸" in topic_rendered
+    assert "شنبه ۲۳ آبان ۱۴۰۵" in topic_title
+    assert "📅 تاریخ: شنبه ۲۳ آبان ۱۴۰۵" in topic_rendered
     assert "۱۴۰۵/۰۸/۲۳" in topic_rendered
+    assert "جمادی" not in topic_title
+    assert "جمادی" not in topic_rendered
+    assert "2026-11-14" not in topic_title
 
     sections = group_items_by_telegraph_topic(items)
     idx_title, idx_nodes = build_index_page(
         rep_date, 20, sections, {"ir": {"url": "https://telegra.ph/p1"}}, start, end, {}
     )
     idx_rendered = _text(idx_nodes)
-    assert "شنبه ۲۳ آبان ۱۴۰۵ | ۳ جمادی‌الثانی ۱۴۴۸" in idx_title
-    assert "📅 تاریخ: شنبه ۲۳ آبان ۱۴۰۵ | ۳ جمادی‌الثانی ۱۴۴۸" in idx_rendered
+    assert "شنبه ۲۳ آبان ۱۴۰۵" in idx_title
+    assert "📅 تاریخ: شنبه ۲۳ آبان ۱۴۰۵" in idx_rendered
     assert "۱۴۰۵/۰۸/۲۳" in idx_rendered
+    assert "جمادی" not in idx_title
+    assert "جمادی" not in idx_rendered
+    assert "2026-11-14" not in idx_title
 

@@ -137,7 +137,8 @@ def test_format_persian_daily_report_structure_and_length():
 
     assert len(report_text) > 500
     assert "بولتن هوش و پایش تحولات خاورمیانه" in report_text
-    assert "۱۴۰۵/۰۸/۱۹" in report_text or "2026/11/10" in report_text
+    assert "۱۴۰۵/۰۸/۱۹" in report_text
+    assert "2026/11/10" not in report_text
     assert "بخش اول: اهم تحولات (اهمیت ۴ و ۵)" in report_text or "بخش اول: اهم تحولات" in report_text
     assert "بخش دوم: سایر تحولات" in report_text
     assert "آغاز دور جدید مذاکرات دیپلماتیک" in report_text

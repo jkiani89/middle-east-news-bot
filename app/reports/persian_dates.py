@@ -1,4 +1,4 @@
-"""Pure-Python Iranian Solar Hijri (شمسی) and Islamic Lunar Hijri (قمری) date formatting."""
+"""Pure-Python Iranian Solar Hijri (شمسی) date formatting."""
 
 from __future__ import annotations
 
@@ -33,34 +33,10 @@ _JALALI_MONTHS: tuple[str, ...] = (
     "اسفند",
 )
 
-_HIJRI_MONTHS: tuple[str, ...] = (
-    "",
-    "محرم",
-    "صفر",
-    "ربیع‌الاول",
-    "ربیع‌الثانی",
-    "جمادی‌الاول",
-    "جمادی‌الثانی",
-    "رجب",
-    "شعبان",
-    "رمضان",
-    "شوال",
-    "ذی‌قعده",
-    "ذی‌حجه",
-)
-
 
 def to_persian_digits(value: str | int) -> str:
     """Replace ASCII digits with Persian digits."""
     return str(value).translate(_FA_DIGITS)
-
-
-def gregorian_to_jdn(year: int, month: int, day: int) -> int:
-    """Return the Julian Day Number for a proleptic Gregorian date."""
-    a = (14 - month) // 12
-    y = year + 4800 - a
-    m = month + 12 * a - 3
-    return day + (153 * m + 2) // 5 + 365 * y + y // 4 - y // 100 + y // 400 - 32045
 
 
 def gregorian_to_jalali(value: date) -> tuple[int, int, int]:
@@ -93,28 +69,6 @@ def gregorian_to_jalali(value: date) -> tuple[int, int, int]:
     return jy, jm, jd
 
 
-def gregorian_to_hijri(value: date) -> tuple[int, int, int]:
-    """Convert a Gregorian ``date`` to Islamic Lunar Hijri ``(year, month, day)`` (civil tabular)."""
-    jdn = gregorian_to_jdn(value.year, value.month, value.day)
-    days = jdn - 1948440 + 10632
-    cycles = (days - 1) // 10631
-    days = days - 10631 * cycles + 354
-    cycle_year = (
-        ((10985 - days) // 5316) * ((50 * days) // 17719)
-        + (days // 5670) * ((43 * days) // 15238)
-    )
-    days = (
-        days
-        - ((30 - cycle_year) // 15) * ((17719 * cycle_year) // 50)
-        - (cycle_year // 16) * ((15238 * cycle_year) // 43)
-        + 29
-    )
-    month = (24 * days) // 709
-    day = days - (709 * month) // 24
-    year = 30 * cycles + cycle_year - 30
-    return year, month, day
-
-
 def format_jalali_date(value: date) -> str:
     """Numeric Iranian Solar Hijri date with Persian digits (``۱۴۰۵/۰۸/۲۳``)."""
     jy, jm, jd = gregorian_to_jalali(value)
@@ -126,17 +80,6 @@ def format_jalali_long(value: date) -> str:
     weekday = _PERSIAN_WEEKDAYS[value.weekday()]
     jy, jm, jd = gregorian_to_jalali(value)
     return to_persian_digits(f"{weekday} {jd} {_JALALI_MONTHS[jm]} {jy}")
-
-
-def format_hijri_long(value: date) -> str:
-    """Islamic Lunar Hijri date in Persian (``۳ جمادی‌الثانی ۱۴۴۸``)."""
-    hy, hm, hd = gregorian_to_hijri(value)
-    return to_persian_digits(f"{hd} {_HIJRI_MONTHS[hm]} {hy}")
-
-
-def format_dual_persian_date(value: date) -> str:
-    """Combined Solar Hijri and Lunar Hijri date for public Persian reports."""
-    return f"{format_jalali_long(value)} | {format_hijri_long(value)}"
 
 
 def format_jalali_datetime(moment: datetime, timezone_name: str = "Asia/Tehran") -> str:
