@@ -299,3 +299,28 @@ def test_unapproved_entries_never_enter_prompt_block(tmp_path: Path) -> None:
     matched = match_entries(loaded, "ApprovedLeader and UnapprovedLeader met today")
     assert [e.id for e in matched] == ["approved-leader"]
     assert all(not e.review_required for e in matched)
+
+
+def test_arabic_editorial_audit_glossary_entries_match_with_clitics_and_plurals() -> None:
+    """Positive matches for the Arabic editorial terms (including الـ, clitics, singular/plural)."""
+    glossary = load_glossary()
+
+    assert [e.id for e in match_entries(glossary, "استهدفت قاطرة بحرية في البحر الأحمر")] == ["tugboat"]
+    assert [e.id for e in match_entries(glossary, "والقاطرات بحرية تتحرك نحو الميناء")] == ["tugboat"]
+    assert [e.id for e in match_entries(glossary, "حريق في مستودع للوقود ومستودعات أخرى")] == ["warehouse"]
+    assert [e.id for e in match_entries(glossary, "حدثت مفاجأة في النهائي")] == ["surprise"]
+    assert [e.id for e in match_entries(glossary, "شهدت البطولة مفاجآت كبرى")] == ["surprises"]
+    assert [e.id for e in match_entries(glossary, "افتتاح مهرجان الثقافة والمهرجانات السنوية")] == ["festival"]
+    gastat = match_entries(glossary, "أعلنت الهيئة العامة للإحصاء عن تراجع التضخم")
+    assert [e.id for e in gastat] == ["gastat-sa"]
+    assert gastat[0].canonical_fa == "سازمان کل آمار عربستان سعودی"
+
+
+def test_arabic_editorial_audit_glossary_entries_do_not_false_match() -> None:
+    """Negative tests: unrelated or partial-substring words must not trigger false matches."""
+    glossary = load_glossary()
+
+    assert match_entries(glossary, "قاطرة قطار سريع") == []
+    assert match_entries(glossary, "توديع الضيوف في المطار") == []
+    assert match_entries(glossary, "تقرير اقتصادي عام عن الأسواق الخليجية") == []
+    assert match_entries(glossary, "گزارش هواشناسی تهران و وضعیت ترافیک") == []

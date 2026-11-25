@@ -66,6 +66,54 @@
       "source_forms": ["APEC", "أبيك", "ابيك"],
       "variants_fa": [],
       "review_required": false
+    },
+    {
+      "id": "tugboat",
+      "kind": "other",
+      "canonical_fa": "یدک‌کش دریایی",
+      "source_forms": ["قاطرة بحرية", "قاطرات بحرية"],
+      "variants_fa": [],
+      "review_required": false
+    },
+    {
+      "id": "warehouse",
+      "kind": "other",
+      "canonical_fa": "انبار",
+      "source_forms": ["مستودع", "مستودعات"],
+      "variants_fa": [],
+      "review_required": false
+    },
+    {
+      "id": "surprise",
+      "kind": "other",
+      "canonical_fa": "شگفتی",
+      "source_forms": ["مفاجأة"],
+      "variants_fa": [],
+      "review_required": false
+    },
+    {
+      "id": "surprises",
+      "kind": "other",
+      "canonical_fa": "شگفتی‌ها",
+      "source_forms": ["مفاجآت"],
+      "variants_fa": [],
+      "review_required": false
+    },
+    {
+      "id": "festival",
+      "kind": "other",
+      "canonical_fa": "جشنواره",
+      "source_forms": ["مهرجان", "مهرجانات"],
+      "variants_fa": [],
+      "review_required": false
+    },
+    {
+      "id": "gastat-sa",
+      "kind": "organization",
+      "canonical_fa": "سازمان کل آمار عربستان سعودی",
+      "source_forms": ["الهيئة العامة للإحصاء", "الهيئة العامه للإحصاء"],
+      "variants_fa": [],
+      "review_required": false
     }
   ]
 }

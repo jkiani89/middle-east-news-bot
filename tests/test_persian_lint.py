@@ -136,3 +136,29 @@ def test_prompt_carries_kurdistan_geography_and_arabic_translation_rules() -> No
     assert "فارسی معیار رسانه‌ای" in EDITORIAL_SYSTEM_PROMPT
     assert "تحت‌اللفظی" in EDITORIAL_SYSTEM_PROMPT
 
+
+def test_prompt_carries_arabic_context_entity_consistency_and_actor_separation_rules() -> None:
+    """Rule 12 covers contextual Arabicisms, headline/summary source fidelity, and actor separation."""
+    assert "متناسب با بافت جمله" in EDITORIAL_SYSTEM_PROMPT
+    assert "یدک‌کش دریایی" in EDITORIAL_SYSTEM_PROMPT
+    assert "سازمان کل آمار عربستان سعودی" in EDITORIAL_SYSTEM_PROMPT
+    assert "مجلس سنای تگزاس" in EDITORIAL_SYSTEM_PROMPT
+    assert "headline_fa و summary_fa باید دقیقاً مطابق متن اصلی خبر باشند" in EDITORIAL_SYSTEM_PROMPT
+    assert "چندشخصیتی" in EDITORIAL_SYSTEM_PROMPT
+    assert "وابستگی‌های سازمانی و اظهارات هر شخص را به شخص دیگری نسبت نده" in EDITORIAL_SYSTEM_PROMPT
+
+
+def test_build_analysis_prompt_injects_arabic_editorial_glossary_terms() -> None:
+    """Prompt-time glossary injection supplies Persian equivalents for matched Arabic terms."""
+    prompt = build_analysis_prompt(
+        "هجوم على قاطرة بحرية",
+        "أعلنت الهيئة العامة للإحصاء عن تضرر مستودع قرب موقع مهرجان في المنطقة دون مفاجآت أو مفاجأة.",
+        "الجزيرة",
+    )
+    assert "یدک‌کش دریایی" in prompt
+    assert "سازمان کل آمار عربستان سعودی" in prompt
+    assert "انبار" in prompt
+    assert "جشنواره" in prompt
+    assert "شگفتی‌ها" in prompt
+    assert "شگفتی ← مفاجأة" in prompt
+
